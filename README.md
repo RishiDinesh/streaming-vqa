@@ -21,7 +21,7 @@ conda install -y \
 pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu124
 
 # Install other dependencies
-pip install transformers==4.45.2 accelerate sentencepiece datasets wandb zstandard matplotlib huggingface_hub==0.25.2 tensor_parallel==2.0.0 ninja packaging
+pip install transformers==4.45.2 opencv-python decord accelerate sentencepiece datasets wandb zstandard matplotlib huggingface_hub==0.25.2 tensor_parallel==2.0.0 ninja packaging
 
 # Install FlashAttention
 pip install "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.8/flash_attn-2.6.3+cu124torch2.4-cp310-cp310-linux_x86_64.whl"
