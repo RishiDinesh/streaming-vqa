@@ -28,7 +28,7 @@ class VideoQADataset(Dataset):
         num_frames: int = 8,
         max_length: int = 2048,
         use_chat_template: bool = True,
-        answer_prefix: str = "\nAnswer: ",
+        answer_prefix: str = "The secret word is: ",
     ):
         super().__init__()
 
@@ -304,15 +304,16 @@ class VideoQADataset(Dataset):
                 }
             ]
             try:
-                return self.processor.apply_chat_template(
+                prompt = self.processor.apply_chat_template(
                     conversation,
                     tokenize=False,
                     add_generation_prompt=True,
                 )
+                return f"{prompt}{self.answer_prefix}"
             except Exception:
                 pass
 
-        return f"{self.video_token}\n{question}{self.answer_prefix}"
+        return f"{self.video_token}\n{question}\n{self.answer_prefix}"
 
     def _build_model_inputs(
         self, frames: Sequence[Any], prefix_text: str, full_text: str
@@ -531,7 +532,7 @@ def create_video_qa_dataloader(
     num_frames: int = 8,
     max_length: int = 2048,
     use_chat_template: bool = True,
-    answer_prefix: str = "\nAnswer: ",
+    answer_prefix: str = "The secret word is: ",
     batch_size: int = 1,
     shuffle: bool = True,
     num_workers: int = 4,
