@@ -471,6 +471,7 @@ class VideoQADataset(Dataset):
 @dataclass
 class VideoQACollator:
     tokenizer: Any
+    pad_to_multiple_of: Optional[int] = None
 
     def __call__(self, instances: Sequence[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
@@ -492,6 +493,27 @@ class VideoQACollator:
             batch_first=True,
             padding_value=-100,
         )
+
+        if self.pad_to_multiple_of is not None and self.pad_to_multiple_of > 1:
+            seq_len = input_ids.shape[1]
+            remainder = seq_len % self.pad_to_multiple_of
+            if remainder != 0:
+                pad_len = self.pad_to_multiple_of - remainder
+                pad_shape = (input_ids.shape[0], pad_len)
+                input_pad = torch.full(
+                    pad_shape,
+                    fill_value=pad_token_id,
+                    dtype=input_ids.dtype,
+                    device=input_ids.device,
+                )
+                label_pad = torch.full(
+                    pad_shape,
+                    fill_value=-100,
+                    dtype=labels.dtype,
+                    device=labels.device,
+                )
+                input_ids = torch.cat([input_ids, input_pad], dim=1)
+                labels = torch.cat([labels, label_pad], dim=1)
 
         ret = {
             "input_ids": input_ids,
@@ -538,6 +560,7 @@ def create_video_qa_dataloader(
     num_workers: int = 4,
     pin_memory: bool = False,
     drop_last: bool = False,
+    pad_to_multiple_of: Optional[int] = None,
 ) -> DataLoader:
     dataset = VideoQADataset(
         video_root=video_root,
@@ -549,7 +572,10 @@ def create_video_qa_dataloader(
         use_chat_template=use_chat_template,
         answer_prefix=answer_prefix,
     )
-    collator = VideoQACollator(tokenizer=dataset.tokenizer)
+    collator = VideoQACollator(
+        tokenizer=dataset.tokenizer,
+        pad_to_multiple_of=pad_to_multiple_of,
+    )
     return DataLoader(
         dataset,
         batch_size=batch_size,

@@ -80,7 +80,22 @@ def apply_fsdp(
 
 def _materialize_full_tensor(x: torch.Tensor) -> torch.Tensor:
     if hasattr(x, "full_tensor"):
-        return x.full_tensor()
+        try:
+            return x.full_tensor()
+        except RuntimeError as exc:
+            if (
+                "allgather_into_tensor_coalesced" not in str(exc)
+                or not dist.is_available()
+                or not dist.is_initialized()
+                or not hasattr(x, "to_local")
+            ):
+                raise
+
+            # Fallback for NCCL builds that do not support the coalesced DTensor all-gather.
+            local = x.to_local().contiguous()
+            gathered = [torch.empty_like(local) for _ in range(dist.get_world_size())]
+            dist.all_gather(gathered, local)
+            return torch.cat(gathered, dim=0)
     return x
 
 
@@ -317,12 +332,12 @@ def train(
             optimizer.zero_grad()
 
             global_step += 1
+            full_attention_heads_for_logging = get_full_attention_heads(model)
+            full_attention_heads_for_logging = [
+                _materialize_full_tensor(h).detach().clone()
+                for h in full_attention_heads_for_logging
+            ]
             if rank == 0:
-                full_attention_heads_for_logging = get_full_attention_heads(model)
-                full_attention_heads_for_logging = [
-                    _materialize_full_tensor(h).detach().clone()
-                    for h in full_attention_heads_for_logging
-                ]
                 full_attention_heads_list = full_attention_heads_to_list(
                     full_attention_heads_for_logging
                 )
@@ -549,6 +564,7 @@ def main(args):
             num_workers=args.num_workers,
             pin_memory=torch.cuda.is_available(),
             drop_last=False,
+            pad_to_multiple_of=world_size,
         )
     else:
         raise ValueError(f"Invalid dataset format: {args.dataset_format}")
