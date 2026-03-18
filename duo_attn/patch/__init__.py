@@ -13,6 +13,15 @@ from .mistral import (
     set_mistral_full_attention_heads,
     map_mistral_full_attention_heads,
 )
+from .llava_onevision import (
+    enable_qwen2_duo_attention_training,
+    enable_llava_onevision_duo_attention_training,
+    enable_qwen2_duo_attention_eval,
+    enable_llava_onevision_duo_attention_eval,
+    get_qwen2_full_attention_heads,
+    set_qwen2_full_attention_heads,
+    map_qwen2_full_attention_heads,
+)
 
 import numpy as np
 import os
@@ -51,6 +60,26 @@ def enable_duo_attention_training(
             enable_ulysses_attention=enable_ulysses_attention,
             streaming_attn_implementation=streaming_attn_implementation,
         )
+    elif "qwen2" in model.config.model_type:
+        enable_qwen2_duo_attention_training(
+            model,
+            sink_size,
+            recent_size,
+            max_length,
+            initial_value=initial_value,
+            enable_ulysses_attention=enable_ulysses_attention,
+            streaming_attn_implementation=streaming_attn_implementation,
+        )
+    elif "llava_onevision" in model.config.model_type:
+        enable_llava_onevision_duo_attention_training(
+            model,
+            sink_size,
+            recent_size,
+            max_length,
+            initial_value=initial_value,
+            enable_ulysses_attention=enable_ulysses_attention,
+            streaming_attn_implementation=streaming_attn_implementation,
+        )
     else:
         raise ValueError(f"Model type {model.config.model_type} not supported")
 
@@ -78,6 +107,20 @@ def enable_duo_attention_eval(
             sink_size,
             recent_size,
         )
+    elif "qwen2" in model.config.model_type:
+        enable_qwen2_duo_attention_eval(
+            model,
+            full_attention_heads,
+            sink_size,
+            recent_size,
+        )
+    elif "llava_onevision" in model.config.model_type:
+        enable_llava_onevision_duo_attention_eval(
+            model,
+            full_attention_heads,
+            sink_size,
+            recent_size,
+        )
     else:
         raise ValueError(f"Model type {model.config.model_type} not supported")
 
@@ -87,6 +130,8 @@ def get_full_attention_heads(model):
         return get_llama_full_attention_heads(model)
     elif "mistral" in model.config.model_type or "mixtral" in model.config.model_type:
         return get_mistral_full_attention_heads(model)
+    elif "qwen2" in model.config.model_type or "llava_onevision" in model.config.model_type:
+        return get_qwen2_full_attention_heads(model)
     else:
         raise ValueError(f"Model type {model.config.model_type} not supported")
 
@@ -96,6 +141,8 @@ def set_full_attention_heads(model, full_attention_heads):
         model = set_llama_full_attention_heads(model, full_attention_heads)
     elif "mistral" in model.config.model_type or "mixtral" in model.config.model_type:
         model = set_mistral_full_attention_heads(model, full_attention_heads)
+    elif "qwen2" in model.config.model_type or "llava_onevision" in model.config.model_type:
+        model = set_qwen2_full_attention_heads(model, full_attention_heads)
     else:
         raise ValueError(f"Model type {model.config.model_type} not supported")
     return model
@@ -106,6 +153,8 @@ def map_full_attention_heads(model, func):
         return map_llama_full_attention_heads(model, func)
     elif "mistral" in model.config.model_type or "mixtral" in model.config.model_type:
         return map_mistral_full_attention_heads(model, func)
+    elif "qwen2" in model.config.model_type or "llava_onevision" in model.config.model_type:
+        return map_qwen2_full_attention_heads(model, func)
     else:
         raise ValueError(f"Model type {model.config.model_type} not supported")
 

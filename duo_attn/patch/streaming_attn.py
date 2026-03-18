@@ -1,4 +1,5 @@
 import torch
+import inspect
 
 try:
     import xformers.ops as xops
@@ -27,17 +28,36 @@ def generate_streaming_mask(seq_len, sink_size, recent_size, device):
 def streaming_attn_sdpa(query_states, key_states, value_states, streaming_causal_mask):
     bsz, seq_len, num_heads, head_dim = query_states.size()
 
+    try:
+        supports_enable_gqa = (
+            "enable_gqa"
+            in inspect.signature(
+                torch.nn.functional.scaled_dot_product_attention
+            ).parameters
+        )
+    except (TypeError, ValueError):
+        supports_enable_gqa = False
+    if not supports_enable_gqa and key_states.size(2) != num_heads:
+        repeat_num = num_heads // key_states.size(2)
+        key_states = torch.repeat_interleave(key_states, repeats=repeat_num, dim=2)
+        value_states = torch.repeat_interleave(value_states, repeats=repeat_num, dim=2)
+
     query_states = query_states.transpose(1, 2)
     key_states = key_states.transpose(1, 2)
     value_states = value_states.transpose(1, 2)
+
+    sdpa_kwargs = {
+        "attn_mask": streaming_causal_mask[:, :, :seq_len, :seq_len],
+        "dropout_p": 0.0,
+    }
+    if supports_enable_gqa:
+        sdpa_kwargs["enable_gqa"] = True
 
     streaming_attn_output = torch.nn.functional.scaled_dot_product_attention(
         query_states,
         key_states,
         value_states,
-        attn_mask=streaming_causal_mask[:, :, :seq_len, :seq_len],
-        dropout_p=0.0,
-        enable_gqa=True,
+        **sdpa_kwargs,
     )
 
     return streaming_attn_output.transpose(1, 2)

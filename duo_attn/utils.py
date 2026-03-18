@@ -24,6 +24,20 @@ def parse_args():
         default="/home/guangxuanx/datasets/Long-Data-Collections/pretrain/pile_sub.jsonl.zst",
     )
     parser.add_argument("--dataset_format", type=str, default="multiple_passkey")
+    parser.add_argument(
+        "--video_root",
+        type=str,
+        default="./vnbench_data/VNBench_new/",
+    )
+    parser.add_argument(
+        "--annotation_path",
+        type=str,
+        default="./vnbench_data/anno.jsonl",
+    )
+    parser.add_argument("--num_frames", type=int, default=64)
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--disable_video_chat_template", action="store_true")
+    parser.add_argument("--video_answer_prefix", type=str, default="The secret word is: ")
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--lr", type=float, default=1e-1)
     parser.add_argument("--num_steps", type=int, default=1000)
@@ -52,6 +66,7 @@ def parse_args():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--rope_theta", type=float, default=None)
     parser.add_argument("--device", type=str, default="0")
+    parser.add_argument("--disable_fsdp_root_shard", action="store_true")
     parser.add_argument(
         "--streaming_attn_implementation", type=str, default="blocksparse"
     )
@@ -358,15 +373,14 @@ def sparsify_attention_heads(full_attention_heads, threshold=None, sparsity=None
         # ignore the threshold and use the sparsity
         # set the sparsity small values to 0 and others to 1
         threshold = np.quantile(full_attention_heads, sparsity)
+        if sparsity >= 1:
+            # all heads are pruned
+            threshold = 2
+        if sparsity <= 0:
+            # no heads are pruned
+            threshold = -1
     else:
         assert threshold is not None, "Either threshold or sparsity must be provided"
-
-    if sparsity >= 1:
-        # all heads are pruned
-        threshold = 2
-    if sparsity <= 0:
-        # no heads are pruned
-        threshold = -1
 
     full_attention_heads = (full_attention_heads >= threshold).astype(float)
     sparsity = 1 - np.mean(full_attention_heads)
