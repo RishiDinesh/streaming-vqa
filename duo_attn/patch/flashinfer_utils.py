@@ -1,5 +1,6 @@
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 from transformers.models.mistral.modeling_mistral import MistralRMSNorm
+from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
 import torch
 import flashinfer
 import types
@@ -22,6 +23,8 @@ def enable_flashinfer_rmsnorm(model):
         if isinstance(module, LlamaRMSNorm):
             module.forward = types.MethodType(flashinfer_rmsnorm_forward, module)
         elif isinstance(module, MistralRMSNorm):
+            module.forward = types.MethodType(flashinfer_rmsnorm_forward, module)
+        elif isinstance(module, Qwen2RMSNorm):
             module.forward = types.MethodType(flashinfer_rmsnorm_forward, module)
     return model
 
