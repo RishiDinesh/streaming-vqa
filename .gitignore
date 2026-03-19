@@ -1,5 +1,6 @@
 dataset/
-vnbench_data/
+datasets/
+outputs/
 untracked/
 logs/
 
