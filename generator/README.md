@@ -6,20 +6,18 @@ We have upgraded the training dataloader to generate multi-needle video data dyn
 First, download the raw unedited video pool directly to the cluster (500 videos, ~76.5s average length). We have a pre-configured script for this.
 ```bash
 pip install gdown
-cd synthetic-video-gen
-./download_from_gdrive.sh
+./duo_attn/scripts/download_from_gdrive.sh
 ```
-This will automatically pull the ZIP from Google Drive and neatly extract exactly 500 numbered `.mp4` background videos into `synthetic-video-gen/source_videos/unedited_500`.
+This will automatically pull the ZIP from Google Drive and neatly extract exactly 500 numbered `.mp4` background videos into `video_ds/unedited_500` at the project root.
 
 ## Step 2: Training Command
 Run your standard training cluster script (`run_train.sh`) but ensure it points to the unedited source root and includes the dynamic flags. 
-You must add the `--dynamic_synthetic` flag to tell the training loop to initialize the dynamic generator instead of looking for a static JSON.
 
 ```bash
 # Example snippet inside run_train.sh
 python -m duo_attn.train \
-    --dynamic_synthetic \
-    --video_root synthetic-video-gen/source_videos/unedited_500 \
+    --video_dataset_name dynamic_synthetic \
+    --video_root video_ds/unedited_500 \
     --num_needles 5 \
     --min_needle_depth_ratio 0.2 \
     --max_needle_depth_ratio 0.8 \
@@ -28,8 +26,7 @@ python -m duo_attn.train \
 
 ## Configurable Parameters
 
-*   `--dynamic_synthetic`: **[Required]** Main toggle that intercepts the `create_video_qa_dataloader` pipeline and boots up the `DynamicSyntheticVideoQADataset` generator.
-*   `--video_root`: Must point to the unedited background videos folder (`synthetic-video-gen/source_videos/unedited_500`).
+*   `--video_root`: Must point to the unedited background videos folder (`video_ds/unedited_500`).
 *   `--num_needles`: Defines how many distinct secret words are inserted into the video sample. (Default: `5`)
 *   `--min_needle_depth_ratio` / `--max_needle_depth_ratio`: Controls the valid temporal interval where needles drop. e.g. `0.2` to `0.8` restricts needles from popping up in the first and last 20% of the parsed frames. 
 *   `--frame_idx`: **[Optional]** Allows you to explicitly lock the exact frame insertions rather than relying on randomized depth ratios. Pass a space-separated list of exact frame indices matching your `num_needles` count. *(Example: If `--num_frames 64`, `--num_needles 3`, you can pass `--frame_idx 10 32 50` to force needles strictly onto the 11th, 33rd, and 51st sampled frames).*

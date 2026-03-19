@@ -463,7 +463,7 @@ if __name__ == "__main__":
                     "(VNBench-style, DuoAttention-aligned)."
     )
     parser.add_argument("--num_videos", type=int, default=2000)
-    parser.add_argument("--source_videos_dir", type=str, default="source_videos/extracted")
+    parser.add_argument("--source_videos_dir", type=str, default="datasets/extracted")
     parser.add_argument("--output_dir", type=str, default="synthetic_dataset")
 
     # Video length parameters — long enough to fill 32k context at ~196 tok/frame

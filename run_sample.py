@@ -4,7 +4,7 @@ from typing import Dict
 import torch
 from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 
-from duo_attn.loader import create_video_qa_dataloader
+from duo_attn.data import create_video_qa_dataloader
 
 
 def parse_args() -> argparse.Namespace:

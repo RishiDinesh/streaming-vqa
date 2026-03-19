@@ -7,15 +7,15 @@ import numpy as np
 # Add the parent directory to sys.path so we can import duo_attn
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from duo_attn.loader import DynamicSyntheticVideoQADataset
+from duo_attn.data import DynamicSyntheticVideoQADataset
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video_root", type=str, default="synthetic-video-gen/source_videos/extracted")
+    parser.add_argument("--video_root", type=str, default="datasets/extracted")
     parser.add_argument("--num_videos", type=int, default=3)
     parser.add_argument("--num_frames", type=int, default=64)
     parser.add_argument("--num_needles", type=int, default=5)
-    parser.add_argument("--output_dir", type=str, default="synthetic-video-gen/verification_output")
+    parser.add_argument("--output_dir", type=str, default="datasets/verification_output")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

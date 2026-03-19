@@ -116,7 +116,7 @@ def main():
     parser.add_argument("--num_videos", type=int, default=500,
                         help="Target number of videos to download")
     parser.add_argument("--output_dir", type=str,
-                        default="source_videos/extracted/pexels",
+                        default="datasets/extracted/pexels",
                         help="Output directory for downloaded videos")
     parser.add_argument("--min_duration", type=int, default=15,
                         help="Minimum video duration in seconds")

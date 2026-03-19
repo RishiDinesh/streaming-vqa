@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoConfig
 
-from duo_attn.loader import create_video_qa_dataloader
+from duo_attn.data import create_video_qa_dataloader
 
 
 def resolve_cuda_device(device_arg) -> torch.device:

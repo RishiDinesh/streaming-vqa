@@ -17,7 +17,7 @@ from duo_attn.data import (
     MultiplePasskeyRetrievalDataset,
     get_supervised_dataloader,
 )
-from duo_attn.loader import create_video_qa_dataloader
+from duo_attn.data import create_video_qa_dataloader
 from duo_attn.patch import (
     enable_duo_attention_training,
     get_full_attention_heads,
@@ -552,20 +552,19 @@ def main(args):
 
         train_dataloader = create_video_qa_dataloader(
             video_root=args.video_root,
+            dataset_name=args.dataset_name,
             annotation_path=args.annotation_path,
             processor=processor,
             model_id=args.model_name,
             num_frames=args.num_frames,
             max_length=args.max_length,
             use_chat_template=not args.disable_video_chat_template,
-            answer_prefix=args.video_answer_prefix,
             batch_size=args.batch_size,
             shuffle=True,
             num_workers=args.num_workers,
             pin_memory=torch.cuda.is_available(),
             drop_last=False,
             pad_to_multiple_of=world_size,
-            dynamic_synthetic=args.dynamic_synthetic,
             num_needles=args.num_needles,
             min_depth_ratio=args.min_needle_depth_ratio,
             max_depth_ratio=args.max_needle_depth_ratio,
