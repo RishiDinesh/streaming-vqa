@@ -565,6 +565,11 @@ def main(args):
             pin_memory=torch.cuda.is_available(),
             drop_last=False,
             pad_to_multiple_of=world_size,
+            dynamic_synthetic=args.dynamic_synthetic,
+            num_needles=args.num_needles,
+            min_depth_ratio=args.min_needle_depth_ratio,
+            max_depth_ratio=args.max_needle_depth_ratio,
+            frame_idx=args.frame_idx,
         )
     else:
         raise ValueError(f"Invalid dataset format: {args.dataset_format}")

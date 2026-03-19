@@ -3,6 +3,14 @@ vnbench_data/
 untracked/
 logs/
 
+# Synthetic video gen — large files
+# Ignore all data and output folders, only track code
+synthetic-video-gen/*
+!synthetic-video-gen/*.py
+!synthetic-video-gen/*.sh
+!synthetic-video-gen/fonts/
+!synthetic-video-gen/README*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
