@@ -412,6 +412,24 @@ def main(args):
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
+    run_str = ""
+    run_str = "0p5b" if "0.5b" in args.model_name else "7b"
+    run_str += f"_sink{args.sink_size}_recent{args.recent_size}_maxlen{args.max_length}"
+    if args.dataset_format == "video_qa":
+        run_str += f"_frames{args.num_frames}"
+        run_str += f"_depth{args.min_needle_depth_ratio}-{args.max_needle_depth_ratio}_needles{args.num_needles}"
+    run_str = run_str.replace(".", "p")
+    
+    if args.use_wandb_run_name_for_output_dir:
+        if args.exp_name is not None:
+            args.output_dir = os.path.join(args.output_dir, args.exp_name)
+        else:
+            args.output_dir = os.path.join(args.output_dir, run_str)
+            args.exp_name = run_str
+    else:
+        if args.exp_name is not None:
+            run_str = args.exp_name
+
     if rank == 0:
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
@@ -592,7 +610,8 @@ def main(args):
             wandb.init(project="DuoAttention", config=experiment_config)
             if args.exp_name is not None:
                 wandb.run.name = args.exp_name
-
+            else:
+                wandb.run.name = run_str
         if args.output_dir is not None:
             with open(os.path.join(args.output_dir, "config.json"), "w") as f:
                 json.dump(experiment_config, f)

@@ -63,6 +63,7 @@ def parse_args():
     training_group.add_argument("--gradient_accumulation_steps", type=int, default=1)
     training_group.add_argument("--save_steps", type=int, default=50)
     training_group.add_argument("--output_dir", type=str, default="outputs")
+    training_group.add_argument("--use_wandb_run_name_for_output_dir", action="store_true")
     training_group.add_argument("--resume", action="store_true")
     training_group.add_argument("--sink_size", type=int, default=64)
     training_group.add_argument("--recent_size", type=int, default=256)
