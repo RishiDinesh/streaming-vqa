@@ -215,3 +215,4 @@ weights/
 data/
 models/
 benchmark_results_llava/
+long_prompt.txt
