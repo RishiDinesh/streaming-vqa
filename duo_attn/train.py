@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import torch
 from tqdm import tqdm
 import json
@@ -17,7 +18,7 @@ from duo_attn.data import (
     MultiplePasskeyRetrievalDataset,
     get_supervised_dataloader,
 )
-from duo_attn.loader import create_video_qa_dataloader
+from duo_attn.data import create_video_qa_dataloader
 from duo_attn.patch import (
     enable_duo_attention_training,
     get_full_attention_heads,
@@ -80,7 +81,22 @@ def apply_fsdp(
 
 def _materialize_full_tensor(x: torch.Tensor) -> torch.Tensor:
     if hasattr(x, "full_tensor"):
-        return x.full_tensor()
+        try:
+            return x.full_tensor()
+        except RuntimeError as exc:
+            if (
+                "allgather_into_tensor_coalesced" not in str(exc)
+                or not dist.is_available()
+                or not dist.is_initialized()
+                or not hasattr(x, "to_local")
+            ):
+                raise
+
+            # Fallback for NCCL builds that do not support the coalesced DTensor all-gather.
+            local = x.to_local().contiguous()
+            gathered = [torch.empty_like(local) for _ in range(dist.get_world_size())]
+            dist.all_gather(gathered, local)
+            return torch.cat(gathered, dim=0)
     return x
 
 
@@ -317,12 +333,12 @@ def train(
             optimizer.zero_grad()
 
             global_step += 1
+            full_attention_heads_for_logging = get_full_attention_heads(model)
+            full_attention_heads_for_logging = [
+                _materialize_full_tensor(h).detach().clone()
+                for h in full_attention_heads_for_logging
+            ]
             if rank == 0:
-                full_attention_heads_for_logging = get_full_attention_heads(model)
-                full_attention_heads_for_logging = [
-                    _materialize_full_tensor(h).detach().clone()
-                    for h in full_attention_heads_for_logging
-                ]
                 full_attention_heads_list = full_attention_heads_to_list(
                     full_attention_heads_for_logging
                 )
@@ -396,6 +412,49 @@ def main(args):
     local_rank = int(os.environ["LOCAL_RANK"])
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
+
+    torch.cuda.set_device(local_rank)
+    setup()
+
+    run_str = "0p5b" if "0.5b" in args.model_name else "7b"
+    run_str += f"_sink{args.sink_size}_recent{args.recent_size}_maxlen{args.max_length}"
+    if args.dataset_format == "video_qa":
+        run_str += f"_frames{args.num_frames}"
+        run_str += f"_depth{args.min_needle_depth_ratio}-{args.max_needle_depth_ratio}_needles{args.num_needles}"
+    run_str = run_str.replace(".", "p")
+
+    if rank == 0:
+        if args.resume and args.output_dir is not None and os.path.isdir(args.output_dir):
+            run_prefix = f"{run_str}_"
+            matching_runs = sorted(
+                run_dir
+                for run_dir in os.listdir(args.output_dir)
+                if run_dir.startswith(run_prefix)
+                and os.path.isdir(os.path.join(args.output_dir, run_dir))
+            )
+            if len(matching_runs) > 0:
+                run_str = matching_runs[-1]
+                print(f"Resuming from latest matching run directory: {run_str}")
+            else:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                run_str = f"{run_str}_{timestamp}"
+                print(
+                    f"No matching run directories found for '{run_prefix}' under {args.output_dir}; "
+                    f"starting a new run: {run_str}"
+                )
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_str = f"{run_str}_{timestamp}"
+    else:
+        run_str = None
+
+    run_str_obj = [run_str]
+    dist.broadcast_object_list(run_str_obj, src=0)
+    run_str = run_str_obj[0]
+    args.run_name = run_str
+
+    if args.output_dir is not None:
+        args.output_dir = os.path.join(args.output_dir, run_str)
 
     if rank == 0:
         if args.output_dir is not None:
@@ -471,9 +530,6 @@ def main(args):
             param.requires_grad = True
             num_attn_heads += param.numel()
 
-    setup()
-
-    torch.cuda.set_device(local_rank)
     mp_policy = MixedPrecisionPolicy(
         param_dtype=torch.bfloat16,
         reduce_dtype=torch.bfloat16,
@@ -537,18 +593,23 @@ def main(args):
 
         train_dataloader = create_video_qa_dataloader(
             video_root=args.video_root,
+            dataset_name=args.dataset_name,
             annotation_path=args.annotation_path,
             processor=processor,
             model_id=args.model_name,
             num_frames=args.num_frames,
             max_length=args.max_length,
             use_chat_template=not args.disable_video_chat_template,
-            answer_prefix=args.video_answer_prefix,
             batch_size=args.batch_size,
             shuffle=True,
             num_workers=args.num_workers,
             pin_memory=torch.cuda.is_available(),
             drop_last=False,
+            pad_to_multiple_of=world_size,
+            num_needles=args.num_needles,
+            min_depth_ratio=args.min_needle_depth_ratio,
+            max_depth_ratio=args.max_needle_depth_ratio,
+            frame_idx=args.frame_idx,
         )
     else:
         raise ValueError(f"Invalid dataset format: {args.dataset_format}")
@@ -570,9 +631,7 @@ def main(args):
         experiment_config = vars(args)
         if not args.disable_wandb:
             wandb.init(project="DuoAttention", config=experiment_config)
-            if args.exp_name is not None:
-                wandb.run.name = args.exp_name
-
+            wandb.run.name = run_str
         if args.output_dir is not None:
             with open(os.path.join(args.output_dir, "config.json"), "w") as f:
                 json.dump(experiment_config, f)

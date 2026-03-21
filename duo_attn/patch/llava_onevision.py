@@ -29,6 +29,12 @@ from .tuple_kv_cache import (
     enable_tuple_kv_cache_for_qwen2_eval,
     enable_tuple_kv_cache_for_llava_onevision_eval,
 )
+from .static_kv_cache import (
+    DuoAttentionStaticKVCache,
+    enable_duo_attention_static_kv_cache_for_qwen2,
+    enable_duo_attention_static_kv_cache_for_llava_onevision,
+)
+from .flashinfer_utils import enable_flashinfer_rmsnorm
 
 from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
 from flash_attn import flash_attn_func
@@ -309,6 +315,129 @@ def qwen2_duo_attention_forward_one_way_reordered(
     return attn_output, attn_weights, past_key_value
 
 
+def qwen2_duo_attention_forward_one_way_reordered_static(
+    self,
+    hidden_states: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    kv_cache: Optional[DuoAttentionStaticKVCache] = None,
+    layer_idx: int = None,
+    output_attentions: bool = False,
+    use_cache: bool = False,
+    cache_position: Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    **kwargs,
+):
+    bsz, q_len, _ = hidden_states.size()
+
+    query_states = self.q_proj(hidden_states)
+    key_states = self.k_proj(hidden_states)
+    value_states = self.v_proj(hidden_states)
+
+    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim)
+    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)
+    value_states = value_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    )
+
+    kv_seq_len = q_len
+    if kv_cache is not None:
+        kv_seq_len += kv_cache.kv_seq_len
+
+    if position_embeddings is None:
+        cos, sin = self.rotary_emb(value_states, position_ids)
+    else:
+        cos, sin = position_embeddings
+
+    query_states, key_states = apply_rotary_pos_emb(
+        query_states,
+        key_states,
+        cos,
+        sin,
+        unsqueeze_dim=2,
+    )
+
+    (
+        full_key_states,
+        full_value_states,
+        streaming_key_states,
+        streaming_value_states,
+    ) = kv_cache.split_kv(layer_idx, key_states, value_states)
+    full_key_states, full_value_states = kv_cache.put_full_kv(
+        layer_idx, full_key_states, full_value_states
+    )
+
+    if q_len == kv_seq_len:
+        attn_output = flash_attn_func(
+            query_states,
+            key_states,
+            value_states,
+            causal=True,
+            dropout_p=0.0,
+        )
+    else:
+        num_full_query_head = (
+            kv_cache.num_full_kv_head_list[layer_idx] * self.num_key_value_groups
+        )
+
+        (
+            cached_streaming_key_states,
+            cached_streaming_value_states,
+        ) = kv_cache.get_streaming_kv(layer_idx)
+
+        streaming_key_states = torch.cat(
+            [cached_streaming_key_states, streaming_key_states], dim=1
+        )
+        streaming_value_states = torch.cat(
+            [cached_streaming_value_states, streaming_value_states], dim=1
+        )
+
+        if num_full_query_head > 0:
+            full_query_states = query_states[:, :, :num_full_query_head, :]
+            full_attn_output = flash_attn_func(
+                full_query_states,
+                full_key_states,
+                full_value_states,
+                causal=True,
+                dropout_p=0.0,
+            )
+        else:
+            full_attn_output = None
+
+        if self.num_heads - num_full_query_head > 0:
+            streaming_query_states = query_states[:, :, num_full_query_head:, :]
+            streaming_attn_output = flash_attn_func(
+                streaming_query_states,
+                streaming_key_states,
+                streaming_value_states,
+                causal=True,
+                dropout_p=0.0,
+            )
+        else:
+            streaming_attn_output = None
+
+        if full_attn_output is None:
+            attn_output = streaming_attn_output
+        elif streaming_attn_output is None:
+            attn_output = full_attn_output
+        else:
+            attn_output = torch.cat([full_attn_output, streaming_attn_output], dim=2)
+
+    kv_cache.compress_and_replace_streaming_kv(
+        layer_idx, streaming_key_states, streaming_value_states
+    )
+
+    attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+    attn_output = self.o_proj(attn_output)
+
+    if not output_attentions:
+        attn_weights = None
+    else:
+        attn_weights = None
+
+    return attn_output, attn_weights
+
+
 def _get_qwen2_layers(model):
     if isinstance(model, Qwen2ForCausalLM):
         return model.model.layers
@@ -441,6 +570,49 @@ def _enable_qwen2_layers_duo_attention_eval(
         module.register_buffer("full_attention_heads", layer_full_attention_heads)
 
 
+def _enable_qwen2_layers_duo_attention_static_kv_cache_eval(
+    layers,
+    full_attention_heads,
+):
+    first_module = layers[0].self_attn
+    device = first_module.q_proj.weight.device
+    dtype = first_module.q_proj.weight.dtype
+
+    for idx, layer in enumerate(layers):
+        module = layer.self_attn
+        layer_full_attention_heads = torch.tensor(
+            full_attention_heads[idx], device=device, dtype=dtype
+        )
+
+        module.forward = types.MethodType(
+            qwen2_duo_attention_forward_one_way_reordered_static, module
+        )
+        module.q_proj = reorder_linear_weights(
+            module.q_proj,
+            layer_full_attention_heads,
+            module.num_key_value_groups * module.head_dim,
+            "out",
+        )
+        module.k_proj = reorder_linear_weights(
+            module.k_proj,
+            layer_full_attention_heads,
+            module.head_dim,
+            "out",
+        )
+        module.v_proj = reorder_linear_weights(
+            module.v_proj,
+            layer_full_attention_heads,
+            module.head_dim,
+            "out",
+        )
+        module.o_proj = reorder_linear_weights(
+            module.o_proj,
+            layer_full_attention_heads,
+            module.num_key_value_groups * module.head_dim,
+            "in",
+        )
+
+
 def enable_qwen2_duo_attention_training(
     model,
     sink_size,
@@ -510,6 +682,30 @@ def enable_llava_onevision_duo_attention_eval(
         full_attention_heads,
         sink_size,
         recent_size,
+    )
+
+
+def enable_qwen2_duo_attention_static_kv_cache_eval(
+    model,
+    full_attention_heads,
+):
+    enable_duo_attention_static_kv_cache_for_qwen2(model)
+    enable_flashinfer_rmsnorm(model)
+    _enable_qwen2_layers_duo_attention_static_kv_cache_eval(
+        _get_qwen2_layers(model),
+        full_attention_heads,
+    )
+
+
+def enable_llava_onevision_duo_attention_static_kv_cache_eval(
+    model: LlavaOnevisionForConditionalGeneration,
+    full_attention_heads,
+):
+    enable_duo_attention_static_kv_cache_for_llava_onevision(model)
+    enable_flashinfer_rmsnorm(model)
+    _enable_qwen2_layers_duo_attention_static_kv_cache_eval(
+        _get_qwen2_layers(model),
+        full_attention_heads,
     )
 
 
