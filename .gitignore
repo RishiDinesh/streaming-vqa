@@ -1,6 +1,6 @@
 dataset/
 datasets/
-outputs/
+outputs/*/*step*
 untracked/
 logs/
 
