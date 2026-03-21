@@ -1,0 +1,279 @@
+{
+  "summary": {
+    "baseline_accuracy_full": 0.84,
+    "baseline_exact_match_count": 42,
+    "baseline_processed_samples": 50,
+    "ratios": [
+      0,
+      10,
+      20,
+      30,
+      40,
+      50,
+      60,
+      70,
+      80,
+      90,
+      100
+    ],
+    "streaming_pool_size": 24,
+    "retrieval_pool_size": 24,
+    "actual_sparsity": 0.5,
+    "sink_size": 512,
+    "recent_size": 1024,
+    "num_layers": 24,
+    "num_heads_per_layer": 2,
+    "total_heads": 48
+  },
+  "diagnostics": {
+    "streaming_run_max_abs_drop": 0.040000000000000036,
+    "retrieval_run_drop_at_100": 0.7999999999999999,
+    "retrieval_minus_streaming_drop_at_100": 0.82
+  },
+  "results": [
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 0,
+      "pool_size": 24,
+      "num_heads_set_streaming": 0,
+      "accuracy": 0.84,
+      "delta_vs_full_baseline": 0.0,
+      "exact_match_count": 42,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 0,
+      "pool_size": 24,
+      "num_heads_set_streaming": 0,
+      "accuracy": 0.84,
+      "delta_vs_full_baseline": 0.0,
+      "exact_match_count": 42,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 10,
+      "pool_size": 24,
+      "num_heads_set_streaming": 2,
+      "accuracy": 0.84,
+      "delta_vs_full_baseline": 0.0,
+      "exact_match_count": 42,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 10,
+      "pool_size": 24,
+      "num_heads_set_streaming": 2,
+      "accuracy": 0.84,
+      "delta_vs_full_baseline": 0.0,
+      "exact_match_count": 42,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 20,
+      "pool_size": 24,
+      "num_heads_set_streaming": 5,
+      "accuracy": 0.88,
+      "delta_vs_full_baseline": 0.040000000000000036,
+      "exact_match_count": 44,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 20,
+      "pool_size": 24,
+      "num_heads_set_streaming": 5,
+      "accuracy": 0.84,
+      "delta_vs_full_baseline": 0.0,
+      "exact_match_count": 42,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 30,
+      "pool_size": 24,
+      "num_heads_set_streaming": 7,
+      "accuracy": 0.88,
+      "delta_vs_full_baseline": 0.040000000000000036,
+      "exact_match_count": 44,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 30,
+      "pool_size": 24,
+      "num_heads_set_streaming": 7,
+      "accuracy": 0.78,
+      "delta_vs_full_baseline": -0.05999999999999994,
+      "exact_match_count": 39,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 40,
+      "pool_size": 24,
+      "num_heads_set_streaming": 10,
+      "accuracy": 0.86,
+      "delta_vs_full_baseline": 0.020000000000000018,
+      "exact_match_count": 43,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 40,
+      "pool_size": 24,
+      "num_heads_set_streaming": 10,
+      "accuracy": 0.6,
+      "delta_vs_full_baseline": -0.24,
+      "exact_match_count": 30,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 50,
+      "pool_size": 24,
+      "num_heads_set_streaming": 12,
+      "accuracy": 0.86,
+      "delta_vs_full_baseline": 0.020000000000000018,
+      "exact_match_count": 43,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 50,
+      "pool_size": 24,
+      "num_heads_set_streaming": 12,
+      "accuracy": 0.52,
+      "delta_vs_full_baseline": -0.31999999999999995,
+      "exact_match_count": 26,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 60,
+      "pool_size": 24,
+      "num_heads_set_streaming": 14,
+      "accuracy": 0.88,
+      "delta_vs_full_baseline": 0.040000000000000036,
+      "exact_match_count": 44,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 60,
+      "pool_size": 24,
+      "num_heads_set_streaming": 14,
+      "accuracy": 0.18,
+      "delta_vs_full_baseline": -0.6599999999999999,
+      "exact_match_count": 9,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 70,
+      "pool_size": 24,
+      "num_heads_set_streaming": 17,
+      "accuracy": 0.86,
+      "delta_vs_full_baseline": 0.020000000000000018,
+      "exact_match_count": 43,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 70,
+      "pool_size": 24,
+      "num_heads_set_streaming": 17,
+      "accuracy": 0.06,
+      "delta_vs_full_baseline": -0.78,
+      "exact_match_count": 3,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 80,
+      "pool_size": 24,
+      "num_heads_set_streaming": 19,
+      "accuracy": 0.86,
+      "delta_vs_full_baseline": 0.020000000000000018,
+      "exact_match_count": 43,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 80,
+      "pool_size": 24,
+      "num_heads_set_streaming": 19,
+      "accuracy": 0.04,
+      "delta_vs_full_baseline": -0.7999999999999999,
+      "exact_match_count": 2,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 90,
+      "pool_size": 24,
+      "num_heads_set_streaming": 22,
+      "accuracy": 0.86,
+      "delta_vs_full_baseline": 0.020000000000000018,
+      "exact_match_count": 43,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 90,
+      "pool_size": 24,
+      "num_heads_set_streaming": 22,
+      "accuracy": 0.04,
+      "delta_vs_full_baseline": -0.7999999999999999,
+      "exact_match_count": 2,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "streaming_first",
+      "ratio_percent": 100,
+      "pool_size": 24,
+      "num_heads_set_streaming": 24,
+      "accuracy": 0.86,
+      "delta_vs_full_baseline": 0.020000000000000018,
+      "exact_match_count": 43,
+      "processed_samples": 50
+    },
+    {
+      "run_name": "retrieval_first",
+      "ratio_percent": 100,
+      "pool_size": 24,
+      "num_heads_set_streaming": 24,
+      "accuracy": 0.04,
+      "delta_vs_full_baseline": -0.7999999999999999,
+      "exact_match_count": 2,
+      "processed_samples": 50
+    }
+  ],
+  "warnings": [],
+  "args": {
+    "model_name": "llava-hf/llava-onevision-qwen2-0.5b-ov-hf",
+    "video_root": "./datasets/vnbench/videos",
+    "annotation_path": "./datasets/vnbench/anno.jsonl",
+    "num_frames": 128,
+    "max_length": 32000,
+    "batch_size": 1,
+    "num_workers": 0,
+    "n_samples": 50,
+    "max_new_tokens": 64,
+    "disable_video_chat_template": false,
+    "video_answer_prefix": "",
+    "attn_load_dir": "./outputs/0p5b_sink512_recent1024_maxlen32000_frames128_depth0p1-0p8_needles5",
+    "threshold": null,
+    "sparsity": 0.5,
+    "seed": 42,
+    "device": "auto",
+    "dtype": "float16",
+    "output_json": "./outputs/validation/0p5b_sink512_recent1024_maxlen32000_frames128_depth0p1-0p8_needles5_val/retrieval_pool_ratio_ablation.json",
+    "output_csv": "./outputs/validation/0p5b_sink512_recent1024_maxlen32000_frames128_depth0p1-0p8_needles5_val/retrieval_pool_ratio_ablation.csv",
+    "output_plot": "./outputs/validation/0p5b_sink512_recent1024_maxlen32000_frames128_depth0p1-0p8_needles5_val/retrieval_pool_ratio_ablation_plot.png",
+    "enable_sdpa_fallback_patch": false
+  }
+}
