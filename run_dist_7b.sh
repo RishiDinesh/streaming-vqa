@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=train-dist
+#SBATCH --job-name=train-7b
 #SBATCH --partition=gpunodes
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:rtx_4090:1
+#SBATCH --gres=gpu:rtx_a6000:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=15G
-#SBATCH --time=1-00:00:00
+#SBATCH --mem=30G
+#SBATCH --time=2-00:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --mail-user=rishidinesh@cs.toronto.edu
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -44,8 +44,8 @@ srun bash -lc '
       --min_needle_depth_ratio 0.1 \
       --max_needle_depth_ratio 0.8 \
       --num_needles 1 \
-      --model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
-      --num_steps 1000 \
+      --model_name llava-hf/llava-onevision-qwen2-7b-ov-hf \
+      --num_steps 500 \
       --sink_size 512 \
       --recent_size 1024 \
       --streaming_attn_implementation blocksparse

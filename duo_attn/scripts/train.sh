@@ -7,8 +7,7 @@ ctx_len_max=${3}
 reg_weight=${4}
 lr=${5}
 num_passkey=${6}
-setting="lr=${lr}-reg=${reg_weight}-ctx=${ctx_len_min}_${ctx_len_max}-multi_passkey${num_passkey}"
-exp_name=${model_name}/${setting}
+output_root=attn_patterns/${model_name}
 
 torchrun --nnodes 1 --nproc_per_node 8 \
     duo_attn/train.py \
@@ -21,7 +20,6 @@ torchrun --nnodes 1 --nproc_per_node 8 \
     --num_steps 2000 \
     --lr ${lr} \
     --reg_weight ${reg_weight} \
-    --exp_name $exp_name \
     --min_needle_depth_ratio 0.05 \
     --max_needle_depth_ratio 0.95 \
     --context_length_min ${ctx_len_min} \
@@ -31,4 +29,4 @@ torchrun --nnodes 1 --nproc_per_node 8 \
     --gradient_accumulation_steps 1 \
     --num_passkey ${num_passkey} \
     --dataset_format "multiple_passkey" \
-    --output_dir attn_patterns/${exp_name}
+    --output_dir ${output_root}

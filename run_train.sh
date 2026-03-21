@@ -20,7 +20,7 @@ NUM_STEPS=${NUM_STEPS:-1000}
 SAVE_STEPS=${SAVE_STEPS:-50}
 LR=${LR:-1e-1}
 
-/w/nobackup/385/scratch-space/expires-2026-Mar-27/rishi/.conda/envs/mmda-cuda124/bin/torchrun --nproc_per_node=1 duo_attn/train.py \
+/w/nobackup/385/scratch-space/expires-2026-Mar-27/rishi/.conda/envs/mmda-cuda124/bin/torchrun --nproc_per_node=1 --module duo_attn.train \
   --model_name "${MODEL_NAME}" \
   --dataset_format video_qa \
   --video_root "${VIDEO_ROOT}" \
