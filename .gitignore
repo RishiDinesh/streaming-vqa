@@ -1,7 +1,16 @@
 dataset/
-vnbench_data/
+datasets/
+outputs/*/*step*
 untracked/
 logs/
+
+# Synthetic video gen — large files
+# Ignore all data and output folders, only track code
+synthetic-video-gen/*
+!synthetic-video-gen/*.py
+!synthetic-video-gen/*.sh
+!synthetic-video-gen/fonts/
+!synthetic-video-gen/README*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -216,3 +225,11 @@ data/
 models/
 benchmark_results_llava/
 long_prompt.txt
+# macOS specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+Network Trash Folder
+Temporary Items
+.apdisk

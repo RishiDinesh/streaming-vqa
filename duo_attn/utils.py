@@ -12,66 +12,71 @@ import json
 def parse_args():
     parser = argparse.ArgumentParser(description="kv_reduction")
 
-    parser.add_argument(
-        "--model_name", type=str, default="/home/guangxuanx/models/LLaMA-2-7B-32K"
-    )
-    parser.add_argument("--config_name", type=str, default=None)
+    # Dataset params (shared)
+    dataset_group = parser.add_argument_group("Dataset")
+    dataset_group.add_argument("--dataset_format", type=str, default="video_qa")
+    dataset_group.add_argument("--dataset_name", type=str, default="dynamic_synthetic")
+    dataset_group.add_argument("--split", type=str, default="train")
+    dataset_group.add_argument("--max_length", type=int, default=4096)
+    dataset_group.add_argument("--num_workers", type=int, default=4)
+    dataset_group.add_argument("--batch_size", type=int, default=1)
 
-    # train params
-    parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default="/home/guangxuanx/datasets/Long-Data-Collections/pretrain/pile_sub.jsonl.zst",
-    )
-    parser.add_argument("--dataset_format", type=str, default="multiple_passkey")
-    parser.add_argument(
-        "--video_root",
-        type=str,
-        default="./vnbench_data/VNBench_new/",
-    )
-    parser.add_argument(
-        "--annotation_path",
-        type=str,
-        default="./vnbench_data/anno.jsonl",
-    )
-    parser.add_argument("--num_frames", type=int, default=64)
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--disable_video_chat_template", action="store_true")
-    parser.add_argument("--video_answer_prefix", type=str, default="The secret word is: ")
-    parser.add_argument("--split", type=str, default="train")
-    parser.add_argument("--lr", type=float, default=1e-1)
-    parser.add_argument("--num_steps", type=int, default=1000)
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--max_length", type=int, default=4096)
-    parser.add_argument("--context_length_min", type=int, default=1024)
-    parser.add_argument("--context_length_max", type=int, default=4096)
-    parser.add_argument("--context_lengths_num_intervals", type=int, default=20)
-    parser.add_argument("--depth_ratio_num_intervals", type=int, default=10)
-    parser.add_argument("--num_passkeys", type=int, default=10)
-    parser.add_argument("--output_dir", type=str, default="outputs")
-    parser.add_argument("--sink_size", type=int, default=64)
-    parser.add_argument("--recent_size", type=int, default=256)
-    parser.add_argument("--deploy_sink_size", type=int, default=None)
-    parser.add_argument("--deploy_recent_size", type=int, default=None)
-    parser.add_argument("--reg_weight", type=float, default=0.05)
-    parser.add_argument("--initial_value", type=float, default=1.0)
-    parser.add_argument("--exp_name", type=str, default=None)
-    parser.add_argument("--enable_pp", action="store_true")
-    parser.add_argument("--enable_tp", action="store_true")
-    parser.add_argument("--disable_wandb", action="store_true")
-    parser.add_argument("--min_needle_depth_ratio", type=float, default=0)
-    parser.add_argument("--max_needle_depth_ratio", type=float, default=1.0)
-    parser.add_argument("--save_steps", type=int, default=50)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
-    parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--rope_theta", type=float, default=None)
-    parser.add_argument("--device", type=str, default="0")
-    parser.add_argument("--disable_fsdp_root_shard", action="store_true")
-    parser.add_argument(
-        "--streaming_attn_implementation", type=str, default="blocksparse"
+    # Dataset params (text passkey)
+    text_passkey_group = parser.add_argument_group("Dataset: Text Passkey")
+    text_passkey_group.add_argument("--context_length_min", type=int, default=1024)
+    text_passkey_group.add_argument("--context_length_max", type=int, default=4096)
+    text_passkey_group.add_argument("--context_lengths_num_intervals", type=int, default=20)
+    text_passkey_group.add_argument("--depth_ratio_num_intervals", type=int, default=10)
+    text_passkey_group.add_argument("--num_passkeys", type=int, default=10)
+
+    # Dataset params (video QA)
+    video_qa_group = parser.add_argument_group("Dataset: Video QA")
+    video_qa_group.add_argument("--video_root", type=str, default="./datasets/vnbench/videos")
+    video_qa_group.add_argument("--annotation_path", type=str, default="./datasets/vnbench/anno.jsonl")
+    video_qa_group.add_argument("--num_frames", type=int, default=64)
+    video_qa_group.add_argument("--disable_video_chat_template", action="store_true")
+    video_qa_group.add_argument("--min_needle_depth_ratio", type=float, default=0)
+    video_qa_group.add_argument("--max_needle_depth_ratio", type=float, default=1.0)
+    video_qa_group.add_argument("--num_needles", type=int, default=5)
+    video_qa_group.add_argument(
+        "--frame_idx",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Explicit frame indices to insert needles",
     )
 
-    parser.add_argument(
+    # Model params
+    model_group = parser.add_argument_group("Model")
+    model_group.add_argument(
+        "--model_name",
+        type=str,
+        default="llava-hf/llava-onevision-qwen2-0.5b-ov-hf",
+    )
+    model_group.add_argument("--config_name", type=str, default=None)
+    model_group.add_argument("--rope_theta", type=float, default=None)
+
+    # Training params
+    training_group = parser.add_argument_group("Training")
+    training_group.add_argument("--lr", type=float, default=1e-1)
+    training_group.add_argument("--num_steps", type=int, default=1000)
+    training_group.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    training_group.add_argument("--save_steps", type=int, default=50)
+    training_group.add_argument("--output_dir", type=str, default="outputs/")
+    training_group.add_argument("--resume", action="store_true")
+    training_group.add_argument("--sink_size", type=int, default=64)
+    training_group.add_argument("--recent_size", type=int, default=256)
+    training_group.add_argument("--deploy_sink_size", type=int, default=None)
+    training_group.add_argument("--deploy_recent_size", type=int, default=None)
+    training_group.add_argument("--reg_weight", type=float, default=0.05)
+    training_group.add_argument("--initial_value", type=float, default=1.0)
+    training_group.add_argument("--streaming_attn_implementation", type=str, default="blocksparse")
+    training_group.add_argument("--disable_wandb", action="store_true")
+    training_group.add_argument("--enable_pp", action="store_true")
+    training_group.add_argument("--enable_tp", action="store_true")
+    training_group.add_argument("--disable_fsdp_root_shard", action="store_true")
+    training_group.add_argument("--device", type=str, default="0")
+    training_group.add_argument(
         "--supervision",
         type=str,
         default="distill",
@@ -79,18 +84,20 @@ def parse_args():
     )
 
     # Eval params
-    parser.add_argument("--n_samples", type=int, default=None)
-    parser.add_argument("--task", type=str, default="default")
-    parser.add_argument("--attn_load_dir", type=str, default=None)
-    parser.add_argument("--threshold", type=float, default=0.5)
-    parser.add_argument("--sparsity", type=float, default=None)
-    parser.add_argument("--passkey_length", type=int, default=32)
-    parser.add_argument("--context_length", type=int, default=16384)
-    parser.add_argument("--generation_length", type=int, default=256)
-    parser.add_argument("--stride_length", type=int, default=256)
-    parser.add_argument("--prefilling_chunk_size", type=int, default=4096)
+    eval_group = parser.add_argument_group("Eval")
+    eval_group.add_argument("--n_samples", type=int, default=None)
+    eval_group.add_argument("--task", type=str, default="default")
+    eval_group.add_argument("--attn_load_dir", type=str, default=None)
+    eval_group.add_argument("--threshold", type=float, default=None)
+    eval_group.add_argument("--sparsity", type=float, default=0.5)
+    eval_group.add_argument("--passkey_length", type=int, default=32)
+    eval_group.add_argument("--context_length", type=int, default=16384)
+    eval_group.add_argument("--generation_length", type=int, default=256)
+    eval_group.add_argument("--stride_length", type=int, default=256)
+    eval_group.add_argument("--prefilling_chunk_size", type=int, default=4096)
 
-    parser.add_argument("--seed", type=int, default=42)
+    misc_group = parser.add_argument_group("Misc")
+    misc_group.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
 
