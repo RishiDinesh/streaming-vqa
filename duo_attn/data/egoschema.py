@@ -6,7 +6,7 @@ from .base import BaseVideoQADataset
 
 
 class EgoSchemaDataset(BaseVideoQADataset):
-    """Video QA dataset for EgoSchema-style question files."""
+    # Video QA dataset for EgoSchema-style question files.
 
     def __init__(
         self,

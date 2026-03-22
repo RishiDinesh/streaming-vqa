@@ -5,8 +5,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from .dynamic import DynamicSyntheticVideoQADataset
-from .vnbench import VideoQADataset
 from .egoschema import EgoSchemaDataset
+from .vnbench import VideoQADataset
 
 
 @dataclass
@@ -130,7 +130,7 @@ def create_video_qa_dataloader(
             model_id=model_id,
             num_frames=num_frames,
             max_length=max_length,
-            use_chat_template=use_chat_template
+            use_chat_template=use_chat_template,
         )
     elif dataset_name == "egoschema":
         dataset = EgoSchemaDataset(

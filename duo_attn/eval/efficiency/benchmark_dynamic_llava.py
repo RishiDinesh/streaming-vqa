@@ -7,8 +7,9 @@ import torch
 from tqdm import tqdm
 from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 
-from duo_attn.eval.efficiency.utils import bench_func
 from duo_attn.data.loader import create_video_qa_dataloader
+from duo_attn.data.vnbench import VideoQADataset
+from duo_attn.eval.efficiency.utils import bench_func
 from duo_attn.patch import enable_duo_attention_eval
 from duo_attn.patch.tuple_kv_cache import enable_tuple_kv_cache
 from duo_attn.train import build_llava_video_inputs_embeds
@@ -66,7 +67,12 @@ def parse_benchmark_args():
     )
 
     parser.add_argument("--num_frames", type=int, default=8)
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for dataset-mode dataloader.")
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=1,
+        help="Batch size for dataset-mode dataloader.",
+    )
     parser.add_argument("--max_length", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -117,7 +123,7 @@ def parse_benchmark_args():
 
 
 def move_batch_to_device(batch, device, model_dtype):
-    """Move a batch dict to the target device, casting floats to model_dtype."""
+    # Move a batch dict to the target device, casting floats to model_dtype.
     moved = {}
     for key, value in batch.items():
         if not torch.is_tensor(value):
@@ -131,11 +137,9 @@ def move_batch_to_device(batch, device, model_dtype):
 
 
 def build_single_video_batch(video_path, prompt, processor, num_frames, max_length):
-    """
-    Build a single-sample batch from one video file, without needing
-    an annotation file or video root directory.
-    """
-    from duo_attn.data.vnbench import VideoQADataset
+
+    # Build a single-sample batch from one video file, without needing
+    # an annotation file or video root directory.
 
     # Create a temporary annotation file pointing to the single video
     annotation = {
@@ -326,9 +330,7 @@ if __name__ == "__main__":
 
     if attention_mode == "duo":
         if args.attn_load_dir is None:
-            raise ValueError(
-                "--attn_load_dir is required when --attention_mode=duo."
-            )
+            raise ValueError("--attn_load_dir is required when --attention_mode=duo.")
         full_attention_heads, sink_size, recent_size = load_attn_pattern(
             args.attn_load_dir
         )
@@ -357,8 +359,6 @@ if __name__ == "__main__":
     device = torch.device("cuda")
     model_dtype = torch.bfloat16
     model = model.to(device)
-
-
 
     if args.dataset_type == "egoschema" and args.video_path is None:
         if args.video_root is None and os.path.isdir("data/videos"):
@@ -473,7 +473,9 @@ if __name__ == "__main__":
         result_path = os.path.join(args.output_dir, "benchmark_result.txt")
         with open(result_path, "w") as f:
             if prefill_total_ms is not None:
-                print(f"Average pre-filling time: {prefill_total_ms / 1000:.2f} s", file=f)
+                print(
+                    f"Average pre-filling time: {prefill_total_ms / 1000:.2f} s", file=f
+                )
             print(f"Average prefill latency: {ctx_latency:.2f} ms", file=f)
             print(f"Peak prefill memory across batches: {ctx_memory:.2f} MB", file=f)
             print(f"Average generation latency: {gen_latency:.2f} ms", file=f)

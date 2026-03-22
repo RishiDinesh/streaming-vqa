@@ -221,7 +221,6 @@ marimo/_lsp/
 __marimo__/
 
 weights/
-data/
 models/
 benchmark_results_llava/
 long_prompt.txt
@@ -235,10 +234,11 @@ Temporary Items
 .apdisk
 
 weights/
-data/
 models/
 benchmark_results_llava/
 long_prompt.txt
 
 !duo_attn/data/
 !duo_attn/data/*.py
+data/*
+!data/*.sh
