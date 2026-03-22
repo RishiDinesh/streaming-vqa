@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 
 from .dynamic import DynamicSyntheticVideoQADataset
 from .vnbench import VideoQADataset
+from .egoschema import EgoSchemaDataset
 
 
 @dataclass
@@ -95,6 +96,8 @@ def create_video_qa_dataloader(
     num_frames: int = 8,
     max_length: int = 2048,
     use_chat_template: bool = True,
+    include_options_in_question: bool = True,
+    default_video_ext: str = ".mp4",
     batch_size: int = 1,
     shuffle: bool = True,
     num_workers: int = 4,
@@ -128,6 +131,18 @@ def create_video_qa_dataloader(
             num_frames=num_frames,
             max_length=max_length,
             use_chat_template=use_chat_template
+        )
+    elif dataset_name == "egoschema":
+        dataset = EgoSchemaDataset(
+            video_root=video_root,
+            annotation_path=annotation_path,
+            processor=processor,
+            model_id=model_id,
+            num_frames=num_frames,
+            max_length=max_length,
+            use_chat_template=use_chat_template,
+            include_options_in_question=include_options_in_question,
+            default_video_ext=default_video_ext,
         )
     else:
         raise ValueError(f"Unsupported dataset_name: {dataset_name}")

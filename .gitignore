@@ -2,7 +2,7 @@ dataset/
 datasets/
 outputs/*/*step*
 untracked/
-logs/
+logs/*.out
 
 # Synthetic video gen — large files
 # Ignore all data and output folders, only track code

@@ -8,7 +8,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 
 from duo_attn.eval.efficiency.utils import bench_func
-from duo_attn.loader import create_video_qa_dataloader
+from duo_attn.data.loader import create_video_qa_dataloader
 from duo_attn.patch import enable_duo_attention_eval
 from duo_attn.patch.tuple_kv_cache import enable_tuple_kv_cache
 from duo_attn.train import build_llava_video_inputs_embeds
@@ -46,10 +46,40 @@ def parse_benchmark_args():
     parser.add_argument(
         "--annotation_path", type=str, default=None, help="Path to annotation JSONL"
     )
+    parser.add_argument(
+        "--dataset_type",
+        type=str,
+        choices=["video_qa", "egoschema"],
+        default="video_qa",
+        help="Dataset loader type to use when --video_root/--annotation_path are provided.",
+    )
+    parser.add_argument(
+        "--egoschema_default_video_ext",
+        type=str,
+        default=".mp4",
+        help="Default extension for EgoSchema entries that store video ids without suffix.",
+    )
+    parser.add_argument(
+        "--egoschema_include_options_in_question",
+        action="store_true",
+        help="For EgoSchema, append answer choices into the question prompt.",
+    )
 
     parser.add_argument("--num_frames", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for dataset-mode dataloader.")
     parser.add_argument("--max_length", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--attention_mode",
+        type=str,
+        choices=["auto", "duo", "baseline"],
+        default="auto",
+        help=(
+            "'duo' enables DuoAttention using --attn_load_dir, "
+            "'baseline' runs without DuoAttention, and "
+            "'auto' uses duo only when --attn_load_dir is provided."
+        ),
+    )
 
     parser.add_argument(
         "--attn_load_dir",
@@ -105,7 +135,7 @@ def build_single_video_batch(video_path, prompt, processor, num_frames, max_leng
     Build a single-sample batch from one video file, without needing
     an annotation file or video root directory.
     """
-    from duo_attn.loader import VideoQADataset
+    from duo_attn.data.vnbench import VideoQADataset
 
     # Create a temporary annotation file pointing to the single video
     annotation = {
@@ -274,6 +304,9 @@ def run_demo_mode(model, inputs_embeds, decode_tokens, prefill_chunk_size):
 if __name__ == "__main__":
     args = parse_benchmark_args()
 
+    if args.batch_size <= 0:
+        raise ValueError("--batch_size must be > 0")
+
     seed_everything(args.seed)
     print(f"Loading LLaVA-OneVision model: {args.model_name}")
     model = LlavaOnevisionForConditionalGeneration.from_pretrained(
@@ -286,7 +319,16 @@ if __name__ == "__main__":
 
     processor = AutoProcessor.from_pretrained(args.model_name, trust_remote_code=True)
 
-    if args.attn_load_dir is not None:
+    attention_mode = args.attention_mode
+    if attention_mode == "auto":
+        attention_mode = "duo" if args.attn_load_dir is not None else "baseline"
+    print(f"Attention mode: {attention_mode}")
+
+    if attention_mode == "duo":
+        if args.attn_load_dir is None:
+            raise ValueError(
+                "--attn_load_dir is required when --attention_mode=duo."
+            )
         full_attention_heads, sink_size, recent_size = load_attn_pattern(
             args.attn_load_dir
         )
@@ -316,85 +358,129 @@ if __name__ == "__main__":
     model_dtype = torch.bfloat16
     model = model.to(device)
 
+
+
+    if args.dataset_type == "egoschema" and args.video_path is None:
+        if args.video_root is None and os.path.isdir("data/videos"):
+            args.video_root = "data/videos"
+            print(f"Using default EgoSchema video_root: {args.video_root}")
+        if args.annotation_path is None and os.path.isfile("data/questions.json"):
+            args.annotation_path = "data/questions.json"
+            print(f"Using default EgoSchema annotation_path: {args.annotation_path}")
+
+    dataloader = None
     if args.video_path is not None:
-        # Single-video mode
         print(f"Loading single video: {args.video_path}")
-        batch = build_single_video_batch(
+        single_batch = build_single_video_batch(
             args.video_path, args.prompt, processor, args.num_frames, args.max_length
         )
-
+        total_batches = 1
+        batch_iter = [(1, single_batch)]
     elif args.video_root is not None and args.annotation_path is not None:
-        # Dataset mode — grab the first sample
-        print("Loading video from dataset...")
+        print("Loading video dataset...")
+        dataset_name = "egoschema" if args.dataset_type == "egoschema" else "vnbench"
         dataloader = create_video_qa_dataloader(
             video_root=args.video_root,
+            dataset_name=dataset_name,
             annotation_path=args.annotation_path,
             processor=processor,
             model_id=args.model_name,
             num_frames=args.num_frames,
             max_length=args.max_length,
-            batch_size=1,
+            include_options_in_question=args.egoschema_include_options_in_question,
+            default_video_ext=args.egoschema_default_video_ext,
+            batch_size=args.batch_size,
             shuffle=False,
             num_workers=0,
             pin_memory=False,
             drop_last=False,
         )
-        batch = next(iter(dataloader))
+        total_batches = len(dataloader)
+        batch_iter = enumerate(dataloader, start=1)
     else:
         raise ValueError(
             "Provide either --video_path for a single video, "
             "or both --video_root and --annotation_path for dataset mode."
         )
 
-    batch = move_batch_to_device(batch, device, model_dtype)
+    ctx_latency_sum = 0.0
+    gen_latency_sum = 0.0
+    ctx_memory_peak = 0.0
+    gen_memory_peak = 0.0
+    seq_len_sum = 0
+    prefill_total_ms_sum = 0.0
+    prefill_total_ms_count = 0
 
-    # Build multimodal inputs_embeds (vision + text)
-    with torch.no_grad():
-        inputs_embeds = build_llava_video_inputs_embeds(model, batch)
+    for batch_idx, batch in batch_iter:
+        print(f"[Batch {batch_idx}/{total_batches}] Starting benchmark...")
 
-    seq_len = inputs_embeds.shape[1]
-    print(f"Input sequence length (text + vision tokens): {seq_len}")
+        batch = move_batch_to_device(batch, device, model_dtype)
 
-    if args.ui_style == "demo":
-        result = run_demo_mode(
-            model,
-            inputs_embeds,
-            decode_tokens=args.decode_tokens,
-            prefill_chunk_size=args.prefill_chunk_size,
-        )
-    else:
-        result = run_benchmark_mode(model, inputs_embeds)
+        with torch.no_grad():
+            inputs_embeds = build_llava_video_inputs_embeds(model, batch)
 
-    ctx_latency = result["ctx_latency"]
-    ctx_memory = result["ctx_memory"]
-    gen_latency = result["gen_latency"]
-    gen_memory = result["gen_memory"]
-    prefill_total_ms = result["prefill_total_ms"]
+        seq_len = inputs_embeds.shape[1]
+        seq_len_sum += int(seq_len)
+        print(f"[Batch {batch_idx}/{total_batches}] Input sequence length: {seq_len}")
+
+        if args.ui_style == "demo":
+            result = run_demo_mode(
+                model,
+                inputs_embeds,
+                decode_tokens=args.decode_tokens,
+                prefill_chunk_size=args.prefill_chunk_size,
+            )
+        else:
+            result = run_benchmark_mode(model, inputs_embeds)
+
+        ctx_latency_sum += float(result["ctx_latency"])
+        gen_latency_sum += float(result["gen_latency"])
+        ctx_memory_peak = max(ctx_memory_peak, float(result["ctx_memory"]))
+        gen_memory_peak = max(gen_memory_peak, float(result["gen_memory"]))
+
+        prefill_total_ms = result.get("prefill_total_ms", None)
+        if prefill_total_ms is not None:
+            prefill_total_ms_sum += float(prefill_total_ms)
+            prefill_total_ms_count += 1
+
+    num_batches = max(1, total_batches)
+    avg_seq_len = seq_len_sum / num_batches
+    ctx_latency = ctx_latency_sum / num_batches
+    gen_latency = gen_latency_sum / num_batches
+    ctx_memory = ctx_memory_peak
+    gen_memory = gen_memory_peak
+    prefill_total_ms = (
+        prefill_total_ms_sum / prefill_total_ms_count
+        if prefill_total_ms_count > 0
+        else None
+    )
 
     print("\n--- Results ---")
     print(f"Model: {args.model_name}")
     print(f"Num frames: {args.num_frames}")
-    print(f"Input sequence length: {seq_len}")
+    print(f"Processed batches: {total_batches}")
+    print(f"Average input sequence length: {avg_seq_len:.2f}")
     print(f"Sparsity: {sparsity}")
     if prefill_total_ms is not None:
-        print(f"Pre-filling time: {prefill_total_ms / 1000:.2f} s")
-    print(f"Average prefill time: {ctx_latency:.2f} ms")
-    print(f"Peak prefill memory: {ctx_memory:.2f} MB")
-    print(f"Average generation time: {gen_latency:.2f} ms")
-    print(f"Peak generation memory: {gen_memory:.2f} MB")
+        print(f"Average pre-filling time: {prefill_total_ms / 1000:.2f} s")
+    print(f"Average prefill latency: {ctx_latency:.2f} ms")
+    print(f"Peak prefill memory across batches: {ctx_memory:.2f} MB")
+    print(f"Average generation latency: {gen_latency:.2f} ms")
+    print(f"Peak generation memory across batches: {gen_memory:.2f} MB")
 
     if args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
         result_path = os.path.join(args.output_dir, "benchmark_result.txt")
         with open(result_path, "w") as f:
             if prefill_total_ms is not None:
-                print(f"Pre-filling time: {prefill_total_ms / 1000:.2f} s", file=f)
-            print(f"Average prefill time: {ctx_latency:.2f} ms", file=f)
-            print(f"Peak prefill memory: {ctx_memory:.2f} MB", file=f)
-            print(f"Average generation time: {gen_latency:.2f} ms", file=f)
-            print(f"Peak generation memory: {gen_memory:.2f} MB", file=f)
+                print(f"Average pre-filling time: {prefill_total_ms / 1000:.2f} s", file=f)
+            print(f"Average prefill latency: {ctx_latency:.2f} ms", file=f)
+            print(f"Peak prefill memory across batches: {ctx_memory:.2f} MB", file=f)
+            print(f"Average generation latency: {gen_latency:.2f} ms", file=f)
+            print(f"Peak generation memory across batches: {gen_memory:.2f} MB", file=f)
             print(f"Model name: {args.model_name}", file=f)
             print(f"Num frames: {args.num_frames}", file=f)
-            print(f"Input sequence length: {seq_len}", file=f)
+            print(f"Processed batches: {total_batches}", file=f)
+            print(f"Average input sequence length: {avg_seq_len:.2f}", file=f)
             print(f"Sparsity: {sparsity}", file=f)
         print(f"Results saved to {result_path}")
