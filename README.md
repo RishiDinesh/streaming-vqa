@@ -5,6 +5,9 @@ Link to original [[paper](https://arxiv.org/abs/2410.10819)]
 ## Objective
 We adapt the idea of DuoAttention to the multi-modal setting, specifically for video question answering tasks. By identifying retrieval heads that are crucial for processing long contexts and streaming heads that focus on recent tokens and attention sinks, we apply a full KV cache to retrieval heads while using a light-weight, constant-length KV cache for streaming heads. This approach significantly reduce both pre-filling and decoding memory and latency in VLMs, enabling efficient long-context video question answering without compromising accuracy.
 
+## Flowchart
+![image](images/duo_atten_crop.png)
+
 ## Environment Setup
 
 ```bash
