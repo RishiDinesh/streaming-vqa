@@ -9,10 +9,13 @@
 #SBATCH --time=1-00:00:00
 #SBATCH --output=logs/%x-%j.out
 
-cd /w/nobackup/385/scratch-space/expires-2026-Mar-27/mihir/streaming-vqa
+BASE_DIR=/w/nobackup/385/scratch-space/expires-2026-Apr-05/mihir/mihir
+
+cd $BASE_DIR/streaming-vqa
+PYTHON=$BASE_DIR/miniconda3_fresh/envs/duo/bin/python
 
 # MMDuo visual 
-# /w/nobackup/385/scratch-space/expires-2026-Mar-27/mihir/miniconda3_fresh/envs/duo/bin/python -m duo_attn.eval.efficiency.benchmark_dynamic_llava \
+# $PYTHON -m duo_attn.eval.efficiency.benchmark_dynamic_llava \
 #   --model_name models/ \
 #   --video_path data/sample.mp4 \
 #   --num_frames 8 \
@@ -26,7 +29,7 @@ cd /w/nobackup/385/scratch-space/expires-2026-Mar-27/mihir/streaming-vqa
 #   --num_frames 32 \
 
 # MMDuo
-# /w/nobackup/385/scratch-space/expires-2026-Mar-27/mihir/miniconda3_fresh/envs/duo/bin/python -m duo_attn.eval.efficiency.benchmark_dynamic_llava \
+# $PYTHON -m duo_attn.eval.efficiency.benchmark_dynamic_llava \
 #   --model_name models/ \
 #   --dataset_type egoschema \
 #   --video_root data/videos \
@@ -40,7 +43,7 @@ cd /w/nobackup/385/scratch-space/expires-2026-Mar-27/mihir/streaming-vqa
 #   --sparsity 0.5
 
 # Baseline
-/w/nobackup/385/scratch-space/expires-2026-Mar-27/mihir/miniconda3_fresh/envs/duo/bin/python -m duo_attn.eval.efficiency.benchmark_dynamic_llava \
+$PYTHON -m duo_attn.eval.efficiency.benchmark_dynamic_llava \
   --model_name models/ \
   --dataset_type egoschema \
   --video_root data/videos \
