@@ -242,3 +242,4 @@ long_prompt.txt
 !duo_attn/data/*.py
 data/*
 !data/*.sh
+Block-Sparse-Attention/

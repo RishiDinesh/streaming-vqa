@@ -49,5 +49,4 @@ cd /w/nobackup/385/scratch-space/expires-2026-Mar-27/mihir/streaming-vqa
   --num_frames 64 \
   --ui_style benchmark \
   --output_dir benchmark_results_llava \
-  --attention_mode baseline\
-  --sparsity 0.5
+  --attention_mode baseline
