@@ -221,7 +221,6 @@ marimo/_lsp/
 __marimo__/
 
 weights/
-data/
 models/
 benchmark_results_llava/
 long_prompt.txt
@@ -233,5 +232,15 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
-Block-Sparse-Attention
+
+weights/
+models/
+benchmark_results_llava/
+long_prompt.txt
+
+!duo_attn/data/
+!duo_attn/data/*.py
+data/*
+!data/*.sh
+Block-Sparse-Attention/Block-Sparse-Attention
 !streaming/streamingtom/models/
