@@ -36,9 +36,9 @@ pip install "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.1.
 pip install -e .
 ```
 
-### Install Patched `lmms-eval`
+### Install LMMs-Eval (eval only)
 
-This project uses a patched fork of `lmms-eval` for evaluation. To reset it to the expected version:
+This project uses a patched fork of `lmms-eval` for evaluation. To setup:
 
 ```bash
 cd /path/to/streaming-vqa
@@ -52,70 +52,27 @@ cd ..
 
 ### Install Block Sparse Streaming Attention
 
-First, clone the Block Sparse Attention repository and navigate into it:
+This project uses a patched fork of Block Sparse Attention with the required `setup.py` changes already applied. To setup:
 
 ```bash
-git clone https://github.com/mit-han-lab/Block-Sparse-Attention
-cd  Block-Sparse-Attention
+cd /path/to/streaming-vqa
+rm -rf Block-Sparse-Attention
+git clone -b mm_duo_attn https://github.com/RishiDinesh/Block-Sparse-Attention.git
+cd Block-Sparse-Attention
+git checkout 8e73b82a47de87dba3110e40c38c35f41c3f5d0d
 ```
 
-Then, modify the following two functions in `setup.py` to ensure that the appropriate CUDA architectures are targeted for compilation (these are the GPUs on Slurm).
+This fork targets the cluster GPUs through `setup.py`.
 - 86 corresponds to RTX A2000 / A4000 / A4500 / A5000 / A6000 class,
 - 89 corresponds to Ada / RTX 4090. 
 
-```python
-def cuda_archs() -> str:
-    # CUDA 12.4 cluster build: target Ampere workstation + Ada
-    return os.getenv("BLOCK_SPARSE_ATTN_CUDA_ARCHS", "86;89").split(";")
-```
-
-```python
-def add_cuda_gencodes(cc_flag, archs, bare_metal_version):
-    """
-    CUDA 12.4-friendly gencodes for this cluster.
-
-    Supported here:
-      - 80 : A100
-      - 86 : RTX A2000 / A4000 / A4500 / A5000 / A6000 class
-      - 89 : Ada / RTX 4090
-      - 90 : H100/H200
-
-    We intentionally do NOT emit 100 / 110 / 120 for CUDA 12.4.
-    We also only emit PTX for the newest arch we actually emitted.
-    """
-    emitted_archs = []
-
-    if "80" in archs:
-        cc_flag += ["-gencode", "arch=compute_80,code=sm_80"]
-        emitted_archs.append("80")
-
-    if "86" in archs:
-        cc_flag += ["-gencode", "arch=compute_86,code=sm_86"]
-        emitted_archs.append("86")
-
-    # Ada support
-    if bare_metal_version >= Version("11.8") and "89" in archs:
-        cc_flag += ["-gencode", "arch=compute_89,code=sm_89"]
-        emitted_archs.append("89")
-
-    # Hopper support
-    if bare_metal_version >= Version("11.8") and "90" in archs:
-        cc_flag += ["-gencode", "arch=compute_90,code=sm_90"]
-        emitted_archs.append("90")
-
-    # PTX only for the newest arch we actually emitted
-    if emitted_archs:
-        newest = max(emitted_archs, key=int)
-        cc_flag += ["-gencode", f"arch=compute_{newest},code=compute_{newest}"]
-
-    return cc_flag
-```
-Then run the following command to install Block Sparse Streaming Attention (inside the `Block-Sparse-Attention` directory):
+Then install it from inside the `Block-Sparse-Attention` directory:
 
 ```bash
 export BLOCK_SPARSE_ATTN_CUDA_ARCHS="86;89"
 export MAX_JOBS=4
 python setup.py install
+cd ..
 ```
 
 ## Verify Installation
