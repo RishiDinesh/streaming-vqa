@@ -36,6 +36,20 @@ pip install "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.1.
 pip install -e .
 ```
 
+### Install Patched `lmms-eval`
+
+This project uses a patched fork of `lmms-eval` for evaluation. To reset it to the expected version:
+
+```bash
+cd /path/to/streaming-vqa
+rm -rf lmms-eval
+git clone -b duo_attn https://github.com/RishiDinesh/lmms-eval.git
+cd lmms-eval
+git checkout 146a2836a3e34347d611a348592f25ac22958589
+pip install -e .
+cd ..
+```
+
 ### Install Block Sparse Streaming Attention
 
 First, clone the Block Sparse Attention repository and navigate into it:
