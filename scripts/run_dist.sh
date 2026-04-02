@@ -13,9 +13,9 @@
 
 set -euo pipefail
 
-cd /w/nobackup/385/scratch-space/expires-2026-Mar-27/rishi/streaming-vqa
+cd /w/nobackup/385/scratch-space/expires-2026-Apr-05/rishi/streaming-vqa
 
-TORCHRUN_BIN=/w/nobackup/385/scratch-space/expires-2026-Mar-27/rishi/.conda/envs/mmda-cuda124/bin/torchrun
+TORCHRUN_BIN=/w/nobackup/385/scratch-space/expires-2026-Apr-05/rishi/.conda/envs/duo/bin/torchrun
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 MASTER_PORT=29500
 
@@ -43,7 +43,7 @@ srun bash -lc '
       --num_frames 64 \
       --min_needle_depth_ratio 0.1 \
       --max_needle_depth_ratio 0.8 \
-      --num_needles 1 \
+      --num_needles 5 \
       --model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
       --num_steps 1000 \
       --sink_size 512 \
