@@ -24,6 +24,7 @@ from .streaming_attn import (
     streaming_attn_sdpa,
     generate_streaming_info_blocksparse_flash_attn,
     streaming_attn_blocksparse_flash_attn,
+    is_blocksparse_available,
 )
 
 from .static_kv_cache import (
@@ -34,7 +35,7 @@ from .tuple_kv_cache import enable_tuple_kv_cache_for_llama
 from .flashinfer_utils import apply_rope_inplace, enable_flashinfer_rmsnorm
 
 from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
-from flash_attn import flash_attn_func, flash_attn_with_kvcache
+from .attn_compat import flash_attn_func, flash_attn_with_kvcache
 from duo_attn.ulysses import UlyssesAttention
 
 
@@ -447,11 +448,21 @@ def enable_llama_duo_attention_training(
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
 
-    if streaming_attn_implementation == "blocksparse":
+    effective_streaming_impl = streaming_attn_implementation
+    if (
+        effective_streaming_impl == "blocksparse"
+        and not is_blocksparse_available()
+    ):
+        print(
+            "block_sparse_attn is unavailable; falling back to sdpa streaming attention."
+        )
+        effective_streaming_impl = "sdpa"
+
+    if effective_streaming_impl == "blocksparse":
         num_sink_blocks = (sink_size + 127) // 128
         num_recent_blocks = (recent_size + 127) // 128
         num_heads_per_device = model.config.num_attention_heads // int(
-            os.environ["WORLD_SIZE"]
+            os.environ.get("WORLD_SIZE", "1")
         )
         print(
             f"Using blocksparse implementation with {num_sink_blocks} sink blocks, {num_recent_blocks} recent blocks, and {num_heads_per_device} heads per device"
@@ -460,14 +471,14 @@ def enable_llama_duo_attention_training(
             num_sink_blocks, num_recent_blocks, num_heads_per_device, device
         )
         streaming_attn_func = streaming_attn_blocksparse_flash_attn
-    elif streaming_attn_implementation == "sdpa":
+    elif effective_streaming_impl == "sdpa":
         streaming_mask = generate_streaming_mask(
             max_length, sink_size, recent_size, device
         )
         streaming_attn_func = streaming_attn_sdpa
     else:
         raise ValueError(
-            f"Unsupported streaming attention implementation: {streaming_attn_implementation}"
+            f"Unsupported streaming attention implementation: {effective_streaming_impl}"
         )
 
     for layer in model.model.layers:

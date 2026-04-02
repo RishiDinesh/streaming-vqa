@@ -222,6 +222,7 @@ __marimo__/
 
 weights/
 models/
+model/
 benchmark_results_llava/
 long_prompt.txt
 # macOS specific files
