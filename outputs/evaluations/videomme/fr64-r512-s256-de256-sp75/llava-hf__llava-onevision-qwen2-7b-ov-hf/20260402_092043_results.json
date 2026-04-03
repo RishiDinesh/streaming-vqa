@@ -1,0 +1,214 @@
+{
+  "results": {
+    "videomme": {
+      "alias": "videomme",
+      "videomme_perception_score,none": 51.592592592592595,
+      "videomme_perception_score_stderr,none": "N/A",
+      "videomme_perception_score_stderr_clt,none": 0.00961940357372874,
+      "videomme_perception_score_stderr_clustered,none": 0.00990486567917746
+    }
+  },
+  "group_subtasks": {
+    "videomme": []
+  },
+  "configs": {
+    "videomme": {
+      "task": "videomme",
+      "dataset_path": "lmms-lab/Video-MME",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "full_docs": false,
+      "process_results_use_image": false,
+      "doc_to_visual": "<function videomme_doc_to_visual at 0x796e4937ba30>",
+      "doc_to_text": "<function videomme_doc_to_text at 0x796e481983a0>",
+      "doc_to_target": "answer",
+      "process_results": "<function videomme_process_results at 0x796e48198ee0>",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "videomme_perception_score",
+          "aggregation": "<function videomme_aggregate_results at 0x796e48199870>",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "max_new_tokens": 16,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "num_beams": 1,
+        "do_sample": false,
+        "until": [
+          "\n\n"
+        ]
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "cluster_key": "videoID",
+      "score_key": "score",
+      "metadata": [
+        {
+          "version": 0.0
+        }
+      ],
+      "lmms_eval_specific_kwargs": {
+        "default": {
+          "pre_prompt": "",
+          "post_prompt": "\nAnswer with the option's letter from the given choices directly."
+        },
+        "gpt4v": {
+          "pre_prompt": "",
+          "post_prompt": "Answer the question with A, B, C, or D."
+        },
+        "llava_vid": {
+          "pre_prompt": "",
+          "post_prompt": "The best answer is:"
+        },
+        "qwen3_vl": {
+          "format": "qwen3_vl",
+          "pre_prompt": "Question: ",
+          "post_prompt": "Answer with the option letter only."
+        },
+        "xcomposer2_4khd": {
+          "pre_prompt": "[UNUSED_TOKEN_146]user\n",
+          "post_prompt": " Answer this question with A, B, C, or D.[UNUSED_TOKEN_145]\n[UNUSED_TOKEN_146]assistant\n"
+        },
+        "pre_prompt": "",
+        "post_prompt": "\nAnswer with the option's letter from the given choices directly."
+      }
+    }
+  },
+  "versions": {
+    "videomme": "Yaml"
+  },
+  "n-shot": {
+    "videomme": 0
+  },
+  "higher_is_better": {
+    "videomme": {
+      "videomme_perception_score": true
+    }
+  },
+  "n-samples": {
+    "videomme": {
+      "original": 2700,
+      "effective": 2700
+    }
+  },
+  "config": {
+    "model": "llava_onevision_duo_attn",
+    "model_args": "pretrained=llava-hf/llava-onevision-qwen2-7b-ov-hf,fps=auto,video_decode_backend=decord,max_frames_num=64,cap_fps_sampling=True,decoding_simulation_length=256,deploy_sink_size=256,deploy_recent_size=512,attn_dir=/w/nobackup/385/scratch-space/expires-2026-Apr-05/rishi/streaming-vqa/outputs/train/7b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5,sparsity=0.75",
+    "batch_size": "1",
+    "batch_sizes": [],
+    "device": null,
+    "use_cache": null,
+    "limit": null,
+    "offset": 0,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": "",
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234,
+    "resolved_cli_args": {
+      "config": "",
+      "model": "llava_onevision_duo_attn",
+      "tasks": "videomme",
+      "model_args": "pretrained=llava-hf/llava-onevision-qwen2-7b-ov-hf,fps=auto,video_decode_backend=decord,max_frames_num=64,cap_fps_sampling=True,decoding_simulation_length=256,deploy_sink_size=256,deploy_recent_size=512,attn_dir=/w/nobackup/385/scratch-space/expires-2026-Apr-05/rishi/streaming-vqa/outputs/train/7b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5,sparsity=0.75",
+      "launcher_args": null,
+      "num_fewshot": null,
+      "batch_size": "1",
+      "max_batch_size": null,
+      "device": null,
+      "output_path": "/w/nobackup/385/scratch-space/expires-2026-Apr-05/rishi/streaming-vqa/outputs/evaluations/videomme/fr64-r512-s256-de256-sp75",
+      "limit": null,
+      "offset": 0,
+      "use_cache": null,
+      "cache_requests": null,
+      "check_integrity": false,
+      "write_out": false,
+      "log_samples": true,
+      "wandb_log_samples": false,
+      "log_samples_suffix": "model_outputs",
+      "system_instruction": null,
+      "apply_chat_template": false,
+      "fewshot_as_multiturn": false,
+      "show_config": false,
+      "include_path": null,
+      "gen_kwargs": "",
+      "reasoning_tags": "[[\"<think>\", \"</think>\"], [\"<analysis>\", \"</analysis>\"]]",
+      "verbosity": "INFO",
+      "wandb_args": "",
+      "timezone": "Asia/Singapore",
+      "hf_hub_log_args": ",output_path=/w/nobackup/385/scratch-space/expires-2026-Apr-05/rishi/streaming-vqa/outputs/evaluations/videomme/fr64-r512-s256-de256-sp75",
+      "predict_only": false,
+      "seed": [
+        0,
+        1234,
+        1234,
+        1234
+      ],
+      "trust_remote_code": false,
+      "process_with_media": false,
+      "agentic_trace_mode": "basic",
+      "force_simple": false,
+      "tui": false,
+      "repeats": 1,
+      "baseline": null,
+      "max_tokens": null,
+      "power_analysis": false,
+      "effect_size": 0.03,
+      "alpha": 0.05,
+      "power": 0.8,
+      "correlation": 0.5,
+      "std_a": null,
+      "std_b": null
+    }
+  },
+  "git_hash": "70b28f4",
+  "git_branch": "evals",
+  "lmms_eval_version": "evals@70b28f4",
+  "date": "20260402_092043",
+  "usage": {},
+  "efficiency": {
+    "by_task": {
+      "videomme": {
+        "docs": 2700.0,
+        "docs_with_token_counts": 0.0,
+        "total_input_tokens": 0.0,
+        "total_output_tokens": 0.0,
+        "total_tokens": 0.0,
+        "total_correct_score": 1393.0,
+        "avg_output_tokens_per_sample": 0.0,
+        "tokens_per_correct_answer": 0.0
+      }
+    },
+    "overall": {
+      "docs": 2700.0,
+      "docs_with_token_counts": 0.0,
+      "total_input_tokens": 0.0,
+      "total_output_tokens": 0.0,
+      "total_tokens": 0.0,
+      "total_correct_score": 1393.0,
+      "avg_output_tokens_per_sample": 0.0,
+      "tokens_per_correct_answer": 0.0
+    }
+  },
+  "task_hashes": {
+    "videomme": "8a7c80c796317813d7665e87b8621f35e9fa9faa07f5d44f9292406060d031ad"
+  },
+  "model_source": "llava_onevision_duo_attn",
+  "model_name": "llava-hf/llava-onevision-qwen2-7b-ov-hf",
+  "model_name_sanitized": "llava-hf__llava-onevision-qwen2-7b-ov-hf",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": false,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "start_time": 1673837.383491705,
+  "end_time": 1701115.254164609,
+  "total_evaluation_time_seconds": "27277.870672903955"
+}

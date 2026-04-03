@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot a sink/recent DuoAttention sweep from lmms-eval result JSON files."""
+"""Plot side-by-side sink/recent DuoAttention sweep heatmaps from lmms-eval JSON."""
 
 from __future__ import annotations
 
@@ -19,8 +19,6 @@ try:
 
     import matplotlib.pyplot as plt
     import numpy as np
-    from matplotlib.lines import Line2D
-    from matplotlib.patches import Rectangle
 except ModuleNotFoundError as exc:
     if exc.name in {"matplotlib", "numpy"}:
         raise SystemExit(
@@ -31,11 +29,13 @@ except ModuleNotFoundError as exc:
 
 DEFAULT_SINK_VALUES = [64, 128, 256, 512]
 DEFAULT_RECENT_VALUES = [128, 256, 512, 1024]
-DEFAULT_RESULTS_DIR = Path("outputs/evaluations/egoschema-sweep")
-DEFAULT_OUTPUT = Path("egoschema_sink_recent_sweep.png")
-DEFAULT_CSV_OUTPUT = Path("egoschema_sink_recent_sweep.csv")
-ANCHOR_POINT = (256, 512)
-TRAINING_POINT = (512, 1024)
+DEFAULT_COMPARISON_SPARSITIES = [1.0, 0.5]
+DEFAULT_RESULTS_DIR_CANDIDATES = [
+    Path("evaluations/egoschema-7b-sweep"),
+    Path("outputs/evaluations/egoschema-7b-sweep"),
+]
+HEATMAP_VMIN = 35.0
+HEATMAP_VMAX = 65.0
 
 
 @dataclass(frozen=True)
@@ -89,6 +89,48 @@ DATASET_SPECS = {
 }
 
 
+def resolve_default_results_dir() -> Path:
+    for candidate in DEFAULT_RESULTS_DIR_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return DEFAULT_RESULTS_DIR_CANDIDATES[0]
+
+
+def parse_sparsity_arg(raw_value: str) -> float:
+    value = raw_value.strip().lower()
+    if value.startswith("sp"):
+        percent_text = value[2:].replace("p", ".")
+        return float(percent_text) / 100.0
+    if value.endswith("%"):
+        return float(value[:-1]) / 100.0
+    return float(value)
+
+
+def format_sparsity_tag(value: float) -> str:
+    percent = value * 100.0
+    rounded_percent = round(percent)
+    if math.isclose(percent, rounded_percent, abs_tol=1e-6):
+        return f"sp{rounded_percent}"
+    formatted = f"{percent:.3f}".rstrip("0").rstrip(".").replace(".", "p")
+    return f"sp{formatted}"
+
+
+def format_sparsity_comparison_tag(sparsities: list[float]) -> str:
+    return "_vs_".join(format_sparsity_tag(value) for value in sparsities)
+
+
+def default_output_path_for_sparsities(sparsities: list[float]) -> Path:
+    return Path(
+        f"egoschema_7b_sink_recent_sweep_{format_sparsity_comparison_tag(sparsities)}.png"
+    )
+
+
+def default_csv_path_for_sparsities(sparsities: list[float]) -> Path:
+    return Path(
+        f"egoschema_7b_sink_recent_sweep_{format_sparsity_comparison_tag(sparsities)}.csv"
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -99,23 +141,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--results-dir",
         type=Path,
-        default=DEFAULT_RESULTS_DIR,
+        default=resolve_default_results_dir(),
         help=(
             "Sweep directory to scan recursively for *_results.json files. "
-            "Expected layout: outputs/evaluations/egoschema-sweep/<config>/<model>/..."
+            "Defaults to the first existing path among "
+            "evaluations/egoschema-7b-sweep and "
+            "outputs/evaluations/egoschema-7b-sweep."
         ),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT,
-        help="Output PNG path for the heatmap.",
+        default=None,
+        help=(
+            "Output PNG path for the comparison heatmap. "
+            "Defaults to egoschema_7b_sink_recent_sweep_<left-tag>_vs_<right-tag>.png."
+        ),
     )
     parser.add_argument(
         "--csv-output",
         type=Path,
-        default=DEFAULT_CSV_OUTPUT,
-        help="Output CSV path for the filtered summary table.",
+        default=None,
+        help=(
+            "Output CSV path for the filtered comparison summary table. "
+            "Defaults to egoschema_7b_sink_recent_sweep_<left-tag>_vs_<right-tag>.csv."
+        ),
     )
     parser.add_argument(
         "--dataset",
@@ -126,14 +176,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         choices=["0.5B", "7B"],
-        default="0.5B",
+        default="7B",
         help="Model size label to include.",
     )
     parser.add_argument(
-        "--sparsity",
-        type=float,
-        default=0.5,
-        help="Required DuoAttention sparsity for included sweep points.",
+        "--sparsities",
+        nargs=2,
+        type=parse_sparsity_arg,
+        default=DEFAULT_COMPARISON_SPARSITIES,
+        metavar=("LEFT_SPARSITY", "RIGHT_SPARSITY"),
+        help=(
+            "Ordered DuoAttention sparsities to compare, left-to-right. "
+            "Accepts values like 1.0, 0.5, sp100, or sp50. "
+            "Defaults to sp100 on the left and sp50 on the right."
+        ),
     )
     parser.add_argument(
         "--max-frames-num",
@@ -150,7 +206,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--title",
         default=None,
-        help="Optional explicit figure title.",
+        help="Optional explicit figure title. Defaults to a dataset/model comparison title.",
     )
     parser.add_argument(
         "--dpi",
@@ -162,7 +218,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def list_result_files(results_dir: Path) -> list[Path]:
-    return sorted(results_dir.expanduser().resolve().rglob("*_results.json"))
+    root = results_dir.expanduser().resolve()
+    return sorted(root.rglob("*_results.json"))
 
 
 def parse_model_args(model_args: str) -> dict[str, str]:
@@ -278,12 +335,16 @@ def matches_common_filters(point: ResultPoint, args: argparse.Namespace) -> bool
     return True
 
 
-def matches_duo_filters(point: ResultPoint, args: argparse.Namespace) -> bool:
+def matches_duo_filters(
+    point: ResultPoint,
+    args: argparse.Namespace,
+    sparsity: float,
+) -> bool:
     if not matches_common_filters(point, args):
         return False
     if point.mode != "duo":
         return False
-    if point.sparsity is None or not math.isclose(point.sparsity, args.sparsity, abs_tol=1e-6):
+    if point.sparsity is None or not math.isclose(point.sparsity, sparsity, abs_tol=1e-6):
         return False
     return True
 
@@ -296,20 +357,6 @@ def latest_by_key(points: list[ResultPoint], key_func) -> dict[tuple[object, ...
         if previous is None or point.timestamp > previous.timestamp:
             latest[key] = point
     return latest
-
-
-def compute_color_limits(values: list[float]) -> tuple[float, float]:
-    if not values:
-        return 0.0, 100.0
-
-    vmin = min(values)
-    vmax = max(values)
-    if math.isclose(vmin, vmax):
-        pad = max(1.0, abs(vmin) * 0.05)
-        return max(0.0, vmin - pad), min(100.0, vmax + pad)
-
-    pad = max(0.5, 0.1 * (vmax - vmin))
-    return max(0.0, vmin - pad), min(100.0, vmax + pad)
 
 
 def write_csv_summary(csv_output: Path, points: list[ResultPoint]) -> None:
@@ -333,7 +380,11 @@ def write_csv_summary(csv_output: Path, points: list[ResultPoint]) -> None:
         writer.writeheader()
         for point in sorted(
             points,
-            key=lambda item: (item.deploy_sink_size or -1, item.deploy_recent_size or -1),
+            key=lambda item: (
+                item.sparsity if item.sparsity is not None else -1.0,
+                item.deploy_sink_size or -1,
+                item.deploy_recent_size or -1,
+            ),
         ):
             writer.writerow(
                 {
@@ -351,49 +402,30 @@ def write_csv_summary(csv_output: Path, points: list[ResultPoint]) -> None:
             )
 
 
-def add_highlight(
-    ax: plt.Axes,
+def build_axis_values(points_by_sparsity: dict[float, list[ResultPoint]]) -> tuple[list[int], list[int]]:
+    sink_values = set(DEFAULT_SINK_VALUES)
+    recent_values = set(DEFAULT_RECENT_VALUES)
+
+    for points in points_by_sparsity.values():
+        sink_values.update(
+            point.deploy_sink_size
+            for point in points
+            if point.deploy_sink_size is not None
+        )
+        recent_values.update(
+            point.deploy_recent_size
+            for point in points
+            if point.deploy_recent_size is not None
+        )
+
+    return sorted(sink_values), sorted(recent_values)
+
+
+def build_accuracy_matrix(
+    points: list[ResultPoint],
     sink_values: list[int],
     recent_values: list[int],
-    *,
-    sink_size: int,
-    recent_size: int,
-    edgecolor: str,
-    label: str,
-) -> Line2D | None:
-    if sink_size not in sink_values or recent_size not in recent_values:
-        return None
-
-    row_idx = sink_values.index(sink_size)
-    col_idx = recent_values.index(recent_size)
-    ax.add_patch(
-        Rectangle(
-            (col_idx - 0.5, row_idx - 0.5),
-            1.0,
-            1.0,
-            fill=False,
-            edgecolor=edgecolor,
-            linewidth=2.6,
-        )
-    )
-    return Line2D(
-        [0],
-        [0],
-        color=edgecolor,
-        linewidth=2.6,
-        label=label,
-    )
-
-
-def plot_heatmap(
-    *,
-    points: list[ResultPoint],
-    args: argparse.Namespace,
-    baseline_point: ResultPoint | None,
-) -> plt.Figure:
-    sink_values = sorted(set(DEFAULT_SINK_VALUES) | {point.deploy_sink_size for point in points if point.deploy_sink_size is not None})
-    recent_values = sorted(set(DEFAULT_RECENT_VALUES) | {point.deploy_recent_size for point in points if point.deploy_recent_size is not None})
-
+) -> np.ndarray:
     matrix = np.full((len(sink_values), len(recent_values)), np.nan, dtype=float)
     point_lookup = {
         (point.deploy_sink_size, point.deploy_recent_size): point
@@ -406,123 +438,109 @@ def plot_heatmap(
             if point is not None:
                 matrix[row_idx, col_idx] = point.accuracy
 
-    valid_values = [point.accuracy for point in points]
-    vmin, vmax = compute_color_limits(valid_values)
+    return matrix
 
-    fig, ax = plt.subplots(figsize=(8.6, 5.8))
+
+def plot_heatmaps(
+    *,
+    points_by_sparsity: dict[float, list[ResultPoint]],
+    args: argparse.Namespace,
+) -> plt.Figure:
+    sink_values, recent_values = build_axis_values(points_by_sparsity)
+    panel_count = len(args.sparsities)
+
+    fig, axes = plt.subplots(
+        1,
+        panel_count,
+        figsize=(7.2 * panel_count, 5.8),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+        constrained_layout=True,
+    )
+    axes_flat = axes.ravel()
     cmap = plt.get_cmap("YlGnBu").copy()
     cmap.set_bad("#eeeeee")
-    masked = np.ma.masked_invalid(matrix)
-    image = ax.imshow(masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
 
-    ax.set_xticks(range(len(recent_values)))
-    ax.set_xticklabels([str(value) for value in recent_values])
-    ax.set_yticks(range(len(sink_values)))
-    ax.set_yticklabels([str(value) for value in sink_values])
-    ax.set_xlabel("Recent Size")
-    ax.set_ylabel("Sink Size")
-
-    for row_idx, sink_size in enumerate(sink_values):
-        for col_idx, recent_size in enumerate(recent_values):
-            value = matrix[row_idx, col_idx]
-            if math.isnan(value):
-                label = "NA"
-                color = "#666666"
-            else:
-                label = f"{value:.1f}"
-                color = "white" if value >= 0.5 * (vmin + vmax) else "#1f1f1f"
-            ax.text(
-                col_idx,
-                row_idx,
-                label,
-                ha="center",
-                va="center",
-                fontsize=10,
-                fontweight="bold" if not math.isnan(value) else "normal",
-                color=color,
-            )
-
-    ax.set_xticks(np.arange(-0.5, len(recent_values), 1), minor=True)
-    ax.set_yticks(np.arange(-0.5, len(sink_values), 1), minor=True)
-    ax.grid(which="minor", color="white", linestyle="-", linewidth=1.0)
-    ax.tick_params(which="minor", bottom=False, left=False)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-
-    legend_handles = []
-    anchor_handle = add_highlight(
-        ax,
-        sink_values,
-        recent_values,
-        sink_size=ANCHOR_POINT[0],
-        recent_size=ANCHOR_POINT[1],
-        edgecolor="#d62728",
-        label="Target operating point (256, 512)",
-    )
-    if anchor_handle is not None:
-        legend_handles.append(anchor_handle)
-
-    training_handle = add_highlight(
-        ax,
-        sink_values,
-        recent_values,
-        sink_size=TRAINING_POINT[0],
-        recent_size=TRAINING_POINT[1],
-        edgecolor="#2ca02c",
-        label="Training-window point (512, 1024)",
-    )
-    if training_handle is not None:
-        legend_handles.append(training_handle)
-
-    dataset_label = DATASET_SPECS[args.dataset].label
-    title = args.title or (
-        f"{dataset_label} Sink/Recent Sweep ({args.model}, sparsity={args.sparsity:g})"
-    )
-    subtitle = (
-        f"max_frames_num={args.max_frames_num}, "
-        f"decoding_simulation_length={args.decoding_simulation_length}"
-    )
-    if baseline_point is not None:
-        subtitle += f", baseline={baseline_point.accuracy:.1f}%"
-
-    fig.suptitle(title, fontsize=14, y=0.98)
-    fig.text(0.5, 0.94, subtitle, ha="center", va="top", fontsize=10, color="#444444")
-
-    colorbar = fig.colorbar(image, ax=ax, pad=0.02)
-    colorbar.set_label("Accuracy (%)")
-
-    if legend_handles:
-        ax.legend(
-            handles=legend_handles,
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
-            frameon=False,
+    image = None
+    for ax, sparsity in zip(axes_flat, args.sparsities):
+        matrix = build_accuracy_matrix(
+            points_by_sparsity[sparsity],
+            sink_values,
+            recent_values,
+        )
+        masked = np.ma.masked_invalid(matrix)
+        image = ax.imshow(
+            masked,
+            cmap=cmap,
+            vmin=HEATMAP_VMIN,
+            vmax=HEATMAP_VMAX,
+            aspect="auto",
         )
 
-    fig.tight_layout(rect=(0.0, 0.0, 0.88, 0.92))
+        ax.set_xticks(range(len(recent_values)))
+        ax.set_xticklabels([str(value) for value in recent_values])
+        ax.set_yticks(range(len(sink_values)))
+        ax.set_yticklabels([str(value) for value in sink_values])
+        ax.set_xlabel("Recent Size")
+        ax.set_title(format_sparsity_tag(sparsity), fontsize=12, pad=10)
+
+        for row_idx, sink_size in enumerate(sink_values):
+            for col_idx, recent_size in enumerate(recent_values):
+                value = matrix[row_idx, col_idx]
+                if math.isnan(value):
+                    label = "NA"
+                    color = "#666666"
+                else:
+                    label = f"{value:.1f}"
+                    color = (
+                        "white"
+                        if value >= 0.5 * (HEATMAP_VMIN + HEATMAP_VMAX)
+                        else "#1f1f1f"
+                    )
+                ax.text(
+                    col_idx,
+                    row_idx,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                    fontweight="bold" if not math.isnan(value) else "normal",
+                    color=color,
+                )
+
+        ax.set_xticks(np.arange(-0.5, len(recent_values), 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, len(sink_values), 1), minor=True)
+        ax.grid(which="minor", color="white", linestyle="-", linewidth=1.0)
+        ax.tick_params(which="minor", bottom=False, left=False)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+    axes_flat[0].set_ylabel("Sink Size")
+    for ax in axes_flat[1:]:
+        ax.set_ylabel("")
+
+    colorbar = fig.colorbar(image, ax=axes_flat.tolist(), pad=0.02)
+    colorbar.set_label("Accuracy (%)")
+
+    title = (
+        args.title
+        or f"{DATASET_SPECS[args.dataset].label} {args.model} DuoAttention Sink/Recent Sweep"
+    )
+    fig.suptitle(title, fontsize=14)
     return fig
 
 
-def main() -> None:
-    args = parse_args()
-    result_files = list_result_files(args.results_dir)
-    if not result_files:
-        raise FileNotFoundError(
-            f"Could not find any *_results.json files under {args.results_dir.expanduser().resolve()}"
-        )
-
-    loaded_points = [point for point in (load_result_point(path) for path in result_files) if point is not None]
-
+def collect_latest_duo_points(
+    loaded_points: list[ResultPoint],
+    args: argparse.Namespace,
+    sparsity: float,
+) -> tuple[list[ResultPoint], int]:
     skipped_missing_overrides = 0
     duo_candidates: list[ResultPoint] = []
-    baseline_candidates: list[ResultPoint] = []
-    for point in loaded_points:
-        if point.mode == "baseline":
-            if matches_common_filters(point, args):
-                baseline_candidates.append(point)
-            continue
 
-        if not matches_duo_filters(point, args):
+    for point in loaded_points:
+        if not matches_duo_filters(point, args, sparsity):
             continue
 
         if point.deploy_sink_size is None or point.deploy_recent_size is None:
@@ -535,51 +553,81 @@ def main() -> None:
         duo_candidates,
         key_func=lambda point: (point.deploy_sink_size, point.deploy_recent_size),
     )
-    latest_baseline = latest_by_key(
-        baseline_candidates,
-        key_func=lambda point: (point.dataset, point.model),
-    )
+    return list(latest_duo.values()), skipped_missing_overrides
 
-    filtered_points = list(latest_duo.values())
-    if not filtered_points:
-        raise RuntimeError(
-            "No DuoAttention sweep points matched the requested filters after "
-            "requiring deploy_sink_size and deploy_recent_size in config.model_args."
-        )
 
+def warn_on_missing_pairs(points: list[ResultPoint], sparsity: float) -> None:
     expected_pairs = {
         (sink_size, recent_size)
         for sink_size in DEFAULT_SINK_VALUES
         for recent_size in DEFAULT_RECENT_VALUES
-        if recent_size >= sink_size
     }
     found_pairs = {
         (point.deploy_sink_size, point.deploy_recent_size)
-        for point in filtered_points
+        for point in points
     }
     missing_pairs = sorted(expected_pairs - found_pairs)
+    if not missing_pairs:
+        return
 
-    if skipped_missing_overrides:
-        print(
-            f"Warning: skipped {skipped_missing_overrides} DuoAttention results that matched the "
-            "dataset/model/sparsity filters but did not record deploy overrides in config.model_args.",
-            file=sys.stderr,
+    missing_text = ", ".join(f"({sink},{recent})" for sink, recent in missing_pairs)
+    print(
+        f"Warning: missing sink/recent pairs for {format_sparsity_tag(sparsity)} "
+        f"in the default 16-point grid: {missing_text}",
+        file=sys.stderr,
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    result_files = list_result_files(args.results_dir)
+    if not result_files:
+        raise FileNotFoundError(
+            "Could not find any *_results.json files under "
+            f"{args.results_dir.expanduser().resolve()}."
         )
-    if missing_pairs:
-        missing_text = ", ".join(f"({sink},{recent})" for sink, recent in missing_pairs)
-        print(
-            f"Warning: missing sink/recent pairs for the default 13-point grid: {missing_text}",
-            file=sys.stderr,
+
+    loaded_points = [
+        point for point in (load_result_point(path) for path in result_files) if point is not None
+    ]
+
+    points_by_sparsity: dict[float, list[ResultPoint]] = {}
+    all_filtered_points: list[ResultPoint] = []
+    for sparsity in args.sparsities:
+        filtered_points, skipped_missing_overrides = collect_latest_duo_points(
+            loaded_points,
+            args,
+            sparsity,
         )
+        if not filtered_points:
+            raise RuntimeError(
+                "No DuoAttention sweep points matched the requested filters after "
+                "requiring deploy_sink_size and deploy_recent_size in "
+                f"config.model_args for {format_sparsity_tag(sparsity)}."
+            )
 
-    baseline_point = latest_baseline.get((args.dataset, args.model))
+        if skipped_missing_overrides:
+            print(
+                f"Warning: skipped {skipped_missing_overrides} DuoAttention results that matched "
+                f"the dataset/model/{format_sparsity_tag(sparsity)} filters but did not record "
+                "deploy overrides in config.model_args.",
+                file=sys.stderr,
+            )
+        warn_on_missing_pairs(filtered_points, sparsity)
 
-    csv_output = args.csv_output.expanduser().resolve()
-    write_csv_summary(csv_output, filtered_points)
+        points_by_sparsity[sparsity] = filtered_points
+        all_filtered_points.extend(filtered_points)
 
-    output_path = args.output.expanduser().resolve()
+    csv_output = (
+        args.csv_output or default_csv_path_for_sparsities(args.sparsities)
+    ).expanduser().resolve()
+    write_csv_summary(csv_output, all_filtered_points)
+
+    output_path = (
+        args.output or default_output_path_for_sparsities(args.sparsities)
+    ).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig = plot_heatmap(points=filtered_points, args=args, baseline_point=baseline_point)
+    fig = plot_heatmaps(points_by_sparsity=points_by_sparsity, args=args)
     fig.savefig(output_path, dpi=args.dpi, bbox_inches="tight")
     print(f"Saved CSV summary to {csv_output}")
     print(f"Saved heatmap to {output_path}")
