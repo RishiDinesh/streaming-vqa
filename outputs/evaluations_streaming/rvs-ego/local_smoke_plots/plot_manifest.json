@@ -1,0 +1,7 @@
+{
+  "aggregate_comparison": "outputs/evaluations_streaming/rvs-ego/local_smoke_plots/aggregate_comparison.png",
+  "peak_memory_comparison": "outputs/evaluations_streaming/rvs-ego/local_smoke_plots/peak_memory_comparison.png",
+  "per_conversation_metrics": "outputs/evaluations_streaming/rvs-ego/local_smoke_plots/per_conversation_metrics.png",
+  "question_timeline": "outputs/evaluations_streaming/rvs-ego/local_smoke_plots/question_timeline.png",
+  "rekv_retrieval_diagnostics": "outputs/evaluations_streaming/rvs-ego/local_smoke_plots/rekv_retrieval_diagnostics.png"
+}
