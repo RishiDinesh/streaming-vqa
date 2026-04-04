@@ -1,0 +1,6 @@
+{
+  "summary_csv": "/workspace/streaming-vqa/outputs/evaluations_streaming/subsample_only_summary/summary.csv",
+  "summary_md": "/workspace/streaming-vqa/outputs/evaluations_streaming/subsample_only_summary/summary.md",
+  "stability_report": "/workspace/streaming-vqa/outputs/evaluations_streaming/subsample_only_summary/stability_report.json",
+  "slice_stability_plot": "/workspace/streaming-vqa/outputs/evaluations_streaming/subsample_only_summary/slice_stability.png"
+}

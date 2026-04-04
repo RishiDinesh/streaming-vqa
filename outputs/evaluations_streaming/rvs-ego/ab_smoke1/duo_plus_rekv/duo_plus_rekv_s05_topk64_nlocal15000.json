@@ -32,8 +32,8 @@
   },
   "run_state": {
     "status": "completed",
-    "started_at_utc": "2026-04-04T06:12:20.664929+00:00",
-    "updated_at_utc": "2026-04-04T06:13:18.757521+00:00",
+    "started_at_utc": "2026-04-04T06:18:19.100781+00:00",
+    "updated_at_utc": "2026-04-04T06:19:16.478529+00:00",
     "completed_videos": 1,
     "total_requested_videos": 1,
     "completed_sample_ids": [
@@ -41,9 +41,9 @@
     ]
   },
   "aggregate_metrics": {
-    "avg_ttft_sec": 0.04442117100006726,
-    "avg_answer_latency_sec": 0.42022188100054336,
-    "avg_frame_ingest_latency_sec": 0.0713635906132186,
+    "avg_ttft_sec": 0.050122156000725226,
+    "avg_answer_latency_sec": 0.42989634100013063,
+    "avg_frame_ingest_latency_sec": 0.06941531642654188,
     "peak_memory_bytes": 2836279808,
     "total_frames_ingested": 150,
     "total_conversations_answered": 1,
@@ -4004,6 +4004,8 @@
           "method_stats": {
             "method_name": "duo_plus_rekv",
             "integration_mode": "rekv_memory_plus_duo_lm",
+            "retrieval_policy": "rekv_native",
+            "answer_attention_policy": "duo_post_retrieval",
             "attn_dir": "/workspace/streaming-vqa/outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632",
             "sink_size": 512,
             "recent_size": 1024,
@@ -4014,7 +4016,7 @@
             "retrieve_chunk_size": 1,
             "n_frame_tokens": 196,
             "fattn": false,
-            "retrieval_latency_sec": 0.2335908129989548,
+            "retrieval_latency_sec": 0.22445851400152605,
             "per_layer_retrieved_block_counts": [
               64,
               64,
@@ -4043,8 +4045,8 @@
             ],
             "avg_retrieved_block_count": 64.0,
             "avg_global_block_count": 150.0,
-            "ttft_sec": 0.04442117100006726,
-            "answer_latency_sec": 0.42022188100054336,
+            "ttft_sec": 0.050122156000725226,
+            "answer_latency_sec": 0.42989634100013063,
             "generated_token_count": 11,
             "prompt_token_count": 13,
             "prompt_prefill_mode": "inputs_embeds",
@@ -4063,8 +4065,8 @@
             "prompt_version": "judge_v2_score_only_chat",
             "judge_score": 0.6,
             "decode_stats": {
-              "ttft_sec": 0.19607292000000598,
-              "answer_latency_sec": 0.2193798019998212,
+              "ttft_sec": 0.176931728999989,
+              "answer_latency_sec": 0.20022097900073277,
               "generated_token_count": 2,
               "prompt_token_count": 123,
               "prompt_prefill_mode": "inputs_embeds",
@@ -4087,7 +4089,7 @@
       "runtime_stats": {
         "method_name": "duo_plus_rekv",
         "frames_ingested": 150,
-        "avg_frame_ingest_latency_sec": 0.07136359061321855,
+        "avg_frame_ingest_latency_sec": 0.06941531642654203,
         "last_ingested_timestamp_sec": 298.0
       }
     }

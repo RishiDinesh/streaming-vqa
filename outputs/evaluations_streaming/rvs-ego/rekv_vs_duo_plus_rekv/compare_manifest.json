@@ -1,0 +1,6 @@
+{
+  "summary_csv": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/rekv_vs_duo_plus_rekv/summary.csv",
+  "summary_md": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/rekv_vs_duo_plus_rekv/summary.md",
+  "stability_report": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/rekv_vs_duo_plus_rekv/stability_report.json",
+  "slice_stability_plot": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/rekv_vs_duo_plus_rekv/slice_stability.png"
+}

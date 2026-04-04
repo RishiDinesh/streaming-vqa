@@ -192,8 +192,15 @@ def rekv_attention_forward(
             else:
                 current_key_value = (past_k, past_v)
 
-            duo_enabled = hasattr(self, "full_attention_heads") and getattr(
-                self, "rekv_duo_enabled", False
+            is_retrieval_request = (
+                type(past_key_value) is ContextManager and past_key_value.to_retrieve
+            )
+            # For A+B we want ReKV to decide retrieval exactly as in the native method.
+            # Duo only applies after retrieval, when the LM attends over the assembled context.
+            duo_enabled = (
+                not is_retrieval_request
+                and hasattr(self, "full_attention_heads")
+                and getattr(self, "rekv_duo_enabled", False)
             )
             if duo_enabled:
                 full_attention_heads = self.full_attention_heads > 0.5

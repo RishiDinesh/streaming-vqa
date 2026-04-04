@@ -706,6 +706,8 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
         return {
             "method_name": self.method_name,
             "integration_mode": "rekv_memory_plus_duo_lm",
+            "retrieval_policy": "rekv_native",
+            "answer_attention_policy": "duo_post_retrieval",
             "attn_dir": self.attn_dir,
             "sink_size": self.sink_size,
             "recent_size": self.recent_size,

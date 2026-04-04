@@ -3,11 +3,11 @@
 ## Summary
 - Goal: implement a video-level streaming comparison for streaming VideoQA on LLaVA-OneVision 0.5B.
 - Current datasets in scope: `RVS-Ego` first, then `RVS-Movie`.
-- Current validated methods: `full_streaming`, `duo_streaming`, `rekv`.
-- Future integration method: `duo_plus_rekv` = ReKV retrieval/memory + DuoAttention LM.
+- Current validated methods: `full_streaming`, `duo_streaming`, `rekv`, `duo_plus_rekv`.
+- Current promoted hybrid: `duo_plus_rekv` with `sparsity = 0.375`, default deploy recent size, `retrieve_size = 64`, `n_local = 15000`.
 - Hardware focus: local AMD MI300X / ROCm validation.
 - Current execution assumption: no SLURM access for this task, so long runs must be robust on a single local MI300X.
-- Current project phase: subsample-only validation. Full-dataset eval is explicitly deferred until the end.
+- Current project phase: packaged subsample-only reporting. Full-dataset eval is explicitly deferred until a later phase.
 
 ## Implemented So Far
 - Added a dedicated streaming package under `streaming/ReKV`.
@@ -86,10 +86,16 @@
   - ReKV memory / retrieval policy
   - DuoAttention LM head partitioning at answer time
   - now validated on a 1-video `RVS-Ego` smoke after a ROCm/PyTorch compatibility fix
+  - current intended semantics are:
+    - retrieval remains native ReKV
+    - Duo only applies after retrieval, when the LM attends over the assembled context
 - Fixed `streaming/ReKV/__init__.py` to stay compatible with the refactored dataset layer and avoid package import regressions during long runs.
 - Fixed the `duo_plus_rekv` ROCm compatibility path:
   - `torch.nn.functional.scaled_dot_product_attention` on this stack does not support `enable_gqa`
   - the combined ReKV + Duo path now expands KV heads manually before SDPA when grouped-query attention is needed
+- Fixed the `duo_plus_rekv` research boundary:
+  - the attention path now skips Duo during `ContextManager.to_retrieve`
+  - this keeps retrieval selection native to ReKV and applies Duo only in the post-retrieval answer-time LM path
 
 ## Important Design Decisions
 - Streaming semantics are video-level, not per-question replay from start.
@@ -179,6 +185,11 @@
   - real `RVS-Movie` 1-video / 1-conversation smoke for `full`, `duo`, `duo_fullheads`, and `rekv`
   - all four completed and were rescored / plotted
   - `duo_plus_rekv` 1-video smoke completed on `RVS-Ego`
+  - `duo_plus_rekv` now also completed on:
+    - `RVS-Ego subsample5`
+    - `RVS-Ego subsample5_offset5`
+  - A+B-inclusive debug plot sets were generated for both slices
+  - direct `rekv` vs `duo_plus_rekv` comparison bundle was generated
 
 ## Current Results
 - Smoke test result: `streaming/ReKV smoke test passed`
@@ -264,11 +275,37 @@
   - `rekv` remained the fastest / lowest-latency method on that smoke
 - `duo_plus_rekv` `RVS-Ego` 1-video / 1-conversation smoke:
   - completed successfully after the manual GQA fix
+  - completed again after enforcing native-ReKV retrieval + Duo post-retrieval attention
   - avg judge score: `0.6000`
   - avg ROUGE-L F1: `0.3636`
   - avg answer latency: `0.4202s`
   - peak memory: `2.64 GiB`
   - retrieval stats remained populated while Duo sparsity stayed active (`actual_sparsity = 0.5`)
+  - method stats now record:
+    - `retrieval_policy = rekv_native`
+    - `answer_attention_policy = duo_post_retrieval`
+- `duo_plus_rekv` `RVS-Ego subsample5`:
+  - avg judge score: `0.7600`
+  - avg ROUGE-L F1: `0.2265`
+  - avg answer latency: `0.8021s`
+  - peak memory: `2.65 GiB`
+- `duo_plus_rekv` `RVS-Ego subsample5_offset5`:
+  - avg judge score: `0.7600`
+  - avg ROUGE-L F1: `0.2471`
+  - avg answer latency: `0.9156s`
+  - peak memory: `2.65 GiB`
+- `rekv` vs `duo_plus_rekv` interpretation on current `RVS-Ego` slices:
+  - `subsample5`
+    - `rekv`: judge `0.7733`, latency `0.9185s`, peak memory `2.67 GiB`
+    - `duo_plus_rekv`: judge `0.7600`, latency `0.8021s`, peak memory `2.65 GiB`
+  - `subsample5_offset5`
+    - `rekv`: judge `0.8000`, latency `1.2583s`, peak memory `2.67 GiB`
+    - `duo_plus_rekv`: judge `0.7600`, latency `0.9156s`, peak memory `2.65 GiB`
+  - current takeaway:
+    - A+B is consistently faster than plain ReKV on both slices
+    - memory is slightly lower than plain ReKV
+    - judge quality is close on `subsample5` but below ReKV on `offset5`
+    - so the integration is functioning, but it is not yet clearly improving ReKV quality
 
 ## Pending Next Steps
 - `RVS-Ego` baseline two-slice track is complete for:
@@ -282,8 +319,9 @@
   - then `subsample5`
 - Validate `duo_plus_rekv` on the same small-slice protocol:
   - 1-video smoke completed on `RVS-Ego`
-  - next: `RVS-Ego` `subsample5`
-  - then `RVS-Ego` `subsample5_offset5`
+  - `RVS-Ego` `subsample5` completed
+  - `RVS-Ego` `subsample5_offset5` completed
+  - next: inspect qualitative failures and decide whether A+B needs tuning before moving to `RVS-Movie subsample5`
 - Keep full-dataset evaluation deferred until the subsample-only track is stable end to end.
 
 ## Local Run Safeguards
@@ -408,8 +446,338 @@
 - RVS-Movie 1-video smoke main plots: `outputs/evaluations_streaming/rvs-movie/movie_smoke1/main_plots/`
 - RVS-Movie 1-video smoke debug plots: `outputs/evaluations_streaming/rvs-movie/movie_smoke1/debug_plots/`
 - `duo_plus_rekv` RVS-Ego smoke JSON: `outputs/evaluations_streaming/rvs-ego/ab_smoke1/duo_plus_rekv/duo_plus_rekv_s05_topk64_nlocal15000.json`
+- `duo_plus_rekv` RVS-Ego subsample5 JSON: `outputs/evaluations_streaming/rvs-ego/subsample5/duo_plus_rekv/duo_plus_rekv_s05_topk64_nlocal15000.json`
+- `duo_plus_rekv` RVS-Ego subsample5 offset5 JSON: `outputs/evaluations_streaming/rvs-ego/subsample5_offset5/duo_plus_rekv/duo_plus_rekv_s05_topk64_nlocal15000.json`
+- `duo_plus_rekv` RVS-Ego subsample5 A+B debug plots: `outputs/evaluations_streaming/rvs-ego/subsample5/ab_debug_plots/`
+- `duo_plus_rekv` RVS-Ego subsample5 offset5 A+B debug plots: `outputs/evaluations_streaming/rvs-ego/subsample5_offset5/ab_debug_plots/`
+- `rekv` vs `duo_plus_rekv` comparison bundle: `outputs/evaluations_streaming/rvs-ego/rekv_vs_duo_plus_rekv/`
 
 
 The right A+B interpretation is:
 ReKV should handle what long-range information is kept/retrieved.
 DuoAttention should handle how the LM attends over that kept context more efficiently.
+
+## A+B Tuning Status
+- Goal:
+  - find a `duo_plus_rekv` setting that stays within about `0.01-0.02` judge score of plain `rekv` on both `RVS-Ego` slices while still improving latency or memory
+- Completed `RVS-Ego` tuning runs:
+  - `subsample5`
+    - `rekv`
+      - judge: `0.7733`
+      - avg answer latency: `0.9185s`
+      - peak memory: `2.669 GiB`
+    - `duo_plus_rekv s=0.5`
+      - judge: `0.7600`
+      - avg answer latency: `0.8021s`
+      - peak memory: `2.652 GiB`
+    - `duo_plus_rekv s=0.25`
+      - judge: `0.7733`
+      - avg answer latency: `1.0415s`
+      - peak memory: `2.658 GiB`
+    - `duo_plus_rekv s=0.375`
+      - judge: `0.7733`
+      - avg answer latency: `0.9171s`
+      - peak memory: `2.658 GiB`
+  - `subsample5_offset5`
+    - `rekv`
+      - judge: `0.8000`
+      - avg answer latency: `1.2583s`
+      - peak memory: `2.667 GiB`
+    - `duo_plus_rekv s=0.5`
+      - judge: `0.7600`
+      - avg answer latency: `0.9156s`
+      - peak memory: `2.652 GiB`
+    - `duo_plus_rekv s=0.25`
+      - judge: `0.7867`
+      - avg answer latency: `1.2723s`
+      - peak memory: `2.658 GiB`
+    - `duo_plus_rekv s=0.375`
+      - judge: `0.7867`
+      - avg answer latency: `1.3055s`
+      - peak memory: `2.658 GiB`
+- Current interpretation:
+  - `s=0.5` gives the clearest efficiency win, but loses too much judge quality on both slices
+  - `s=0.25` and `s=0.375` recover judge quality to within the acceptable range, but neither currently beats plain `rekv` on latency
+  - `s=0.375` is the best current A+B candidate because it matches `rekv` on `subsample5`, stays within `0.0133` judge on `offset5`, and is much better than `s=0.25` on latency for `subsample5`
+- Next A+B tuning step:
+  - keep `sparsity = 0.375`
+  - increase `deploy_recent_size` from the current default to `1536`
+  - run this first on the two `RVS-Ego` subsample slices before considering a larger recent window or moving on to `RVS-Movie` subsamples
+
+## A+B Recent-Window Tuning
+- Completed `deploy_recent_size = 1536` runs with `sparsity = 0.375`:
+  - `subsample5`
+    - `duo_plus_rekv s=0.375, recent=1536`
+      - judge: `0.7733`
+      - avg answer latency: `0.9293s`
+      - peak memory: `2.658 GiB`
+      - avg ROUGE-L F1: `0.2187`
+  - `subsample5_offset5`
+    - `duo_plus_rekv s=0.375, recent=1536`
+      - judge: `0.7867`
+      - avg answer latency: `1.2704s`
+      - peak memory: `2.658 GiB`
+      - avg ROUGE-L F1: `0.2238`
+- Interpretation:
+  - increasing the recent window did not improve judge score beyond the best current sparsity-only setting
+  - `recent=1536` is slightly slower than the default recent window on both slices
+  - the best current A+B candidate remains:
+    - `duo_plus_rekv`
+    - `sparsity = 0.375`
+    - default deploy recent size from the trained attention config
+- Current decision:
+  - stop A+B tuning on `RVS-Ego` for now
+  - carry the best current A+B setting into `RVS-Movie` subsample experiments
+
+## RVS-Movie Subsample5 Results
+- Batch shape:
+  - `5` videos
+  - `3` conversations per video
+  - `15` total conversations
+- Judged methods:
+  - `full_streaming`
+  - `duo_streaming (s=0.5)`
+  - `duo_streaming (s=0.0)`
+  - `rekv`
+  - `duo_plus_rekv (s=0.375)`
+- Aggregate metrics:
+  - `full_streaming`
+    - judge: `0.8000`
+    - avg ROUGE-L F1: `0.0791`
+    - avg token F1: `0.0981`
+    - avg answer latency: `1.7508s`
+    - peak memory: `3.98 GiB`
+  - `duo_streaming (s=0.5)`
+    - judge: `0.7867`
+    - avg ROUGE-L F1: `0.0890`
+    - avg token F1: `0.1085`
+    - avg answer latency: `2.1885s`
+    - peak memory: `2.94 GiB`
+  - `duo_streaming (s=0.0)`
+    - judge: `0.8133`
+    - avg ROUGE-L F1: `0.0856`
+    - avg token F1: `0.1002`
+    - avg answer latency: `2.5108s`
+    - peak memory: `3.96 GiB`
+  - `rekv`
+    - judge: `0.8000`
+    - avg ROUGE-L F1: `0.0928`
+    - avg token F1: `0.1019`
+    - avg answer latency: `1.3106s`
+    - peak memory: `2.79 GiB`
+  - `duo_plus_rekv (s=0.375)`
+    - judge: `0.7867`
+    - avg ROUGE-L F1: `0.0941`
+    - avg token F1: `0.0989`
+    - avg answer latency: `1.6461s`
+    - peak memory: `2.78 GiB`
+- Interpretation:
+  - `rekv` is the strongest overall operating point on this `RVS-Movie` slice
+  - `duo_plus_rekv` keeps memory roughly at `rekv` level, but still trails `rekv` on judge score and latency
+  - `duo_streaming (s=0.5)` reduces memory substantially relative to `full_streaming`, but on this slice it is slower and slightly worse on judge score
+  - `duo_streaming (s=0.0)` again behaves like a useful control: high memory, slow decoding, and no clear advantage over the learned sparse setting
+
+## Latest Result Paths
+- `RVS-Movie` subsample5 full JSON:
+  - `outputs/evaluations_streaming/rvs-movie/subsample5_movie/full_streaming/full_streaming.json`
+- `RVS-Movie` subsample5 Duo JSON:
+  - `outputs/evaluations_streaming/rvs-movie/subsample5_movie/duo_streaming/duo_streaming_s05.json`
+- `RVS-Movie` subsample5 Duo full-head control JSON:
+  - `outputs/evaluations_streaming/rvs-movie/subsample5_movie/duo_streaming/duo_streaming_s00.json`
+- `RVS-Movie` subsample5 ReKV JSON:
+  - `outputs/evaluations_streaming/rvs-movie/subsample5_movie/rekv/rekv_topk64_nlocal15000.json`
+- `RVS-Movie` subsample5 A+B JSON:
+  - `outputs/evaluations_streaming/rvs-movie/subsample5_movie/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json`
+- `RVS-Movie` subsample5 plots:
+  - `outputs/evaluations_streaming/rvs-movie/subsample5_movie/ab_debug_plots/`
+- `RVS-Movie` subsample5 comparison bundle:
+  - `outputs/evaluations_streaming/rvs-movie/subsample5_movie/comparison_bundle/`
+
+## Official Promoted Outputs
+- Curated final package:
+  - `outputs/evaluations_streaming/final_subsample_package/`
+- Promoted global summary bundle:
+  - `outputs/evaluations_streaming/subsample_only_summary/`
+- Promoted cross-slice bundles:
+  - `outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5/`
+  - `outputs/evaluations_streaming/rvs-movie/subsample_comparison_offset0_vs_offset5/`
+- Promoted qualitative artifact:
+  - `outputs/evaluations_streaming/final_subsample_package/qualitative_examples.md`
+  - `outputs/evaluations_streaming/final_subsample_package/qualitative_examples.json`
+
+## Full Eval Readiness
+- The code is now ready for full local evaluation on the MI300X.
+- Recommended launcher:
+  - `scripts/run_streaming_full_eval_local.sh`
+- This launcher is designed for long local runs:
+  - explicit output paths under `outputs/evaluations_streaming/<dataset>/full_eval/`
+  - safe resume behavior when prior JSONs already exist
+  - promoted A+B default:
+    - `duo_plus_rekv`
+    - `sparsity = 0.375`
+    - `retrieve_size = 64`
+    - `n_local = 15000`
+  - post-hoc judge pass over the saved full-eval JSONs
+
+## Full Eval Instructions
+- Common environment:
+  - `source /root/miniforge3/etc/profile.d/conda.sh`
+  - `conda activate duo`
+- Full `RVS-Ego` run with all official methods:
+  - `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh all`
+- Full `RVS-Movie` run with all official methods:
+  - `DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh all`
+- Run only a single official method:
+  - `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh rekv`
+  - `DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh ab`
+- Resume a stopped full run safely:
+  - `DATASET=rvs_ego RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
+  - `DATASET=rvs_movie RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
+- Force overwrite instead of resume:
+  - `DATASET=rvs_ego OVERWRITE=1 bash scripts/run_streaming_full_eval_local.sh all`
+- Re-run the judge only on existing full-eval JSONs:
+  - `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh judge`
+  - `DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh judge`
+- Optional throttles and overrides:
+  - limit videos for a dry run:
+    - `DATASET=rvs_ego MAX_VIDEOS=10 bash scripts/run_streaming_full_eval_local.sh all`
+  - limit conversations per video:
+    - `DATASET=rvs_movie MAX_CONVERSATIONS=3 bash scripts/run_streaming_full_eval_local.sh all`
+  - change checkpoint cadence:
+    - `DATASET=rvs_ego FLUSH_EVERY_VIDEOS=5 bash scripts/run_streaming_full_eval_local.sh all`
+  - pass extra runner flags:
+    - `DATASET=rvs_movie EXTRA_ARGS=\"--disable-progress-bar\" bash scripts/run_streaming_full_eval_local.sh rekv`
+- Full-eval output roots:
+  - `outputs/evaluations_streaming/rvs-ego/full_eval/`
+  - `outputs/evaluations_streaming/rvs-movie/full_eval/`
+
+## RVS-Movie Offset5 Results
+- Batch shape:
+  - `5` videos
+  - `3` conversations per video
+  - `15` total conversations
+- Aggregate metrics:
+  - `full_streaming`
+    - judge: `0.7733`
+    - avg ROUGE-L F1: `0.1126`
+    - avg token F1: `0.1340`
+    - avg answer latency: `3.7262s`
+    - peak memory: `6.42 GiB`
+  - `duo_streaming (s=0.5)`
+    - judge: `0.7867`
+    - avg ROUGE-L F1: `0.1214`
+    - avg token F1: `0.1341`
+    - avg answer latency: `3.9888s`
+    - peak memory: `4.25 GiB`
+  - `duo_streaming (s=0.0)`
+    - judge: `0.7733`
+    - avg ROUGE-L F1: `0.1116`
+    - avg token F1: `0.1331`
+    - avg answer latency: `6.0154s`
+    - peak memory: `6.40 GiB`
+  - `rekv`
+    - judge: `0.8000`
+    - avg ROUGE-L F1: `0.1289`
+    - avg token F1: `0.1488`
+    - avg answer latency: `1.3319s`
+    - peak memory: `2.69 GiB`
+  - `duo_plus_rekv (s=0.375)`
+    - judge: `0.8000`
+    - avg ROUGE-L F1: `0.1300`
+    - avg token F1: `0.1455`
+    - avg answer latency: `1.4921s`
+    - peak memory: `2.68 GiB`
+- Interpretation:
+  - on this harder `RVS-Movie` slice, `rekv` and `duo_plus_rekv` clearly separate from the other methods on both quality and latency
+  - `duo_plus_rekv` now matches `rekv` on judge score while using slightly less memory, though it is still a bit slower than plain `rekv`
+  - `duo_streaming (s=0.5)` continues to reduce memory relative to full attention, but it is not the best operating point on this movie slice
+
+## Consolidated Subsample-Only Summary
+- Four completed slices:
+  - `RVS-Ego` `subsample5`
+  - `RVS-Ego` `subsample5_offset5`
+  - `RVS-Movie` `subsample5_movie`
+  - `RVS-Movie` `subsample5_movie_offset5`
+- Consolidated summary bundle:
+  - `outputs/evaluations_streaming/subsample_only_summary/`
+- Cross-slice bundles:
+  - `RVS-Ego`
+    - `outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5/`
+  - `RVS-Movie`
+    - `outputs/evaluations_streaming/rvs-movie/subsample_comparison_offset0_vs_offset5/`
+- Main current takeaways:
+  - `rekv` is the most consistently strong operating point across the four completed subsample slices
+  - `duo_streaming (s=0.5)` is dataset-dependent:
+    - on `RVS-Ego` `subsample5` it looked attractive versus `full_streaming`
+    - on the completed `RVS-Movie` slices it is mainly a memory-saving baseline rather than the best quality-latency tradeoff
+  - `duo_plus_rekv (s=0.375)` is the best current A+B setting:
+    - `RVS-Ego subsample5`: matches `rekv` on judge and latency, slightly lower memory
+    - `RVS-Ego offset5`: close to `rekv`, but still behind on judge and a bit slower
+    - `RVS-Movie subsample5`: behind `rekv`
+    - `RVS-Movie offset5`: matches `rekv` on judge, slightly lower memory, slightly slower
+- Current practical conclusion:
+  - A+B is technically sound and sometimes complementary, but it is not yet a universal improvement over `rekv`
+  - the strongest present paper story is:
+    - `duo_streaming` vs `full_streaming` as a streaming Duo baseline
+    - `rekv` as the strongest standalone streaming memory baseline
+    - `duo_plus_rekv` as a promising hybrid that needs more tuning or broader validation before claiming a consistent win over `rekv`
+
+## Final Packaging Status
+- Packaging goal:
+  - freeze the four completed subsample slices as the current experimental core
+  - promote only the best current A+B setting into the stable package
+  - keep exploratory tuning runs outside the curated package
+- Completed:
+  - created `outputs/evaluations_streaming/final_subsample_package/`
+  - copied promoted per-slice JSONs for both datasets
+  - copied promoted per-slice plot bundles for both datasets
+  - copied per-dataset cross-slice comparison bundles
+  - copied the global cross-dataset summary bundle
+  - generated:
+    - `final_metrics.csv`
+    - `final_metrics.md`
+    - `promoted_runs.json`
+    - `paper_story.md`
+    - `qualitative_examples.md`
+    - `qualitative_examples.json`
+- Intentional exclusion from the final package:
+  - smoke-only outputs
+  - exploratory A+B tuning runs other than the promoted `duo_plus_rekv (s=0.375)` result
+  - debug-only intermediate material that is not needed for the main story
+
+## Qualitative Notes
+- One limitation of the current local judge is that it is coarse:
+  - many semantically different predictions still land in the same score bucket
+  - so qualitative inspection remains important alongside the aggregate judge score
+- Clear `duo_streaming` improvement over `full_streaming` on `RVS-Movie offset5`:
+  - question: `What setting houses the majority of their confrontations?`
+  - reference: `A domestic environment.`
+  - `full_streaming` (`0.6`): described a generic industrial-looking scene with sparks
+  - `duo_streaming` (`0.8`): focused on the room/window setting and stayed closer to the actual scene structure
+- Another `duo_streaming` improvement over `full_streaming` on `RVS-Movie offset5`:
+  - question: `What starts the series of confrontations in the video?`
+  - reference: `A state policeman pulls over the women for speeding.`
+  - `full_streaming` (`0.6`): overcommitted to a gun-pointing interpretation
+  - `duo_streaming` (`0.8`): stayed closer to a police-stop narrative, even though it was still imperfect
+- Clear `rekv` win over A+B on `RVS-Ego offset5`:
+  - question: `What location is shown in the video frame?`
+  - reference: `It shows a road.`
+  - `rekv` (`0.8`): `The video frame shows a person walking on a sidewalk next to a road.`
+  - `duo_plus_rekv` (`0.6`): `...a paved road with a white line... possibly a sidewalk or a pedestrian path.`
+  - interpretation:
+    - A+B added uncertainty and extra wording where plain `rekv` stayed cleaner
+- Clear `rekv` win over A+B on `RVS-Movie offset0`:
+  - question: `What starts the sequence of events in the tranquil town?`
+  - reference: `The discovery of a severed ear among overgrown grass.`
+  - `rekv` (`0.8`): still imperfect, but gave a coherent town-opening description
+  - `duo_plus_rekv` (`0.6`): drifted further into generic yard/front-house description
+- A practical qualitative pattern:
+  - when A+B loses to `rekv`, it often becomes more verbose or uncertain
+  - when `duo_streaming` helps versus `full_streaming`, it often avoids a dramatic but incorrect over-interpretation and stays closer to visible scene structure
+
+## Deferred Work
+- Full-dataset evaluation remains deferred.
+- No further A+B tuning is currently promoted.
+- If work resumes later, the next phase should start from:
+  - full-dataset preparation and long-run safeguards review
+  - deciding whether to reuse the current `duo_plus_rekv (s=0.375)` setting unchanged or reopen A+B tuning

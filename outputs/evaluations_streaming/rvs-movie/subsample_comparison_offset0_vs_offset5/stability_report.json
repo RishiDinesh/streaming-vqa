@@ -1,0 +1,79 @@
+{
+  "groups": [
+    {
+      "dataset": "rvs_movie",
+      "display_label": "duo_plus_rekv (topk=64,s=0.375)",
+      "slice_names": [
+        "subsample5_movie_offset5",
+        "subsample5_movie"
+      ],
+      "quality_range": 0.01333333333333342,
+      "latency_range_sec": 0.1540221005331357,
+      "peak_memory_range_bytes": 108577280,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie_offset5/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json"
+      ]
+    },
+    {
+      "dataset": "rvs_movie",
+      "display_label": "duo_streaming (s=0.0)",
+      "slice_names": [
+        "subsample5_movie_offset5",
+        "subsample5_movie"
+      ],
+      "quality_range": 0.040000000000000036,
+      "latency_range_sec": 3.5046727981998025,
+      "peak_memory_range_bytes": 2616411136,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie_offset5/duo_streaming/duo_streaming_s00.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/duo_streaming/duo_streaming_s00.json"
+      ]
+    },
+    {
+      "dataset": "rvs_movie",
+      "display_label": "duo_streaming (s=0.5)",
+      "slice_names": [
+        "subsample5_movie_offset5",
+        "subsample5_movie"
+      ],
+      "quality_range": 1.1102230246251565e-16,
+      "latency_range_sec": 1.8002313598008186,
+      "peak_memory_range_bytes": 1408400896,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie_offset5/duo_streaming/duo_streaming_s05.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/duo_streaming/duo_streaming_s05.json"
+      ]
+    },
+    {
+      "dataset": "rvs_movie",
+      "display_label": "full_streaming",
+      "slice_names": [
+        "subsample5_movie_offset5",
+        "subsample5_movie"
+      ],
+      "quality_range": 0.026666666666666616,
+      "latency_range_sec": 1.9753766948003126,
+      "peak_memory_range_bytes": 2622897664,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie_offset5/full_streaming/full_streaming.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/full_streaming/full_streaming.json"
+      ]
+    },
+    {
+      "dataset": "rvs_movie",
+      "display_label": "rekv (topk=64,n_local=15000)",
+      "slice_names": [
+        "subsample5_movie_offset5",
+        "subsample5_movie"
+      ],
+      "quality_range": 0.0,
+      "latency_range_sec": 0.021319525333577394,
+      "peak_memory_range_bytes": 108754944,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie_offset5/rekv/rekv_topk64_nlocal15000.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/rekv/rekv_topk64_nlocal15000.json"
+      ]
+    }
+  ]
+}
