@@ -1,22 +1,28 @@
 # Streaming Evaluation Outputs
 
-This directory contains both curated final outputs and exploratory/intermediate artifacts for the streaming `ReKV` vs `DuoAttention` work.
+This folder has been cleaned so the main things left are the official subsample results and the curated final package.
 
-Promoted final package:
-- `final_subsample_package/`
+## Start Here
+- [final_subsample_package](/workspace/streaming-vqa/outputs/evaluations_streaming/final_subsample_package)
 
-Promoted summaries outside the final package:
+Best entry files:
+- [final_metrics.md](/workspace/streaming-vqa/outputs/evaluations_streaming/final_subsample_package/final_metrics.md)
+- [paper_story.md](/workspace/streaming-vqa/outputs/evaluations_streaming/final_subsample_package/paper_story.md)
+- [qualitative_examples.md](/workspace/streaming-vqa/outputs/evaluations_streaming/final_subsample_package/qualitative_examples.md)
+
+## Official Raw Subsample Outputs Retained
+- `rvs-ego/subsample5/`
+- `rvs-ego/subsample5_offset5/`
 - `rvs-ego/subsample_comparison_offset0_vs_offset5/`
+- `rvs-movie/subsample5_movie/`
+- `rvs-movie/subsample5_movie_offset5/`
 - `rvs-movie/subsample_comparison_offset0_vs_offset5/`
 - `subsample_only_summary/`
 
-Exploratory or intermediate material:
-- smoke runs such as `ab_smoke1/` and `movie_smoke1/`
-- A+B tuning directories such as `subsample5_ab_tuning/`, `subsample5_offset5_ab_tuning/`, and `*_recent1536/`
-- slice-local debug plot directories outside the curated final package
+## What Was Removed
+- smoke-only runs
+- exploratory tuning directories
+- temporary cache-validation outputs
+- temporary full-eval dry-run outputs
 
-When in doubt, start with:
-- `final_subsample_package/README.md`
-- `final_subsample_package/final_metrics.md`
-- `final_subsample_package/paper_story.md`
-- `final_subsample_package/qualitative_examples.md`
+If you want the clean project story, use `final_subsample_package/` and `ReKV_Duo.md`.

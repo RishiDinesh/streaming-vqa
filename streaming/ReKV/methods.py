@@ -173,16 +173,32 @@ def extract_video_features(
     processor: Any,
     video_chunk: np.ndarray,
 ) -> torch.Tensor:
+    video_chunk = np.asarray(video_chunk)
+    if video_chunk.ndim == 3:
+        video_chunk = np.expand_dims(video_chunk, axis=0)
+    if video_chunk.ndim != 4:
+        raise ValueError(
+            "Expected video_chunk with shape [frames, height, width, channels], "
+            f"got {tuple(video_chunk.shape)}"
+        )
+
+    pixel_values_videos = processor.video_processor(
+        video_chunk,
+        return_tensors="pt",
+    ).pixel_values_videos
+    return _project_pixel_values_videos(model, pixel_values_videos)
+
+
+def _project_pixel_values_videos(
+    model: LlavaOnevisionForConditionalGeneration,
+    pixel_values_videos: torch.Tensor,
+) -> torch.Tensor:
     lm_device = next(model.language_model.parameters()).device
     lm_dtype = next(model.language_model.parameters()).dtype
     vision_device = next(model.vision_tower.parameters()).device
     vision_dtype = next(model.vision_tower.parameters()).dtype
 
-    pixel_values_videos = processor.video_processor(
-        video_chunk,
-        return_tensors="pt",
-    ).pixel_values_videos.to(device=vision_device, dtype=vision_dtype)
-
+    pixel_values_videos = pixel_values_videos.to(device=vision_device, dtype=vision_dtype)
     batch_size, frames, channels, height, width = pixel_values_videos.shape
     pixel_values_videos = pixel_values_videos.view(batch_size * frames, channels, height, width)
     vision_feature_layer = model.config.vision_feature_layer
@@ -213,6 +229,38 @@ def extract_video_features(
     video_features = model.apply_pooling(video_features)
     video_features = video_features.reshape(batch_size, frames * video_features.shape[1], -1)
     return video_features.to(device=lm_device, dtype=lm_dtype)
+
+
+def extract_frame_features_batch(
+    model: LlavaOnevisionForConditionalGeneration,
+    processor: Any,
+    frames: np.ndarray,
+) -> torch.Tensor:
+    frame_batch = np.asarray(frames)
+    if frame_batch.ndim == 3:
+        frame_batch = np.expand_dims(frame_batch, axis=0)
+    if frame_batch.ndim != 4:
+        raise ValueError(
+            "Expected frames with shape [num_frames, height, width, channels], "
+            f"got {tuple(frame_batch.shape)}"
+        )
+
+    feature_list: list[torch.Tensor] = []
+    for frame in frame_batch:
+        feature_list.append(extract_video_features(model, processor, frame)[0])
+
+    if not feature_list:
+        raise ValueError("extract_frame_features_batch requires at least one frame.")
+
+    return torch.stack(feature_list, dim=0)
+
+
+def extract_single_frame_features(
+    model: LlavaOnevisionForConditionalGeneration,
+    processor: Any,
+    frame: np.ndarray,
+) -> torch.Tensor:
+    return extract_frame_features_batch(model, processor, np.expand_dims(frame, axis=0))[0]
 
 
 def maybe_reset_peak_memory(device: torch.device) -> None:
@@ -320,6 +368,10 @@ class StreamingMethod(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def ingest_features(self, feature_tensor: torch.Tensor, timestamp_sec: float) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     def answer_question(self, question: str, metadata: dict[str, Any] | None = None) -> MethodAnswer:
         raise NotImplementedError
 
@@ -360,6 +412,16 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         self.ingested_timestamps_sec: list[float] = []
         self.ingest_latencies_sec: list[float] = []
 
+    def _language_model_io_spec(self) -> tuple[torch.device, torch.dtype]:
+        parameter = next(self.model.language_model.parameters())
+        return parameter.device, parameter.dtype
+
+    def extract_frame_features_batch(self, frames: np.ndarray) -> torch.Tensor:
+        return extract_frame_features_batch(self.model, self.processor, frames)
+
+    def extract_single_frame_features(self, frame: np.ndarray) -> torch.Tensor:
+        return extract_single_frame_features(self.model, self.processor, frame)
+
     def _encode_init_prompt(self) -> None:
         with torch.inference_mode():
             out = self.model.language_model(
@@ -380,10 +442,29 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         self._encode_init_prompt()
 
     def ingest_frame(self, frame: np.ndarray, timestamp_sec: float) -> dict[str, Any]:
-        video_chunk = np.expand_dims(frame, axis=0)
+        frame_features = self.extract_single_frame_features(frame)
+        return self.ingest_features(frame_features, timestamp_sec)
+
+    def ingest_features(self, feature_tensor: torch.Tensor, timestamp_sec: float) -> dict[str, Any]:
+        if not isinstance(feature_tensor, torch.Tensor):
+            raise TypeError(
+                "feature_tensor must be a torch.Tensor, "
+                f"got {type(feature_tensor).__name__}"
+            )
+
+        video_features = feature_tensor
+        if video_features.ndim == 2:
+            video_features = video_features.unsqueeze(0)
+        if video_features.ndim != 3:
+            raise ValueError(
+                "feature_tensor must have shape [tokens, hidden] or [1, tokens, hidden], "
+                f"got {tuple(video_features.shape)}"
+            )
+
+        lm_device, lm_dtype = self._language_model_io_spec()
         start = time.perf_counter()
         with torch.inference_mode():
-            video_features = extract_video_features(self.model, self.processor, video_chunk)
+            video_features = video_features.to(device=lm_device, dtype=lm_dtype)
             self._validate_video_features(video_features)
             out = self.model.language_model(
                 inputs_embeds=video_features,

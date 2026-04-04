@@ -17,6 +17,11 @@ except ImportError:  # pragma: no cover
 
 from .common import aggregate_score_bundles, open_ended_score_bundle
 from .datasets import RVS_DATASET_CONFIGS, build_dataset_from_args, sample_video_frames
+from .feature_cache import (
+    FEATURE_CACHE_VERSION,
+    load_cached_feature_video,
+    load_feature_cache_manifest,
+)
 from .methods import DEFAULT_DUO_ATTN_DIR, build_method_from_args
 
 
@@ -57,6 +62,7 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "bfloat16", "float16", "float32"],
     )
     parser.add_argument("--output-path", default=None)
+    parser.add_argument("--feature-cache-root", default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--overwrite-output", action="store_true")
     parser.add_argument("--flush-every-videos", type=int, default=1)
@@ -141,6 +147,8 @@ def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
         "n_frame_tokens": args.n_frame_tokens,
         "rekv_fattn": args.rekv_fattn,
         "disable_rekv_pin_memory": args.disable_rekv_pin_memory,
+        "feature_cache_root": args.feature_cache_root,
+        "ingest_source": "cached_features" if args.feature_cache_root else "raw_frames",
     }
 
 
@@ -252,6 +260,7 @@ def evaluate_samples(
     checkpoint_path: Path | None = None,
     flush_every_videos: int = 1,
     show_progress_bar: bool = True,
+    feature_cache_root: Path | None = None,
 ) -> dict[str, Any]:
     video_results: list[dict[str, Any]] = list(existing_videos or [])
     completed_sample_ids = {video["sample_id"] for video in video_results}
@@ -274,17 +283,49 @@ def evaluate_samples(
 
     newly_completed = 0
     for sample in iterable:
-        sampled_video = sample_video_frames(
-            sample.video_path,
-            sample_fps,
-            duration_sec=sample.duration,
-        )
+        ingest_source = "raw_frames"
+        sampled_frame_indices_total: list[int]
+        sampled_timestamps_total: list[float]
+        sampled_native_fps: float
+        sampled_base_fps: int
+        sampled_total_frames: int
+        feature_cache_path: str | None = None
+        cached_video = None
+        sampled_video = None
+        if feature_cache_root is not None:
+            cached_video = load_cached_feature_video(
+                feature_cache_root,
+                sample_id=sample.sample_id,
+                video_id=sample.video_id,
+                sample_fps=sample_fps,
+            )
+            ingest_source = "cached_features"
+            feature_cache_path = cached_video.cache_path
+            sampled_frame_indices_total = list(cached_video.sampled_frame_indices)
+            sampled_timestamps_total = list(cached_video.sampled_timestamps_sec)
+            sampled_native_fps = cached_video.native_fps
+            sampled_base_fps = cached_video.sampling_base_fps
+            sampled_total_frames = len(cached_video.sampled_frame_indices)
+        else:
+            sampled_video = sample_video_frames(
+                sample.video_path,
+                sample_fps,
+                duration_sec=sample.duration,
+            )
+            sampled_frame_indices_total = list(sampled_video.sampled_frame_indices)
+            sampled_timestamps_total = list(sampled_video.sampled_timestamps_sec)
+            sampled_native_fps = sampled_video.native_fps
+            sampled_base_fps = sampled_video.sampling_base_fps
+            sampled_total_frames = len(sampled_video.sampled_frame_indices)
+
         method.reset(
             {
                 "sample_id": sample.sample_id,
                 "video_id": sample.video_id,
                 "video_path": sample.video_path,
                 "duration": sample.duration,
+                "ingest_source": ingest_source,
+                "feature_cache_path": feature_cache_path,
             }
         )
 
@@ -294,17 +335,27 @@ def evaluate_samples(
         for conversation in sample.conversations:
             target_frame_count = min(
                 conversation_target_frame_count(conversation.end_time, sample_fps),
-                len(sampled_video.sampled_frame_indices),
+                sampled_total_frames,
             )
             new_indices = list(range(ingested_until_idx + 1, target_frame_count))
             ingest_records: list[dict[str, Any]] = []
-            for idx in new_indices:
-                ingest_record = method.ingest_frame(
-                    sampled_video.get_frame(idx),
-                    sampled_video.sampled_timestamps_sec[idx],
-                )
-                ingest_records.append(ingest_record)
-                ingested_until_idx = idx
+            if cached_video is not None:
+                for idx in new_indices:
+                    ingest_record = method.ingest_features(
+                        cached_video.get_feature(idx),
+                        cached_video.sampled_timestamps_sec[idx],
+                    )
+                    ingest_records.append(ingest_record)
+                    ingested_until_idx = idx
+            elif sampled_video is not None and new_indices:
+                decoded_frames = sampled_video.get_frames(new_indices)
+                for batch_offset, idx in enumerate(new_indices):
+                    ingest_record = method.ingest_frame(
+                        decoded_frames[batch_offset],
+                        sampled_video.sampled_timestamps_sec[idx],
+                    )
+                    ingest_records.append(ingest_record)
+                    ingested_until_idx = idx
 
             answer = method.answer_question(
                 conversation.question,
@@ -339,11 +390,13 @@ def evaluate_samples(
                 "video_path": sample.video_path,
                 "duration": sample.duration,
                 "sample_fps": sample_fps,
-                "native_fps": sampled_video.native_fps,
-                "sampling_base_fps": sampled_video.sampling_base_fps,
-                "num_sampled_frames_total": len(sampled_video.sampled_frame_indices),
-                "sampled_frame_indices_total": sampled_video.sampled_frame_indices,
-                "sampled_timestamps_sec_total": sampled_video.sampled_timestamps_sec,
+                "native_fps": sampled_native_fps,
+                "sampling_base_fps": sampled_base_fps,
+                "num_sampled_frames_total": sampled_total_frames,
+                "sampled_frame_indices_total": sampled_frame_indices_total,
+                "sampled_timestamps_sec_total": sampled_timestamps_total,
+                "ingest_source": ingest_source,
+                "feature_cache_path": feature_cache_path,
                 "conversations": conversation_results,
                 "runtime_stats": method.get_runtime_stats(),
             }
@@ -386,6 +439,30 @@ def evaluate_samples(
 
 def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     run_config = build_run_config(args)
+    feature_cache_root = Path(args.feature_cache_root) if args.feature_cache_root else None
+    if feature_cache_root is not None:
+        cache_manifest = load_feature_cache_manifest(feature_cache_root)
+        cache_dataset = str(cache_manifest.get("dataset"))
+        cache_model = str(cache_manifest.get("model"))
+        cache_sample_fps = float(cache_manifest.get("sample_fps"))
+        cache_version = str(cache_manifest.get("cache_version"))
+        if cache_version != FEATURE_CACHE_VERSION:
+            raise ValueError(
+                f"Feature cache version mismatch: expected {FEATURE_CACHE_VERSION}, got {cache_version}"
+            )
+        if cache_dataset != args.dataset:
+            raise ValueError(
+                f"Feature cache dataset mismatch: expected {args.dataset!r}, got {cache_dataset!r}"
+            )
+        if cache_model != args.model:
+            raise ValueError(
+                f"Feature cache model mismatch: expected {args.model!r}, got {cache_model!r}"
+            )
+        if abs(cache_sample_fps - float(args.sample_fps)) > 1e-9:
+            raise ValueError(
+                f"Feature cache sample_fps mismatch: expected {args.sample_fps}, got {cache_sample_fps}"
+            )
+
     dataset = build_dataset_from_args(args)
     samples = dataset.load(
         video_id=args.video_id,
@@ -449,6 +526,7 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         checkpoint_path=checkpoint_path,
         flush_every_videos=args.flush_every_videos,
         show_progress_bar=not args.disable_progress_bar,
+        feature_cache_root=feature_cache_root,
     )
 
 
@@ -462,6 +540,8 @@ def main() -> int:
 
     output_path = Path(args.output_path) if args.output_path else default_output_path(args)
     args.output_path = str(output_path)
+    if args.feature_cache_root is not None:
+        args.feature_cache_root = str(Path(args.feature_cache_root).expanduser().resolve(strict=False))
     results = run_eval(args)
     write_json_atomic(results, Path(args.output_path))
     print(

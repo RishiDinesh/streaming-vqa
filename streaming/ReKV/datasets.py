@@ -33,6 +33,7 @@ class SampledVideo:
     video_path: str
     native_fps: float
     sampling_base_fps: int
+    num_source_frames: int
     sampled_frame_indices: list[int]
     sampled_timestamps_sec: list[float]
     _reader: Any
@@ -43,6 +44,14 @@ class SampledVideo:
             frame_batch = self._reader.get_batch([frame_index]).asnumpy()
             return frame_batch[0]
         return np.asarray(self._reader[frame_index])
+
+    def get_frames(self, sampled_indices: list[int]) -> np.ndarray:
+        if not sampled_indices:
+            return np.empty((0,), dtype=np.uint8)
+        frame_indices = [self.sampled_frame_indices[index] for index in sampled_indices]
+        if hasattr(self._reader, "get_batch"):
+            return self._reader.get_batch(frame_indices).asnumpy()
+        return np.stack([np.asarray(self._reader[frame_index]) for frame_index in frame_indices], axis=0)
 
 
 class RVSDataset:
@@ -264,6 +273,7 @@ def _sample_numpy_video(
         video_path=os.path.abspath(video_path),
         native_fps=native_fps,
         sampling_base_fps=sampling_base_fps,
+        num_source_frames=int(array.shape[0]),
         sampled_frame_indices=frame_indices,
         sampled_timestamps_sec=timestamps_sec,
         _reader=array,
@@ -287,6 +297,7 @@ def _sample_decord_video(video_path: str, sample_fps: float) -> SampledVideo:
         video_path=os.path.abspath(video_path),
         native_fps=native_fps,
         sampling_base_fps=sampling_base_fps,
+        num_source_frames=int(len(reader)),
         sampled_frame_indices=frame_indices,
         sampled_timestamps_sec=timestamps_sec,
         _reader=reader,

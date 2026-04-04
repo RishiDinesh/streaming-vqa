@@ -1,0 +1,153 @@
+Streaming ReKV vs DuoAttention handoff
+======================================
+
+Use this file as the starting context for a new chat.
+
+Current goal
+------------
+- This repo work is only for the streaming `ReKV` vs `DuoAttention` lane.
+- Hardware/runtime assumption:
+  - one local AMD `MI300X`
+  - no SLURM for this task
+- Do not push to GitHub. Only the user will push.
+
+Core streaming semantics
+------------------------
+- causal frame ingest only
+- one sampled frame per forward pass
+- shared state across questions in the same video
+- no offline full-video prefill
+- no LongBench-style tail replay
+- ReKV and DuoAttention must use the same sampled-frame schedule
+
+Validated methods
+-----------------
+- `full_streaming`
+- `duo_streaming`
+- `rekv`
+- `duo_plus_rekv`
+
+Current promoted settings
+-------------------------
+- `duo_streaming`
+  - `sparsity = 0.5`
+- `rekv`
+  - `retrieve_size = 64`
+  - `n_local = 15000`
+- `duo_plus_rekv`
+  - `sparsity = 0.375`
+  - default deploy recent size
+  - `retrieve_size = 64`
+  - `n_local = 15000`
+
+Main implementation files
+-------------------------
+- `streaming/ReKV/run_eval.py`
+- `streaming/ReKV/datasets.py`
+- `streaming/ReKV/methods.py`
+- `streaming/ReKV/feature_cache.py`
+- `streaming/ReKV/precompute_features.py`
+- `streaming/ReKV/judge_results.py`
+- `streaming/ReKV/plot_results.py`
+- `streaming/ReKV/compare_subsamples.py`
+- `scripts/run_streaming_subsample5_local.sh`
+- `scripts/run_streaming_full_eval_local.sh`
+
+Important fixes already made
+----------------------------
+1. DuoAttention ROCm correctness
+- File: `duo_attn/patch/attn_compat.py`
+- Fixed wrong causal alignment for cached incremental attention on MI300X.
+
+2. Streaming causality
+- File: `streaming/ReKV/run_eval.py`
+- Fixed extra-frame ingestion at question time.
+
+3. ReKV + DuoAttention integration
+- File: `streaming/ReKV/rekv_core/attention/rekv_attention.py`
+- ReKV retrieval stays native.
+- Duo only applies after retrieval.
+
+4. Feature-cache safety
+- An attempted batched vision-forward cache path was not safe.
+- Final cache path uses exact raw-equivalent single-frame feature extraction, then stacks features on disk.
+
+What was fully validated
+------------------------
+Official subsample-only slices:
+- `RVS-Ego subsample5`
+- `RVS-Ego subsample5_offset5`
+- `RVS-Movie subsample5_movie`
+- `RVS-Movie subsample5_movie_offset5`
+
+Main findings
+-------------
+- `rekv` is the most consistently strong standalone method across the validated subsamples.
+- `duo_streaming (s=0.5)` is a meaningful memory-saving streaming baseline against `full_streaming`, but its quality-latency tradeoff depends on the dataset.
+- `duo_plus_rekv (s=0.375)` is a valid hybrid, but not yet a universal improvement over plain `rekv`.
+
+Best current story
+------------------
+- `duo_streaming` vs `full_streaming`
+- `rekv` as the strongest standalone streaming memory baseline
+- `duo_plus_rekv` as a promising hybrid, but not yet a universal winner
+
+Promoted result package
+-----------------------
+- `outputs/evaluations_streaming/final_subsample_package/`
+
+Best files to start from
+------------------------
+- `ReKV_Duo.md`
+- `outputs/evaluations_streaming/final_subsample_package/final_metrics.md`
+- `outputs/evaluations_streaming/final_subsample_package/paper_story.md`
+- `outputs/evaluations_streaming/final_subsample_package/qualitative_examples.md`
+
+Optimized full-eval workflow
+----------------------------
+1. Precompute shared visual features once:
+- `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh precompute`
+- `DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh precompute`
+
+2. Run the official full package from cache:
+- `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh all`
+- `DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh all`
+
+3. Optional ablation:
+- `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh all_with_control`
+
+4. Resume if interrupted:
+- `DATASET=rvs_ego RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
+- `DATASET=rvs_movie RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
+
+5. Judge only:
+- `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh judge`
+- `DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh judge`
+
+Feature-cache validation result
+-------------------------------
+Validated on one real `RVS-Movie` clip (`tt0090756`) with one conversation:
+- raw vs cached matched exactly for:
+  - `full_streaming`
+  - `duo_streaming (s=0.5)`
+  - `rekv`
+  - `duo_plus_rekv (s=0.375)`
+- ReKV retrieval stats also matched exactly.
+
+Short-clip wall times:
+- `full_streaming`: `7.63s -> 6.96s`
+- `duo_streaming`: `7.92s -> 7.44s`
+- `rekv`: `8.41s -> 7.85s`
+- `duo_plus_rekv`: `8.39s -> 7.86s`
+
+Important caveats
+-----------------
+- Full-dataset eval has not been run end to end yet.
+- The local judge is useful, but coarse.
+- Do not reintroduce a batched vision-forward cache shortcut unless it is revalidated carefully.
+
+User preferences to preserve
+----------------------------
+- Never push to GitHub.
+- For long runs, start them and only check progress when the user asks.
+- Keep `ReKV_Duo.md` updated when major milestones change.
