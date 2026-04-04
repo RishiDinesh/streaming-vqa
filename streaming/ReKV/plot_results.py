@@ -32,8 +32,47 @@ def load_result(path: Path) -> dict:
     return payload
 
 
-def method_label(payload: dict) -> str:
-    return payload["run_config"]["method"]
+def method_family(payload: dict) -> str:
+    return str(payload.get("run_config", {}).get("method", "unknown"))
+
+
+def _format_display_value(value: int | float | None) -> str | None:
+    if value is None:
+        return None
+    numeric = float(value)
+    if numeric.is_integer():
+        return f"{numeric:.1f}" if abs(numeric) < 10 else str(int(numeric))
+    return f"{numeric:.3g}"
+
+
+def display_label(payload: dict) -> str:
+    run_config = payload.get("run_config", {})
+    method = method_family(payload)
+    if method == "duo_streaming":
+        sparsity = run_config.get("sparsity")
+        if sparsity is None:
+            sparsity = duo_display_sparsity(payload)
+        formatted = _format_display_value(sparsity)
+        return f"duo_streaming (s={formatted})" if formatted is not None else "duo_streaming"
+    if method == "rekv":
+        topk = _format_display_value(run_config.get("retrieve_size"))
+        n_local = _format_display_value(run_config.get("n_local"))
+        parts: list[str] = []
+        if topk is not None:
+            parts.append(f"topk={topk}")
+        if n_local is not None:
+            parts.append(f"n_local={n_local}")
+        return f"rekv ({','.join(parts)})" if parts else "rekv"
+    if method == "duo_plus_rekv":
+        topk = _format_display_value(run_config.get("retrieve_size"))
+        sparsity = _format_display_value(run_config.get("sparsity"))
+        parts: list[str] = []
+        if topk is not None:
+            parts.append(f"topk={topk}")
+        if sparsity is not None:
+            parts.append(f"s={sparsity}")
+        return f"duo_plus_rekv ({','.join(parts)})" if parts else "duo_plus_rekv"
+    return method
 
 
 def maybe_gb(value: int | None) -> float | None:
@@ -42,10 +81,91 @@ def maybe_gb(value: int | None) -> float | None:
     return float(value) / (1024 ** 3)
 
 
+def duo_display_sparsity(payload: dict) -> float | None:
+    sparsity = payload.get("run_config", {}).get("sparsity")
+    if sparsity is not None:
+        return float(sparsity)
+    for video in payload.get("videos", []):
+        for conversation in video.get("conversations", []):
+            method_stats = conversation.get("method_stats", {})
+            if method_stats.get("actual_sparsity") is not None:
+                return float(method_stats["actual_sparsity"])
+    return None
+
+
+def sort_key(payload: dict) -> tuple[int, float, str]:
+    method = method_family(payload)
+    family_order = {"full_streaming": 0, "duo_streaming": 1, "rekv": 2, "duo_plus_rekv": 3}.get(method, 99)
+    duo_priority = 0.0
+    if method == "duo_streaming":
+        sparsity = duo_display_sparsity(payload)
+        duo_priority = -sparsity if sparsity is not None else 0.0
+    return (family_order, duo_priority, display_label(payload))
+
+
+def color_for_method(label: str) -> str:
+    palette = {
+        "full_streaming": "#4c78a8",
+        "duo_streaming": "#f58518",
+        "rekv": "#54a24b",
+        "duo_plus_rekv": "#b279a2",
+    }
+    return palette.get(label, "#9c755f")
+
+
+def color_for_payload(payload: dict) -> str:
+    method = method_family(payload)
+    if method == "duo_streaming" and (duo_display_sparsity(payload) or 0.5) <= 0.0:
+        return "#e45756"
+    return color_for_method(method)
+
+
+def marker_for_payload(payload: dict) -> str:
+    method = method_family(payload)
+    if method == "full_streaming":
+        return "o"
+    if method == "duo_streaming":
+        return "s" if (duo_display_sparsity(payload) or 0.5) <= 0.0 else "D"
+    if method == "rekv":
+        return "^"
+    if method == "duo_plus_rekv":
+        return "P"
+    return "o"
+
+
+def ordered_results(results: list[dict]) -> list[dict]:
+    return sorted(results, key=sort_key)
+
+
+def aggregate_quality_key(payload: dict) -> str:
+    aggregate_metrics = payload.get("aggregate_metrics", {})
+    if aggregate_metrics.get("primary_quality_metric"):
+        return str(aggregate_metrics["primary_quality_metric"])
+    if aggregate_metrics.get("avg_rouge_l_f1") is not None:
+        return "avg_rouge_l_f1"
+    if aggregate_metrics.get("avg_token_f1") is not None:
+        return "avg_token_f1"
+    return "normalized_exact_match"
+
+
+def aggregate_quality_label(payload: dict) -> str:
+    key = aggregate_quality_key(payload)
+    labels = {
+        "avg_judge_score": "Avg Judge Score",
+        "avg_rouge_l_f1": "Avg ROUGE-L F1",
+        "avg_token_f1": "Avg Token F1",
+        "normalized_exact_match": "Normalized EM",
+    }
+    return labels.get(key, key)
+
+
 def plot_aggregate_comparison(results: list[dict], output_dir: Path) -> Path:
-    labels = [method_label(item) for item in results]
+    results = ordered_results(results)
+    labels = [display_label(item) for item in results]
+    primary_quality_key = aggregate_quality_key(results[0]) if results else "normalized_exact_match"
+    primary_quality_title = aggregate_quality_label(results[0]) if results else "Primary Quality"
     metrics = [
-        ("Normalized EM", "normalized_exact_match"),
+        (primary_quality_title, primary_quality_key),
         ("Avg TTFT (s)", "avg_ttft_sec"),
         ("Avg Answer Latency (s)", "avg_answer_latency_sec"),
         ("Avg Frame Ingest (s)", "avg_frame_ingest_latency_sec"),
@@ -53,13 +173,12 @@ def plot_aggregate_comparison(results: list[dict], output_dir: Path) -> Path:
 
     fig, axes = plt.subplots(2, 2, figsize=(10, 7))
     axes = axes.flatten()
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
-
     for axis, (title, key) in zip(axes, metrics):
         values = [item["aggregate_metrics"].get(key) for item in results]
-        axis.bar(labels, values, color=colors[: len(labels)])
+        axis.bar(labels, values, color=[color_for_payload(item) for item in results])
         axis.set_title(title)
         axis.grid(axis="y", linestyle="--", alpha=0.3)
+        axis.tick_params(axis="x", rotation=15)
 
     fig.tight_layout()
     out_path = output_dir / "aggregate_comparison.png"
@@ -69,16 +188,82 @@ def plot_aggregate_comparison(results: list[dict], output_dir: Path) -> Path:
 
 
 def plot_memory_comparison(results: list[dict], output_dir: Path) -> Path:
-    labels = [method_label(item) for item in results]
+    results = ordered_results(results)
+    labels = [display_label(item) for item in results]
     values = [maybe_gb(item["aggregate_metrics"].get("peak_memory_bytes")) for item in results]
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(labels, values, color=["#1f77b4", "#ff7f0e"][: len(labels)])
+    ax.bar(labels, values, color=[color_for_payload(item) for item in results])
     ax.set_title("Peak GPU Memory")
     ax.set_ylabel("GB")
     ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.tick_params(axis="x", rotation=15)
     fig.tight_layout()
     out_path = output_dir / "peak_memory_comparison.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def plot_quality_latency_tradeoff(results: list[dict], output_dir: Path) -> Path:
+    results = ordered_results(results)
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for payload in results:
+        label = display_label(payload)
+        aggregate_metrics = payload["aggregate_metrics"]
+        quality_key = aggregate_quality_key(payload)
+        x = aggregate_metrics.get("avg_answer_latency_sec")
+        y = aggregate_metrics.get(quality_key)
+        if x is None or y is None:
+            continue
+        ax.scatter(
+            [x],
+            [y],
+            s=110,
+            color=color_for_payload(payload),
+            marker=marker_for_payload(payload),
+            label=label,
+        )
+        ax.annotate(label, (x, y), xytext=(5, 5), textcoords="offset points")
+
+    ax.set_title("Quality vs Answer Latency")
+    ax.set_xlabel("Avg Answer Latency (s)")
+    ax.set_ylabel(aggregate_quality_label(results[0]) if results else "Quality")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    out_path = output_dir / "quality_latency_tradeoff.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def plot_quality_memory_tradeoff(results: list[dict], output_dir: Path) -> Path:
+    results = ordered_results(results)
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for payload in results:
+        label = display_label(payload)
+        aggregate_metrics = payload["aggregate_metrics"]
+        quality_key = aggregate_quality_key(payload)
+        x = maybe_gb(aggregate_metrics.get("peak_memory_bytes"))
+        y = aggregate_metrics.get(quality_key)
+        if x is None or y is None:
+            continue
+        ax.scatter(
+            [x],
+            [y],
+            s=110,
+            color=color_for_payload(payload),
+            marker=marker_for_payload(payload),
+            label=label,
+        )
+        ax.annotate(label, (x, y), xytext=(5, 5), textcoords="offset points")
+
+    ax.set_title("Quality vs Peak GPU Memory")
+    ax.set_xlabel("Peak GPU Memory (GB)")
+    ax.set_ylabel(aggregate_quality_label(results[0]) if results else "Quality")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    out_path = output_dir / "quality_memory_tradeoff.png"
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     return out_path
@@ -88,6 +273,7 @@ def flatten_conversations(payload: dict) -> list[dict]:
     rows: list[dict] = []
     for video in payload.get("videos", []):
         for idx, conversation in enumerate(video.get("conversations", [])):
+            scores = conversation.get("scores", {})
             rows.append(
                 {
                     "video_id": video["video_id"],
@@ -95,26 +281,35 @@ def flatten_conversations(payload: dict) -> list[dict]:
                     "question": conversation["question"],
                     "end_time": float(conversation["end_time"]),
                     "frames_ingested": int(conversation["num_frames_ingested_before_answer"]),
+                    "peak_memory_bytes": conversation["method_stats"].get("peak_memory_bytes"),
                     "ttft_sec": conversation["method_stats"].get("ttft_sec"),
                     "answer_latency_sec": conversation["method_stats"].get("answer_latency_sec"),
                     "retrieval_latency_sec": conversation["method_stats"].get("retrieval_latency_sec"),
                     "avg_retrieved_block_count": conversation["method_stats"].get("avg_retrieved_block_count"),
+                    "normalized_exact_match": scores.get(
+                        "normalized_exact_match",
+                        conversation.get("normalized_exact_match"),
+                    ),
+                    "token_f1": scores.get("token_f1"),
+                    "rouge_l_f1": scores.get("rouge_l_f1"),
+                    "judge_score": scores.get("judge_score"),
                 }
             )
     return rows
 
 
 def plot_per_conversation(results: list[dict], output_dir: Path) -> Path:
+    results = ordered_results(results)
     fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
-    colors = {"duo_streaming": "#1f77b4", "rekv": "#ff7f0e"}
-
     for payload in results:
-        label = method_label(payload)
+        label = display_label(payload)
         rows = flatten_conversations(payload)
         xs = list(range(len(rows)))
-        axes[0].plot(xs, [row["frames_ingested"] for row in rows], marker="o", label=label, color=colors.get(label))
-        axes[1].plot(xs, [row["ttft_sec"] for row in rows], marker="o", label=label, color=colors.get(label))
-        axes[2].plot(xs, [row["answer_latency_sec"] for row in rows], marker="o", label=label, color=colors.get(label))
+        color = color_for_payload(payload)
+        marker = marker_for_payload(payload)
+        axes[0].plot(xs, [row["frames_ingested"] for row in rows], marker=marker, label=label, color=color)
+        axes[1].plot(xs, [row["ttft_sec"] for row in rows], marker=marker, label=label, color=color)
+        axes[2].plot(xs, [row["answer_latency_sec"] for row in rows], marker=marker, label=label, color=color)
 
     axes[0].set_ylabel("Frames Ingested")
     axes[0].set_title("Per-Conversation Streaming Progress")
@@ -131,20 +326,85 @@ def plot_per_conversation(results: list[dict], output_dir: Path) -> Path:
     return out_path
 
 
-def plot_question_timeline(results: list[dict], output_dir: Path) -> Path:
-    fig, ax = plt.subplots(figsize=(10, 5))
-    colors = {"duo_streaming": "#1f77b4", "rekv": "#ff7f0e"}
-
+def plot_efficiency_vs_context(results: list[dict], output_dir: Path) -> Path:
+    results = ordered_results(results)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
     for payload in results:
-        label = method_label(payload)
+        label = display_label(payload)
+        rows = flatten_conversations(payload)
+        xs = [row["frames_ingested"] for row in rows]
+        color = color_for_payload(payload)
+        marker = marker_for_payload(payload)
+        axes[0].plot(xs, [row["answer_latency_sec"] for row in rows], marker=marker, label=label, color=color)
+        axes[1].plot(
+            xs,
+            [maybe_gb(row["peak_memory_bytes"]) for row in rows],
+            marker=marker,
+            label=label,
+            color=color,
+        )
+
+    axes[0].set_title("Latency and Memory vs Processed Frames")
+    axes[0].set_ylabel("Answer Latency (s)")
+    axes[1].set_ylabel("Peak GPU Memory (GB)")
+    axes[1].set_xlabel("Frames Ingested Before Answer")
+    for axis in axes:
+        axis.grid(True, linestyle="--", alpha=0.3)
+        axis.legend()
+    fig.tight_layout()
+    out_path = output_dir / "efficiency_vs_context.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def plot_quality_vs_context(results: list[dict], output_dir: Path) -> Path:
+    results = ordered_results(results)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for payload in results:
+        label = display_label(payload)
+        rows = flatten_conversations(payload)
+        xs = [row["frames_ingested"] for row in rows]
+        if any(row["judge_score"] is not None for row in rows):
+            quality_key = "judge_score"
+        elif any(row["rouge_l_f1"] is not None for row in rows):
+            quality_key = "rouge_l_f1"
+        else:
+            quality_key = "normalized_exact_match"
+        ys = [row[quality_key] for row in rows]
+        ax.plot(
+            xs,
+            ys,
+            marker=marker_for_payload(payload),
+            label=label,
+            color=color_for_payload(payload),
+        )
+
+    ax.set_title("Quality vs Processed Frames")
+    ax.set_xlabel("Frames Ingested Before Answer")
+    ax.set_ylabel("Quality")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    out_path = output_dir / "quality_vs_context.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def plot_question_timeline(results: list[dict], output_dir: Path) -> Path:
+    results = ordered_results(results)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for payload in results:
+        label = display_label(payload)
         rows = flatten_conversations(payload)
         ax.step(
             [row["end_time"] for row in rows],
             [row["frames_ingested"] for row in rows],
             where="post",
-            marker="o",
+            marker=marker_for_payload(payload),
             label=label,
-            color=colors.get(label),
+            color=color_for_payload(payload),
         )
 
     ax.set_title("Frames Ingested by Question Time")
@@ -160,24 +420,47 @@ def plot_question_timeline(results: list[dict], output_dir: Path) -> Path:
 
 
 def plot_rekv_retrieval(results: list[dict], output_dir: Path) -> Path | None:
-    rekv_payload = next((payload for payload in results if method_label(payload) == "rekv"), None)
-    if rekv_payload is None:
+    results = ordered_results(results)
+    retrieval_payloads = [
+        payload for payload in results if method_family(payload) in {"rekv", "duo_plus_rekv"}
+    ]
+    if not retrieval_payloads:
         return None
 
-    rows = flatten_conversations(rekv_payload)
-    if not any(row["retrieval_latency_sec"] is not None for row in rows):
-        return None
-
-    xs = list(range(len(rows)))
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-    axes[0].plot(xs, [row["retrieval_latency_sec"] for row in rows], marker="o", color="#ff7f0e")
+    any_rows = False
+    for payload in retrieval_payloads:
+        rows = flatten_conversations(payload)
+        if not any(row["retrieval_latency_sec"] is not None for row in rows):
+            continue
+        any_rows = True
+        xs = list(range(len(rows)))
+        label = display_label(payload)
+        axes[0].plot(
+            xs,
+            [row["retrieval_latency_sec"] for row in rows],
+            marker=marker_for_payload(payload),
+            color=color_for_payload(payload),
+            label=label,
+        )
+        axes[1].plot(
+            xs,
+            [row["avg_retrieved_block_count"] for row in rows],
+            marker=marker_for_payload(payload),
+            color=color_for_payload(payload),
+            label=label,
+        )
+    if not any_rows:
+        plt.close(fig)
+        return None
+
     axes[0].set_ylabel("Retrieval Latency (s)")
     axes[0].set_title("ReKV Retrieval Diagnostics")
-    axes[1].plot(xs, [row["avg_retrieved_block_count"] for row in rows], marker="o", color="#ff7f0e")
     axes[1].set_ylabel("Avg Retrieved Blocks")
     axes[1].set_xlabel("Conversation Index")
     for axis in axes:
         axis.grid(True, linestyle="--", alpha=0.3)
+        axis.legend()
     fig.tight_layout()
     out_path = output_dir / "rekv_retrieval_diagnostics.png"
     fig.savefig(out_path, dpi=200)
@@ -185,10 +468,85 @@ def plot_rekv_retrieval(results: list[dict], output_dir: Path) -> Path | None:
     return out_path
 
 
+def plot_auto_sweeps(results: list[dict], output_dir: Path) -> list[Path]:
+    candidate_keys = [
+        ("sparsity", "Sparsity"),
+        ("retrieve_size", "Retrieve Size"),
+        ("n_local", "Local Window"),
+        ("sample_fps", "Sample FPS"),
+    ]
+    relevant_keys = {
+        "full_streaming": {"sample_fps"},
+        "duo_streaming": {"sample_fps", "sparsity"},
+        "rekv": {"sample_fps", "retrieve_size", "n_local"},
+        "duo_plus_rekv": {"sample_fps", "retrieve_size", "n_local", "sparsity"},
+    }
+    generated: list[Path] = []
+    for key, title in candidate_keys:
+        method_to_points: dict[str, list[tuple[float, dict]]] = {}
+        for payload in results:
+            method = method_family(payload)
+            if key not in relevant_keys.get(method, set()):
+                continue
+            value = payload.get("run_config", {}).get(key)
+            if value is None:
+                continue
+            method_to_points.setdefault(method, []).append((float(value), payload))
+        method_to_points = {
+            label: sorted(points, key=lambda item: item[0])
+            for label, points in method_to_points.items()
+            if len({point[0] for point in points}) >= 2
+        }
+        if not method_to_points:
+            continue
+
+        fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+        for label, points in method_to_points.items():
+            xs = [point[0] for point in points]
+            quality_key = aggregate_quality_key(points[0][1])
+            color = color_for_method(label)
+            axes[0].plot(
+                xs,
+                [point[1]["aggregate_metrics"].get(quality_key) for point in points],
+                marker="o",
+                label=label,
+                color=color,
+            )
+            axes[1].plot(
+                xs,
+                [point[1]["aggregate_metrics"].get("avg_answer_latency_sec") for point in points],
+                marker="o",
+                label=label,
+                color=color,
+            )
+            axes[2].plot(
+                xs,
+                [maybe_gb(point[1]["aggregate_metrics"].get("peak_memory_bytes")) for point in points],
+                marker="o",
+                label=label,
+                color=color,
+            )
+
+        axes[0].set_title(f"{title} Sweep")
+        axes[0].set_ylabel("Quality")
+        axes[1].set_ylabel("Latency (s)")
+        axes[2].set_ylabel("Peak GPU Memory (GB)")
+        axes[2].set_xlabel(title)
+        for axis in axes:
+            axis.grid(True, linestyle="--", alpha=0.3)
+            axis.legend()
+        fig.tight_layout()
+        out_path = output_dir / f"{key}_sweep_curves.png"
+        fig.savefig(out_path, dpi=200)
+        plt.close(fig)
+        generated.append(out_path)
+    return generated
+
+
 def main() -> int:
     args = parse_args()
     result_paths = [Path(path).expanduser().resolve() for path in args.result_paths]
-    results = [load_result(path) for path in result_paths]
+    results = ordered_results([load_result(path) for path in result_paths])
 
     output_dir = args.output_dir
     if output_dir is None:
@@ -198,12 +556,23 @@ def main() -> int:
     generated = {
         "aggregate_comparison": str(plot_aggregate_comparison(results, output_dir)),
         "peak_memory_comparison": str(plot_memory_comparison(results, output_dir)),
+        "quality_latency_tradeoff": str(plot_quality_latency_tradeoff(results, output_dir)),
+        "quality_memory_tradeoff": str(plot_quality_memory_tradeoff(results, output_dir)),
         "per_conversation_metrics": str(plot_per_conversation(results, output_dir)),
+        "efficiency_vs_context": str(plot_efficiency_vs_context(results, output_dir)),
+        "quality_vs_context": str(plot_quality_vs_context(results, output_dir)),
         "question_timeline": str(plot_question_timeline(results, output_dir)),
     }
     rekv_plot = plot_rekv_retrieval(results, output_dir)
     if rekv_plot is not None:
         generated["rekv_retrieval_diagnostics"] = str(rekv_plot)
+    sweep_plots = plot_auto_sweeps(results, output_dir)
+    if sweep_plots:
+        generated["sweep_curves"] = [str(path) for path in sweep_plots]
+    generated["series_labels"] = [display_label(payload) for payload in results]
+    generated["series_sources"] = {
+        display_label(payload): payload["_source_path"] for payload in results
+    }
 
     summary_path = output_dir / "plot_manifest.json"
     with open(summary_path, "w", encoding="utf-8") as handle:

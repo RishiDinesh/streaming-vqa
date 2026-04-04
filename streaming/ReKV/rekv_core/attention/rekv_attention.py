@@ -1,9 +1,110 @@
 import copy
 import torch
+import torch.nn.functional as F
 from typing import Optional
 
 from .kv_cache_manager import ContextManager
 from .dot_production_attention import get_multi_stage_dot_production_attention
+
+
+def _bottom_right_causal_mask(
+    len_q: int,
+    len_k: int,
+    device: torch.device,
+) -> torch.Tensor:
+    q_positions = torch.arange(len_k - len_q, len_k, device=device).unsqueeze(-1)
+    k_positions = torch.arange(len_k, device=device).unsqueeze(0)
+    return k_positions <= q_positions
+
+
+def _full_causal_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+) -> torch.Tensor:
+    if query.shape[1] != key.shape[1]:
+        if query.shape[1] % key.shape[1] != 0:
+            raise ValueError(
+                "Grouped-query attention requires query heads to be divisible by key/value heads: "
+                f"q_heads={query.shape[1]} kv_heads={key.shape[1]}"
+            )
+        repeat_factor = query.shape[1] // key.shape[1]
+        # Torch 2.4 ROCm SDPA does not expose enable_gqa, so expand KV heads manually.
+        key = key.repeat_interleave(repeat_factor, dim=1)
+        value = value.repeat_interleave(repeat_factor, dim=1)
+
+    len_q = query.shape[-2]
+    len_k = key.shape[-2]
+    if len_q == len_k:
+        return F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            is_causal=True,
+        )
+
+    causal_mask = _bottom_right_causal_mask(len_q, len_k, query.device).view(1, 1, len_q, len_k)
+    return F.scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask=causal_mask,
+        is_causal=False,
+    )
+
+
+def _rekv_local_init_attention(
+    Attn,
+    position_bias,
+    h_q: torch.Tensor,
+    h_k: torch.Tensor,
+    h_v: torch.Tensor,
+    *,
+    batch_size: int,
+    query_head_count: int,
+    dim_head: int,
+    len_q: int,
+    len_k: int,
+    n_local: int,
+    n_init: int,
+) -> torch.Tensor:
+    h_q_, h_k_, h_v_ = h_q, h_k, h_v
+    if len_q + n_local < h_k_.size(-2):
+        h_k_ = h_k_[:, :, h_k_.size(-2) - len_q - n_local :, :]
+        h_v_ = h_v_[:, :, h_v_.size(-2) - len_q - n_local :, :]
+
+    local_h_q, local_h_k = position_bias(h_q_, h_k_)
+    local_h_v = h_v_
+
+    if len_k > n_local:
+        init_h_q = position_bias.apply_rotary_pos_emb_one_angle(h_q, n_local)
+        init_h_k = h_k[:, :, :n_init, :].contiguous()
+        init_h_v = h_v[:, :, :n_init, :].contiguous()
+    else:
+        init_h_q = h_q
+        init_h_k = torch.empty(
+            (batch_size, h_k.shape[1], 0, dim_head),
+            device=h_k.device,
+            dtype=h_k.dtype,
+        )
+        init_h_v = torch.empty(
+            (batch_size, h_v.shape[1], 0, dim_head),
+            device=h_v.device,
+            dtype=h_v.dtype,
+        )
+
+    attn = Attn(local_h_q.shape, local_h_q.dtype, local_h_q.device)
+    attn.append(local_h_q, local_h_k, local_h_v, sliding_window=n_local)
+    attn.append(
+        init_h_q,
+        init_h_k,
+        init_h_v,
+        end=True,
+        sliding_window=(len_k - len_q, n_local),
+        complement_sliding_window=True,
+    )
+    score, _ = attn.get_result()
+    return score.view(batch_size, query_head_count, len_q, dim_head)
 
 
 def rekv_attention_forward(
@@ -91,43 +192,68 @@ def rekv_attention_forward(
             else:
                 current_key_value = (past_k, past_v)
 
-            """ 4. Get local QKV and apply RoPE to local QK """
-            h_q_, h_k_, h_v_ = h_q, h_k, h_v
-            if len_q + n_local < h_k_.size(-2):
-                h_k_ = h_k_[:, :, h_k_.size(-2) - len_q - n_local:, :]
-                h_v_ = h_v_[:, :, h_v_.size(-2) - len_q - n_local:, :]
-
-            local_h_q, local_h_k = position_bias(h_q_, h_k_)
-            local_h_v = h_v_
-
-            """ 5. Get init QKV and apply RoPE to init Q (Infinite-LM assigns the same position_ids to initial tokens) """
-            if len_k > n_local:
-                init_h_q = position_bias.apply_rotary_pos_emb_one_angle(
-                    h_q, n_local
+            duo_enabled = hasattr(self, "full_attention_heads") and getattr(
+                self, "rekv_duo_enabled", False
+            )
+            if duo_enabled:
+                full_attention_heads = self.full_attention_heads > 0.5
+                num_full_kv_head = int(full_attention_heads.sum().item())
+                num_full_query_head = num_full_kv_head * (num_heads // num_heads_kv)
+                num_streaming_query_head = num_heads - num_full_query_head
+                streaming_local_window = int(
+                    min(n_local, getattr(self, "recent_size", n_local))
                 )
-                init_h_k = h_k
-                init_h_v = h_v
-                init_h_k = init_h_k[:, :, :n_init, :].contiguous()
-                init_h_v = init_h_v[:, :, :n_init, :].contiguous()
 
+                full_score = None
+                streaming_score = None
+
+                if num_full_query_head > 0:
+                    full_q = h_q[:, :num_full_query_head, :, :]
+                    full_k = h_k[:, :num_full_kv_head, :, :]
+                    full_v = h_v[:, :num_full_kv_head, :, :]
+                    full_q, full_k = position_bias(full_q, full_k)
+                    full_score = _full_causal_attention(full_q, full_k, full_v)
+
+                if num_streaming_query_head > 0:
+                    streaming_q = h_q[:, num_full_query_head:, :, :]
+                    streaming_k = h_k[:, num_full_kv_head:, :, :]
+                    streaming_v = h_v[:, num_full_kv_head:, :, :]
+                    streaming_score = _rekv_local_init_attention(
+                        Attn,
+                        position_bias,
+                        streaming_q,
+                        streaming_k,
+                        streaming_v,
+                        batch_size=batch_size,
+                        query_head_count=num_streaming_query_head,
+                        dim_head=dim_head,
+                        len_q=len_q,
+                        len_k=len_k,
+                        n_local=streaming_local_window,
+                        n_init=n_init,
+                    )
+
+                if full_score is None:
+                    score = streaming_score
+                elif streaming_score is None:
+                    score = full_score
+                else:
+                    score = torch.cat([full_score, streaming_score], dim=1)
             else:
-                init_h_q = h_q
-                init_h_k = torch.empty(
-                    (batch_size, num_heads_kv, 0, dim_head),
-                    device=h_k.device,
-                    dtype=h_k.dtype
+                score = _rekv_local_init_attention(
+                    Attn,
+                    position_bias,
+                    h_q,
+                    h_k,
+                    h_v,
+                    batch_size=batch_size,
+                    query_head_count=num_heads,
+                    dim_head=dim_head,
+                    len_q=len_q,
+                    len_k=len_k,
+                    n_local=n_local,
+                    n_init=n_init,
                 )
-                init_h_v = torch.empty(
-                    (batch_size, num_heads_kv, 0, dim_head),
-                    device=h_v.device,
-                    dtype=h_v.dtype
-                )
-
-            """ 6. Sliding Window Attention """
-            attn = Attn(local_h_q.shape, local_h_q.dtype, local_h_q.device)
-            attn.append(local_h_q, local_h_k, local_h_v, sliding_window=n_local)
-            attn.append(init_h_q, init_h_k, init_h_v, end=True, sliding_window=(len_k - len_q, n_local), complement_sliding_window=True)
-            score, _ = attn.get_result()
 
             score = score.view(batch_size, num_heads, len_q, dim_head).permute(0, 2, 1, 3) # (batch, len_q, num_heads, dim_head)
             score = score.reshape(batch_size, len_q, num_heads * dim_head) # (batch, len_q, num_heads * dim_head)

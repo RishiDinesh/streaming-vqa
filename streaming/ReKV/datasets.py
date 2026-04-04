@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -12,39 +13,61 @@ from .common import StreamingConversation, StreamingVideoSample
 
 
 DEFAULT_RVS_REPO_ID = "Becomebright/RVS"
-DEFAULT_RVS_SUBSET = "ego"
-DEFAULT_RVS_ANNOTATION = "ego/ego4d_oe.json"
+
+RVS_DATASET_CONFIGS = {
+    "rvs_ego": {
+        "subset": "ego",
+        "annotation": "ego/ego4d_oe.json",
+        "label": "RVS-Ego",
+    },
+    "rvs_movie": {
+        "subset": "movie",
+        "annotation": "movie/movienet_oe.json",
+        "label": "RVS-Movie",
+    },
+}
 
 
 @dataclass(frozen=True)
 class SampledVideo:
     video_path: str
     native_fps: float
+    sampling_base_fps: int
     sampled_frame_indices: list[int]
     sampled_timestamps_sec: list[float]
     _reader: Any
 
     def get_frame(self, sampled_index: int) -> np.ndarray:
         frame_index = self.sampled_frame_indices[sampled_index]
-        frame_batch = self._reader.get_batch([frame_index]).asnumpy()
-        return frame_batch[0]
+        if hasattr(self._reader, "get_batch"):
+            frame_batch = self._reader.get_batch([frame_index]).asnumpy()
+            return frame_batch[0]
+        return np.asarray(self._reader[frame_index])
 
 
-class RVSEgoDataset:
+class RVSDataset:
     def __init__(
         self,
         *,
+        dataset_name: str,
         annotation_path: str | None = None,
         video_root: str | None = None,
         hf_repo_id: str = DEFAULT_RVS_REPO_ID,
-        hf_subset: str = DEFAULT_RVS_SUBSET,
         allow_hf_video_download: bool = False,
         cache_dir: str | None = None,
     ) -> None:
+        if dataset_name not in RVS_DATASET_CONFIGS:
+            raise ValueError(
+                f"Unsupported dataset_name={dataset_name!r}; expected one of {sorted(RVS_DATASET_CONFIGS)}"
+            )
+        config = RVS_DATASET_CONFIGS[dataset_name]
+        self.dataset_name = dataset_name
+        self.dataset_label = str(config["label"])
         self.annotation_path = annotation_path
         self.video_root = os.path.abspath(video_root) if video_root else None
         self.hf_repo_id = hf_repo_id
-        self.hf_subset = hf_subset
+        self.hf_subset = str(config["subset"])
+        self.annotation_filename = str(config["annotation"])
         self.allow_hf_video_download = bool(allow_hf_video_download)
         self.cache_dir = cache_dir
         self._annotation_file = self._resolve_annotation_file()
@@ -59,7 +82,7 @@ class RVSEgoDataset:
         return hf_hub_download(
             repo_id=self.hf_repo_id,
             repo_type="dataset",
-            filename=DEFAULT_RVS_ANNOTATION,
+            filename=self.annotation_filename,
             cache_dir=self.cache_dir,
         )
 
@@ -128,7 +151,7 @@ class RVSEgoDataset:
                     return os.path.abspath(path)
 
         raise FileNotFoundError(
-            "Could not resolve video file for RVS-Ego sample.\n"
+            f"Could not resolve video file for {self.dataset_label} sample.\n"
             f"annotation_file: {self._annotation_file}\n"
             f"video_root: {self.video_root}\n"
             f"original_value: {video_value}"
@@ -139,6 +162,7 @@ class RVSEgoDataset:
         *,
         video_id: str | None = None,
         video_index: int | None = None,
+        video_offset: int = 0,
         max_videos: int | None = None,
     ) -> list[StreamingVideoSample]:
         with open(self._annotation_file, "r", encoding="utf-8") as handle:
@@ -148,6 +172,8 @@ class RVSEgoDataset:
             raw_records = [record for record in raw_records if str(record["video_id"]) == video_id]
         if video_index is not None:
             raw_records = raw_records[video_index : video_index + 1]
+        elif video_offset > 0:
+            raw_records = raw_records[video_offset:]
         if max_videos is not None:
             raw_records = raw_records[:max_videos]
 
@@ -171,20 +197,19 @@ class RVSEgoDataset:
                 )
                 for item in conversations
             ]
+            sample_video_id = str(record["video_id"])
             video_path = self._resolve_video_path(record["video_path"])
-            video_id = str(record["video_id"])
             samples.append(
                 StreamingVideoSample(
-                    sample_id=f"{video_id}-{record_idx}",
-                    video_id=video_id,
+                    sample_id=f"{sample_video_id}-{record_idx}",
+                    video_id=sample_video_id,
                     video_path=video_path,
                     duration=float(record["duration"]),
                     conversations=normalized_conversations,
                     extra_metadata={
                         key: value
                         for key, value in record.items()
-                        if key
-                        not in {"video_id", "video_path", "duration", "conversations"}
+                        if key not in {"video_id", "video_path", "duration", "conversations"}
                     },
                 )
             )
@@ -192,10 +217,60 @@ class RVSEgoDataset:
         return samples
 
 
-def sample_video_frames(video_path: str, sample_fps: float) -> SampledVideo:
-    if sample_fps <= 0:
-        raise ValueError(f"sample_fps must be > 0, got {sample_fps}")
+class RVSEgoDataset(RVSDataset):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(dataset_name="rvs_ego", **kwargs)
 
+
+class RVSMovieDataset(RVSDataset):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(dataset_name="rvs_movie", **kwargs)
+
+
+def build_dataset_from_args(args) -> RVSDataset:
+    dataset_kwargs = {
+        "annotation_path": args.annotation_path,
+        "video_root": args.video_root,
+        "hf_repo_id": args.hf_repo_id,
+        "allow_hf_video_download": args.allow_hf_video_download,
+    }
+    if args.dataset == "rvs_ego":
+        return RVSEgoDataset(**dataset_kwargs)
+    if args.dataset == "rvs_movie":
+        return RVSMovieDataset(**dataset_kwargs)
+    raise ValueError(f"Unsupported dataset: {args.dataset}")
+
+
+def _sample_numpy_video(
+    video_path: str,
+    sample_fps: float,
+    duration_sec: float | None,
+) -> SampledVideo:
+    array = np.load(video_path, mmap_mode="r")
+    if array.ndim != 4:
+        raise ValueError(f"Expected 4D numpy video array at {video_path}, got shape {array.shape}")
+    if duration_sec is None or duration_sec <= 0:
+        raise ValueError(
+            "duration_sec must be provided for numpy-backed videos so sampling stays causal."
+        )
+
+    native_fps = float(array.shape[0] / duration_sec)
+    sampling_base_fps = max(int(round(native_fps)), 1)
+    stride = max(int(sampling_base_fps / sample_fps), 1)
+    frame_indices = list(range(0, array.shape[0], stride))
+    timestamps_sec = [frame_index / sampling_base_fps for frame_index in frame_indices]
+
+    return SampledVideo(
+        video_path=os.path.abspath(video_path),
+        native_fps=native_fps,
+        sampling_base_fps=sampling_base_fps,
+        sampled_frame_indices=frame_indices,
+        sampled_timestamps_sec=timestamps_sec,
+        _reader=array,
+    )
+
+
+def _sample_decord_video(video_path: str, sample_fps: float) -> SampledVideo:
     from decord import VideoReader, cpu
 
     reader = VideoReader(video_path, ctx=cpu(0), num_threads=1)
@@ -203,14 +278,31 @@ def sample_video_frames(video_path: str, sample_fps: float) -> SampledVideo:
     if native_fps <= 0:
         raise ValueError(f"Could not determine FPS for video: {video_path}")
 
-    stride = max(int(native_fps / sample_fps), 1)
+    sampling_base_fps = max(int(round(native_fps)), 1)
+    stride = max(int(sampling_base_fps / sample_fps), 1)
     frame_indices = list(range(0, len(reader), stride))
-    timestamps_sec = [frame_index / native_fps for frame_index in frame_indices]
+    timestamps_sec = [frame_index / sampling_base_fps for frame_index in frame_indices]
 
     return SampledVideo(
         video_path=os.path.abspath(video_path),
         native_fps=native_fps,
+        sampling_base_fps=sampling_base_fps,
         sampled_frame_indices=frame_indices,
         sampled_timestamps_sec=timestamps_sec,
         _reader=reader,
     )
+
+
+def sample_video_frames(
+    video_path: str,
+    sample_fps: float,
+    *,
+    duration_sec: float | None = None,
+) -> SampledVideo:
+    if sample_fps <= 0:
+        raise ValueError(f"sample_fps must be > 0, got {sample_fps}")
+
+    suffix = Path(video_path).suffix.lower()
+    if suffix == ".npy":
+        return _sample_numpy_video(video_path, sample_fps, duration_sec)
+    return _sample_decord_video(video_path, sample_fps)

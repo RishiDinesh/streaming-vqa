@@ -58,13 +58,32 @@ def _sdpa_flash_attn_func(
     if softmax_scale is not None:
         q = q * float(softmax_scale)
 
+    attn_mask = None
+    sdpa_is_causal = bool(causal)
+    if causal and q.size(-2) != k.size(-2):
+        # FlashAttention-style causal masking for cached decoding/prefill aligns
+        # each query position to the *right* edge of the KV sequence. PyTorch's
+        # generic `is_causal=True` path does not represent that offset when
+        # q_len < k_len, so we build the bottom-right causal mask explicitly.
+        q_len = q.size(-2)
+        k_len = k.size(-2)
+        query_positions = torch.arange(
+            k_len - q_len,
+            k_len,
+            device=q.device,
+        )
+        key_positions = torch.arange(k_len, device=q.device)
+        attn_mask = key_positions.unsqueeze(0) <= query_positions.unsqueeze(1)
+        attn_mask = attn_mask.view(1, 1, q_len, k_len)
+        sdpa_is_causal = False
+
     out = F.scaled_dot_product_attention(
         q,
         k,
         v,
-        attn_mask=None,
+        attn_mask=attn_mask,
         dropout_p=float(dropout_p),
-        is_causal=bool(causal),
+        is_causal=sdpa_is_causal,
     )
     return out.transpose(1, 2)
 
