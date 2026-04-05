@@ -1,3 +1,0 @@
-This file is kept only for backward compatibility.
-
-Use [prompt.txt](/workspace/streaming-vqa/prompt.txt) instead.

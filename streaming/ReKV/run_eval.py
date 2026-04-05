@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+from bisect import bisect_left
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -110,10 +111,15 @@ def default_output_path(args: argparse.Namespace) -> Path:
     return base_dir / args.method / model_slug / f"{timestamp}_results.json"
 
 
-def conversation_target_frame_count(end_time_sec: float, sample_fps: float) -> int:
+def conversation_target_frame_count(
+    end_time_sec: float,
+    sampled_timestamps_sec: list[float],
+) -> int:
     if end_time_sec <= 0:
         return 0
-    return max(int(end_time_sec * sample_fps), 0)
+    # Strict causal availability: ingest exactly the sampled frames whose
+    # timestamps are strictly earlier than the question cutoff.
+    return bisect_left(sampled_timestamps_sec, float(end_time_sec))
 
 
 def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
@@ -334,7 +340,10 @@ def evaluate_samples(
 
         for conversation in sample.conversations:
             target_frame_count = min(
-                conversation_target_frame_count(conversation.end_time, sample_fps),
+                conversation_target_frame_count(
+                    conversation.end_time,
+                    sampled_timestamps_total,
+                ),
                 sampled_total_frames,
             )
             new_indices = list(range(ingested_until_idx + 1, target_frame_count))

@@ -38,7 +38,7 @@ This project is deliberately about **streaming** behavior, so the runner never a
 For each video:
 1. Sample frames at `0.5 FPS`.
 2. Ingest sampled frames causally, one frame at a time.
-3. When a question arrives at time `t`, only frames strictly before the corresponding sampled cutoff are available.
+3. When a question arrives at time `t`, only sampled frames with `timestamp < t` are available.
 4. Answer from the method’s current state.
 
 ### What “current state” means
@@ -97,6 +97,11 @@ flowchart TD
 
 ## Workflow Diagram
 
+Diagram status:
+- No architecture-diagram change is required after the causality review.
+- The only clarification is that question-time availability is defined by sampled timestamps
+  (`timestamp < end_time`), not by a rounded FPS formula.
+
 ```mermaid
 flowchart LR
     A[1. Load dataset slice] --> B[2. Build causal sampled-frame schedule]
@@ -134,6 +139,50 @@ rekv
 duo_plus_rekv
   sampled frames -> visual features -> local KV + retrievable memory
   question -> native ReKV retrieval -> DuoAttention answer-time LM
+```
+
+## Mental Model Diagram
+
+```text
+1. duo_streaming
+
+video stream
+  -> per-frame visual features
+  -> live decoder attention over the stream
+     - some heads keep long-range access
+     - some heads use sink + recent window
+  -> answer
+
+Key idea:
+  Keep streaming context live, but make attention cheaper.
+
+
+2. rekv
+
+video stream
+  -> per-frame visual features
+  -> local live KV + retrievable long-range memory
+  -> question arrives
+  -> retrieve a small relevant subset of old context
+  -> answer
+
+Key idea:
+  Do not keep all old context live; retrieve what matters at question time.
+
+
+3. duo_plus_rekv
+
+video stream
+  -> per-frame visual features
+  -> local live KV + retrievable long-range memory
+  -> question arrives
+  -> native ReKV retrieval picks the relevant old context
+  -> DuoAttention runs on the reduced answer-time LM context
+  -> answer
+
+Key idea:
+  ReKV solves long-range memory first, then DuoAttention tries to make the
+  remaining answer-time attention cheaper.
 ```
 
 ## What Was Implemented
@@ -183,7 +232,11 @@ duo_plus_rekv
 ### 2. Streaming causality fix
 - File: [run_eval.py](/workspace/streaming-vqa/streaming/ReKV/run_eval.py)
 - Issue: one extra sampled frame was being ingested at question time.
-- Fix: upstream-style exclusive cutoff using `int(end_time * sample_fps)`.
+- Intermediate fix: upstream-style exclusive cutoff using `int(end_time * sample_fps)`.
+- Final fix after boundary review: use the actual sampled timestamps and ingest exactly
+  the frames with `timestamp < end_time`.
+- Reason: `int(end_time * sample_fps)` can still under-ingest by one frame when the
+  sampled schedule starts at `t=0` and `end_time` falls between sample-grid points.
 
 ### 3. ReKV + Duo integration fix
 - File: [rekv_attention.py](/workspace/streaming-vqa/streaming/ReKV/rekv_core/attention/rekv_attention.py)
@@ -239,6 +292,15 @@ This is slower than the unsafe shortcut, but it preserves comparability.
 
 ## Main Results
 
+Important provenance note:
+- The promoted A+B setting is `duo_plus_rekv (s=0.375)`.
+- The checked-in promoted `RVS-Movie` A+B subsample JSONs already match that setting.
+- Some older checked-in `RVS-Ego` A+B subsample JSONs still use `s=0.5` and should be
+  treated as legacy artifacts rather than the promoted package.
+- For any fresh subsample rerun, use
+  [run_streaming_subsample5_local.sh](/workspace/streaming-vqa/scripts/run_streaming_subsample5_local.sh),
+  which now launches A+B with `s=0.375`.
+
 ### RVS-Ego
 | Slice | Method | Judge | ROUGE-L F1 | Token F1 | Latency (s) | Peak Mem (GiB) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -275,6 +337,47 @@ This is slower than the unsafe shortcut, but it preserves comparability.
 
 Best qualitative artifact:
 - [qualitative_examples.md](/workspace/streaming-vqa/outputs/evaluations_streaming/final_subsample_package/qualitative_examples.md)
+
+## Plot Guide
+
+### Existing core plots
+- `aggregate_comparison.png`
+  - high-level per-slice comparison of quality, TTFT, answer latency, and frame-ingest latency
+- `peak_memory_comparison.png`
+  - direct peak-memory comparison across methods
+- `quality_latency_tradeoff.png`
+  - raw quality vs latency operating points
+- `quality_memory_tradeoff.png`
+  - raw quality vs memory operating points
+- `per_conversation_metrics.png`
+  - how frames ingested, TTFT, and answer latency vary over conversations inside one slice
+- `efficiency_vs_context.png`
+  - how latency and memory change as more frames have been processed
+- `quality_vs_context.png`
+  - whether quality degrades or improves later in the stream
+- `question_timeline.png`
+  - sanity-check that frame ingest grows causally with question time
+- `rekv_retrieval_diagnostics.png`
+  - ReKV-only retrieval latency and retrieved-block behavior
+
+### New decision-focused plots
+- `delta_to_baseline.png`
+  - shows whether Duo helps or hurts relative to its intended baseline
+  - `duo_streaming` is measured against `full_streaming`
+  - `duo_plus_rekv` is measured against `rekv`
+  - includes quality delta, answer-latency delta, and peak-memory delta
+- `pareto_tradeoffs_with_arrows.png`
+  - shows quality vs latency and quality vs memory in one figure
+  - dashed arrows show the directional move from:
+    - `full_streaming -> duo_streaming`
+    - `rekv -> duo_plus_rekv`
+  - this is the clearest “does Duo move the operating point in a useful direction?” plot
+- `delta_stability.png`
+  - cross-subsample stability of Duo’s effect, not just raw method scores
+  - tracks:
+    - `duo_streaming - full_streaming`
+    - `duo_plus_rekv - rekv`
+  - includes quality, latency, and memory deltas across the validated slices
 
 ## Optimized Full Eval Workflow
 
@@ -314,11 +417,45 @@ source /root/miniforge3/etc/profile.d/conda.sh
 conda activate duo
 ```
 
+### Quick environment sanity check
+Run the lightweight smoke test first:
+```bash
+python -m streaming.ReKV.smoke_test
+```
+
+If that passes, run a tiny real-data subsample check:
+```bash
+MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh full
+MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh duo
+MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh rekv
+MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh ab
+```
+
+What this verifies:
+- dataset loading
+- frame sampling
+- streaming ingest
+- DuoAttention path
+- ReKV path
+- A+B path
+- JSON writing
+
+If you want to test the cache workflow too, run:
+```bash
+DATASET=rvs_ego MAX_VIDEOS=1 bash scripts/run_streaming_full_eval_local.sh precompute
+DATASET=rvs_ego MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_full_eval_local.sh all
+```
+
 ### Subsample runs
 ```bash
 bash scripts/run_streaming_subsample5_local.sh all
 VIDEO_OFFSET=5 SUBSAMPLE_NAME=subsample5_offset5 bash scripts/run_streaming_subsample5_local.sh all
 ```
+
+Current promoted subsample settings:
+- `duo_streaming`: `s=0.5`
+- `rekv`: `retrieve_size=64`, `n_local=15000`
+- `duo_plus_rekv`: `s=0.375`, `retrieve_size=64`, `n_local=15000`
 
 ### Optimized full eval
 Precompute once:
@@ -332,6 +469,11 @@ Run official 4-method package:
 DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh all
 DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh all
 ```
+
+The official full-eval launcher already matches the promoted settings:
+- `duo_streaming`: `s=0.5`
+- `rekv`: `retrieve_size=64`, `n_local=15000`
+- `duo_plus_rekv`: `s=0.375`, `retrieve_size=64`, `n_local=15000`
 
 Run with Duo full-head ablation too:
 ```bash
@@ -363,6 +505,31 @@ DATASET=rvs_ego USE_FEATURE_CACHE=0 bash scripts/run_streaming_full_eval_local.s
 DATASET=rvs_ego FLUSH_EVERY_VIDEOS=5 bash scripts/run_streaming_full_eval_local.sh all
 ```
 
+### Regenerate plots after a run
+Per-slice plots:
+```bash
+python -m streaming.ReKV.plot_results \
+  outputs/evaluations_streaming/rvs-ego/subsample5/full_streaming/full_streaming.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5/duo_streaming/duo_streaming_s05.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5/rekv/rekv_topk64_nlocal15000.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json \
+  --output-dir outputs/evaluations_streaming/rvs-ego/subsample5/main_plots
+```
+
+Cross-subsample comparison bundle:
+```bash
+python -m streaming.ReKV.compare_subsamples \
+  outputs/evaluations_streaming/rvs-ego/subsample5/full_streaming/full_streaming.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5/duo_streaming/duo_streaming_s05.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5/rekv/rekv_topk64_nlocal15000.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5_offset5/full_streaming/full_streaming.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5_offset5/duo_streaming/duo_streaming_s05.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5_offset5/rekv/rekv_topk64_nlocal15000.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5_offset5/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json \
+  --output-dir outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5
+```
+
 ## Output Layout
 
 ### Main package to read or push
@@ -378,6 +545,9 @@ Best entry points:
 - `outputs/evaluations_streaming/rvs-ego/subsample5_offset5/`
 - `outputs/evaluations_streaming/rvs-movie/subsample5_movie/`
 - `outputs/evaluations_streaming/rvs-movie/subsample5_movie_offset5/`
+
+When reading old raw subsample outputs, always inspect `run_config.sparsity` before
+using A+B numbers in writeups.
 
 ### Cross-slice bundles retained
 - `outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5/`
@@ -410,3 +580,7 @@ If work resumes later:
    - `rekv`
    - `duo_plus_rekv (s=0.375)`
 3. Use `duo_streaming (s=0.0)` only as an ablation.
+4. Use the new delta plots to answer the project question:
+   - Does Duo help vs `full_streaming`?
+   - Does Duo help when added on top of `rekv`?
+   - Is that effect stable across subsamples?

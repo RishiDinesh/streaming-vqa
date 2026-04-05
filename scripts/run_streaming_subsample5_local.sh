@@ -11,7 +11,7 @@ Modes:
   duo             Run duo_streaming with sparsity=0.5
   duo_fullheads   Run duo_streaming with sparsity=0.0
   rekv            Run rekv with retrieve_size=64 and n_local=15000
-  ab              Run duo_plus_rekv with sparsity=0.5 and ReKV defaults
+  ab              Run duo_plus_rekv with sparsity=0.375 and ReKV defaults
   all             Run all five sequentially
 
 Environment overrides:
@@ -101,9 +101,9 @@ case "${MODE}" in
     run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
     ;;
   ab)
-    run_one duo_plus_rekv duo_plus_rekv_s05_topk64_nlocal15000 \
+    run_one duo_plus_rekv duo_plus_rekv_s0375_topk64_nlocal15000 \
       --attn-dir "${ATTN_DIR}" \
-      --sparsity 0.5 \
+      --sparsity 0.375 \
       --retrieve-size 64 \
       --n-local 15000
     ;;
@@ -112,9 +112,9 @@ case "${MODE}" in
     run_one duo_streaming duo_streaming_s05 --attn-dir "${ATTN_DIR}" --sparsity 0.5
     run_one duo_streaming duo_streaming_s00 --attn-dir "${ATTN_DIR}" --sparsity 0.0
     run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
-    run_one duo_plus_rekv duo_plus_rekv_s05_topk64_nlocal15000 \
+    run_one duo_plus_rekv duo_plus_rekv_s0375_topk64_nlocal15000 \
       --attn-dir "${ATTN_DIR}" \
-      --sparsity 0.5 \
+      --sparsity 0.375 \
       --retrieve-size 64 \
       --n-local 15000
     ;;

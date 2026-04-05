@@ -11,7 +11,7 @@ import numpy as np
 from .datasets import RVSEgoDataset, RVSMovieDataset, build_dataset_from_args, sample_video_frames
 from .methods import MethodAnswer, StreamingMethod
 from .plot_results import display_label
-from .run_eval import evaluate_samples
+from .run_eval import conversation_target_frame_count, evaluate_samples
 
 
 class RecordingMethod(StreamingMethod):
@@ -220,6 +220,10 @@ def main() -> int:
         assert left_result["aggregate_metrics"]["primary_quality_score"] is not None
         assert "scores" in left_result["videos"][0]["conversations"][0]
         assert "rouge_l_f1" in left_result["videos"][0]["conversations"][0]["scores"]
+        assert conversation_target_frame_count(0.5, [0.0, 0.5, 1.0, 1.5]) == 1
+        assert conversation_target_frame_count(0.75, [0.0, 0.5, 1.0, 1.5]) == 2
+        assert conversation_target_frame_count(1.0, [0.0, 0.5, 1.0, 1.5]) == 2
+        assert conversation_target_frame_count(1.01, [0.0, 0.5, 1.0, 1.5]) == 3
 
         for conversation in left_result["videos"][0]["conversations"]:
             assert all(
@@ -257,8 +261,8 @@ def main() -> int:
             {"run_config": {"method": "rekv", "retrieve_size": 64, "n_local": 15000}}
         ) == "rekv (topk=64,n_local=15000)"
         assert display_label(
-            {"run_config": {"method": "duo_plus_rekv", "retrieve_size": 64, "sparsity": 0.5}}
-        ) == "duo_plus_rekv (topk=64,s=0.5)"
+            {"run_config": {"method": "duo_plus_rekv", "retrieve_size": 64, "sparsity": 0.375}}
+        ) == "duo_plus_rekv (topk=64,s=0.375)"
 
         print("streaming/ReKV smoke test passed")
     return 0

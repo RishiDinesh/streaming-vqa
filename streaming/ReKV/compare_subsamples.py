@@ -195,6 +195,96 @@ def plot_slice_stability(results: list[dict], output_dir: Path) -> Path:
     return output_path
 
 
+def plot_delta_stability(results: list[dict], output_dir: Path) -> Path | None:
+    by_dataset_slice: dict[tuple[str, str], dict[str, dict]] = {}
+    for payload in results:
+        key = (
+            str(payload.get("run_config", {}).get("dataset")),
+            slice_name(payload),
+        )
+        by_dataset_slice.setdefault(key, {})[method_family(payload)] = payload
+
+    series: dict[str, list[tuple[str, str, dict[str, float]]]] = {
+        "duo_streaming - full_streaming": [],
+        "duo_plus_rekv - rekv": [],
+    }
+
+    for (dataset, subslice), payloads in sorted(by_dataset_slice.items(), key=lambda item: (item[0][0], slice_sort_key(item[0][1]))):
+        full_payload = payloads.get("full_streaming")
+        duo_payload = payloads.get("duo_streaming")
+        rekv_payload = payloads.get("rekv")
+        hybrid_payload = payloads.get("duo_plus_rekv")
+
+        if full_payload is not None and duo_payload is not None:
+            quality_key = aggregate_quality_key(duo_payload)
+            duo_agg = duo_payload.get("aggregate_metrics", {})
+            full_agg = full_payload.get("aggregate_metrics", {})
+            if duo_agg.get(quality_key) is not None and full_agg.get(quality_key) is not None:
+                series["duo_streaming - full_streaming"].append(
+                    (
+                        dataset,
+                        subslice,
+                        {
+                            "quality_delta": float(duo_agg[quality_key]) - float(full_agg[quality_key]),
+                            "latency_delta": float(duo_agg.get("avg_answer_latency_sec", 0.0)) - float(full_agg.get("avg_answer_latency_sec", 0.0)),
+                            "memory_delta_gb": (float(duo_agg.get("peak_memory_bytes", 0.0)) - float(full_agg.get("peak_memory_bytes", 0.0))) / (1024 ** 3),
+                        },
+                    )
+                )
+
+        if rekv_payload is not None and hybrid_payload is not None:
+            quality_key = aggregate_quality_key(hybrid_payload)
+            hybrid_agg = hybrid_payload.get("aggregate_metrics", {})
+            rekv_agg = rekv_payload.get("aggregate_metrics", {})
+            if hybrid_agg.get(quality_key) is not None and rekv_agg.get(quality_key) is not None:
+                series["duo_plus_rekv - rekv"].append(
+                    (
+                        dataset,
+                        subslice,
+                        {
+                            "quality_delta": float(hybrid_agg[quality_key]) - float(rekv_agg[quality_key]),
+                            "latency_delta": float(hybrid_agg.get("avg_answer_latency_sec", 0.0)) - float(rekv_agg.get("avg_answer_latency_sec", 0.0)),
+                            "memory_delta_gb": (float(hybrid_agg.get("peak_memory_bytes", 0.0)) - float(rekv_agg.get("peak_memory_bytes", 0.0))) / (1024 ** 3),
+                        },
+                    )
+                )
+
+    if not any(series.values()):
+        return None
+
+    fig, axes = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
+    metric_specs = [
+        ("quality_delta", "Quality Delta"),
+        ("latency_delta", "Answer Latency Delta (s)"),
+        ("memory_delta_gb", "Peak Memory Delta (GB)"),
+    ]
+    palette = {
+        "duo_streaming - full_streaming": "#f58518",
+        "duo_plus_rekv - rekv": "#b279a2",
+    }
+
+    for axis, (metric_key, y_label) in zip(axes, metric_specs):
+        axis.axhline(0.0, color="#666666", linewidth=1.0)
+        for label, entries in series.items():
+            if not entries:
+                continue
+            xs = [f"{dataset}:{subslice}" for dataset, subslice, _ in entries]
+            ys = [metrics[metric_key] for _, _, metrics in entries]
+            axis.plot(xs, ys, marker="o", label=label, color=palette[label])
+        axis.set_ylabel(y_label)
+        axis.grid(True, linestyle="--", alpha=0.3)
+        axis.legend()
+
+    axes[0].set_title("Cross-Slice Delta Stability")
+    axes[2].set_xlabel("Dataset : Slice")
+    axes[2].tick_params(axis="x", rotation=15)
+    fig.tight_layout()
+    output_path = output_dir / "delta_stability.png"
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    return output_path
+
+
 def main() -> int:
     args = parse_args()
     output_dir = args.output_dir.expanduser().resolve()
@@ -207,12 +297,15 @@ def main() -> int:
     with open(output_dir / "stability_report.json", "w", encoding="utf-8") as handle:
         json.dump(stability_report, handle, indent=2)
     plot_path = plot_slice_stability(results, output_dir)
+    delta_plot_path = plot_delta_stability(results, output_dir)
     manifest = {
         "summary_csv": str(output_dir / "summary.csv"),
         "summary_md": str(output_dir / "summary.md"),
         "stability_report": str(output_dir / "stability_report.json"),
         "slice_stability_plot": str(plot_path),
     }
+    if delta_plot_path is not None:
+        manifest["delta_stability_plot"] = str(delta_plot_path)
     with open(output_dir / "compare_manifest.json", "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
     print(f"Saved comparison summary to {output_dir}")

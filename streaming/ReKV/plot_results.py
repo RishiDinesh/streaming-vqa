@@ -269,6 +269,140 @@ def plot_quality_memory_tradeoff(results: list[dict], output_dir: Path) -> Path:
     return out_path
 
 
+def _aggregate_metric_value(payload: dict, key: str) -> float | None:
+    value = payload.get("aggregate_metrics", {}).get(key)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _find_baseline_payload(results: list[dict], method_name: str) -> dict | None:
+    matches = [payload for payload in results if method_family(payload) == method_name]
+    if not matches:
+        return None
+    return matches[0]
+
+
+def plot_delta_to_baseline(results: list[dict], output_dir: Path) -> Path | None:
+    results = ordered_results(results)
+    full_payload = _find_baseline_payload(results, "full_streaming")
+    rekv_payload = _find_baseline_payload(results, "rekv")
+    comparisons: list[tuple[str, dict, dict]] = []
+
+    for payload in results:
+        method = method_family(payload)
+        if method == "duo_streaming" and full_payload is not None:
+            comparisons.append((f"{display_label(payload)} - full_streaming", payload, full_payload))
+        elif method == "duo_plus_rekv" and rekv_payload is not None:
+            comparisons.append((f"{display_label(payload)} - rekv", payload, rekv_payload))
+
+    if not comparisons:
+        return None
+
+    quality_key = aggregate_quality_key(results[0])
+    metric_specs = [
+        (aggregate_quality_label(results[0]), quality_key, 1.0),
+        ("Avg Answer Latency Delta (s)", "avg_answer_latency_sec", 1.0),
+        ("Peak Memory Delta (GB)", "peak_memory_bytes", 1024 ** 3),
+    ]
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+    labels = [label for label, _, _ in comparisons]
+    colors = [color_for_payload(payload) for _, payload, _ in comparisons]
+    for axis, (title, metric_key, scale) in zip(axes, metric_specs):
+        deltas: list[float] = []
+        for _, payload, baseline in comparisons:
+            value = _aggregate_metric_value(payload, metric_key)
+            baseline_value = _aggregate_metric_value(baseline, metric_key)
+            if value is None or baseline_value is None:
+                deltas.append(0.0)
+            else:
+                deltas.append((value - baseline_value) / scale)
+
+        axis.axhline(0.0, color="#666666", linewidth=1.0)
+        axis.bar(labels, deltas, color=colors)
+        axis.set_title(title)
+        axis.grid(axis="y", linestyle="--", alpha=0.3)
+        axis.tick_params(axis="x", rotation=15)
+
+    fig.tight_layout()
+    out_path = output_dir / "delta_to_baseline.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def plot_pareto_with_arrows(results: list[dict], output_dir: Path) -> Path | None:
+    results = ordered_results(results)
+    if not results:
+        return None
+
+    quality_key = aggregate_quality_key(results[0])
+    full_payload = _find_baseline_payload(results, "full_streaming")
+    rekv_payload = _find_baseline_payload(results, "rekv")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    metric_specs = [
+        ("avg_answer_latency_sec", "Avg Answer Latency (s)"),
+        ("peak_memory_bytes", "Peak GPU Memory (GB)"),
+    ]
+
+    for axis, (metric_key, x_label) in zip(axes, metric_specs):
+        for payload in results:
+            x_value = _aggregate_metric_value(payload, metric_key)
+            y_value = _aggregate_metric_value(payload, quality_key)
+            if x_value is None or y_value is None:
+                continue
+            if metric_key == "peak_memory_bytes":
+                x_value /= 1024 ** 3
+            axis.scatter(
+                [x_value],
+                [y_value],
+                s=120,
+                color=color_for_payload(payload),
+                marker=marker_for_payload(payload),
+                label=display_label(payload),
+            )
+            axis.annotate(display_label(payload), (x_value, y_value), xytext=(5, 5), textcoords="offset points")
+
+        arrow_pairs: list[tuple[dict | None, dict | None]] = [
+            (full_payload, next((payload for payload in results if method_family(payload) == "duo_streaming"), None)),
+            (rekv_payload, next((payload for payload in results if method_family(payload) == "duo_plus_rekv"), None)),
+        ]
+        for start_payload, end_payload in arrow_pairs:
+            if start_payload is None or end_payload is None:
+                continue
+            start_x = _aggregate_metric_value(start_payload, metric_key)
+            end_x = _aggregate_metric_value(end_payload, metric_key)
+            start_y = _aggregate_metric_value(start_payload, quality_key)
+            end_y = _aggregate_metric_value(end_payload, quality_key)
+            if None in {start_x, end_x, start_y, end_y}:
+                continue
+            if metric_key == "peak_memory_bytes":
+                start_x /= 1024 ** 3
+                end_x /= 1024 ** 3
+            axis.annotate(
+                "",
+                xy=(end_x, end_y),
+                xytext=(start_x, start_y),
+                arrowprops={"arrowstyle": "->", "linestyle": "--", "color": "#666666", "lw": 1.2},
+            )
+
+        axis.set_xlabel(x_label)
+        axis.set_ylabel(aggregate_quality_label(results[0]))
+        axis.grid(True, linestyle="--", alpha=0.3)
+
+    axes[0].set_title("Pareto View: Quality vs Latency")
+    axes[1].set_title("Pareto View: Quality vs Memory")
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=2, bbox_to_anchor=(0.5, 1.04))
+    fig.tight_layout()
+    out_path = output_dir / "pareto_tradeoffs_with_arrows.png"
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def flatten_conversations(payload: dict) -> list[dict]:
     rows: list[dict] = []
     for video in payload.get("videos", []):
@@ -563,6 +697,12 @@ def main() -> int:
         "quality_vs_context": str(plot_quality_vs_context(results, output_dir)),
         "question_timeline": str(plot_question_timeline(results, output_dir)),
     }
+    delta_plot = plot_delta_to_baseline(results, output_dir)
+    if delta_plot is not None:
+        generated["delta_to_baseline"] = str(delta_plot)
+    pareto_plot = plot_pareto_with_arrows(results, output_dir)
+    if pareto_plot is not None:
+        generated["pareto_tradeoffs_with_arrows"] = str(pareto_plot)
     rekv_plot = plot_rekv_retrieval(results, output_dir)
     if rekv_plot is not None:
         generated["rekv_retrieval_diagnostics"] = str(rekv_plot)
