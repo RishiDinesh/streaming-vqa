@@ -1,0 +1,21 @@
+{
+  "sweep_point": {
+    "target_context": 32000,
+    "actual_context": 32000,
+    "prefix_seconds": 1188.5666666666666,
+    "prefix_ratio": 1.0,
+    "num_frames": 164
+  },
+  "prefill_chunk_sizes": [
+    4000,
+    8000,
+    12000,
+    16000,
+    20000,
+    24000,
+    28000,
+    32000
+  ],
+  "video_path": "data/samplee.mp4",
+  "model_name": "/root/streaming-vqa/models/llava-hf/llava-onevision-qwen2-0.5b-ov-hf"
+}
