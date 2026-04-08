@@ -2,11 +2,11 @@
 
 set -euo pipefail
 
-ROOT=/w/nobackup/385/scratch-space/expires-2026-Mar-27/rishi/streaming-vqa
+ROOT=${ROOT:-$(pwd)}
 cd "${ROOT}"
 mkdir -p logs
 
-PYTHON_BIN=${PYTHON_BIN:-/w/nobackup/385/scratch-space/expires-2026-Mar-27/rishi/.conda/envs/mmda-cuda124/bin/python}
+PYTHON_BIN=${PYTHON_BIN:-python}
 MODEL_NAME=${MODEL_NAME:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}
 ATTN_LOAD_DIR=${ATTN_LOAD_DIR:-./untracked/llava_ov_final_blocksparse/}
 VIDEO_ROOT=${VIDEO_ROOT:-./vnbench_data/VNBench_new}
@@ -28,7 +28,7 @@ submit_gpu_job() {
   sbatch --parsable \
     --job-name="${job_name}" \
     --partition=gpunodes \
-    --gres=gpu:rtx_a6000:1 \
+    --gpus-per-node=1 \
     --nodes=1 \
     --ntasks-per-node=1 \
     --cpus-per-task=4 \

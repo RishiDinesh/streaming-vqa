@@ -3,7 +3,7 @@
 #SBATCH --partition=gpunodes
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:rtx_a6000:1
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=30G
 #SBATCH --time=2-00:00:00
@@ -13,9 +13,10 @@
 
 set -euo pipefail
 
-cd /w/nobackup/385/scratch-space/expires-2026-Mar-27/rishi/streaming-vqa
+ROOT=${ROOT:-$(pwd)}
+cd "${ROOT}"
 
-TORCHRUN_BIN=/w/nobackup/385/scratch-space/expires-2026-Mar-27/rishi/.conda/envs/mmda-cuda124/bin/torchrun
+TORCHRUN_BIN=${TORCHRUN_BIN:-torchrun}
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 MASTER_PORT=29500
 
@@ -48,5 +49,5 @@ srun bash -lc '
       --num_steps 500 \
       --sink_size 512 \
       --recent_size 1024 \
-      --streaming_attn_implementation blocksparse
+      --streaming_attn_implementation auto
 '

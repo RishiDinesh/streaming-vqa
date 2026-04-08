@@ -22,6 +22,7 @@ from .streaming_attn import (
     streaming_attn_sdpa,
     generate_streaming_info_blocksparse_flash_attn,
     streaming_attn_blocksparse_flash_attn,
+    resolve_streaming_attn_implementation,
 )
 from .tuple_kv_cache import (
     enable_tuple_kv_cache_for_qwen2,
@@ -36,8 +37,12 @@ from .static_kv_cache import (
 )
 from .flashinfer_utils import enable_flashinfer_rmsnorm
 
-from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
-from flash_attn import flash_attn_func
+try:
+    from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
+except Exception:
+    class TensorParallelPreTrainedModel:  # type: ignore
+        pass
+from .attention_backend import flash_attn_func
 from duo_attn.ulysses import UlyssesAttention
 
 
@@ -459,6 +464,9 @@ def _enable_qwen2_layers_duo_attention_training(
     first_module = layers[0].self_attn
     device = first_module.q_proj.weight.device
     dtype = first_module.q_proj.weight.dtype
+    streaming_attn_implementation = resolve_streaming_attn_implementation(
+        streaming_attn_implementation
+    )
 
     if streaming_attn_implementation == "blocksparse":
         num_sink_blocks = (sink_size + 127) // 128

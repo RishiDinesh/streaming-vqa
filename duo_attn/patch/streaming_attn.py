@@ -1,5 +1,6 @@
 import torch
 import inspect
+import warnings
 
 try:
     import xformers.ops as xops
@@ -10,6 +11,22 @@ try:
     from block_sparse_attn import block_streaming_attn_func
 except ImportError:
     block_streaming_attn_func = None
+
+
+def resolve_streaming_attn_implementation(requested: str) -> str:
+    if requested == "auto":
+        return "blocksparse" if block_streaming_attn_func is not None else "sdpa"
+
+    if requested == "blocksparse" and block_streaming_attn_func is None:
+        warnings.warn(
+            "Requested blocksparse streaming attention, but block_sparse_attn is not "
+            "installed. Falling back to SDPA.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "sdpa"
+
+    return requested
 
 
 @torch.no_grad()

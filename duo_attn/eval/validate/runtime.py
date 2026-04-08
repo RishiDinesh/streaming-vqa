@@ -6,6 +6,8 @@ from typing import Tuple
 import torch
 import torch.distributed as dist
 
+from duo_attn.utils import normalize_device_string
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -99,12 +101,13 @@ def ensure_default_output_paths(args: argparse.Namespace) -> None:
 
 
 def resolve_device_and_dtype(args: argparse.Namespace) -> Tuple[torch.device, torch.dtype]:
-    if args.device == "auto":
+    device_arg = normalize_device_string(args.device)
+    if device_arg == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    elif args.device == "cpu":
+    elif device_arg == "cpu":
         device = torch.device("cpu")
-    elif args.device.startswith("cuda"):
-        device = torch.device(args.device)
+    elif device_arg.startswith("cuda"):
+        device = torch.device(device_arg)
     else:
         raise ValueError(f"Unsupported device: {args.device}")
 
@@ -133,11 +136,11 @@ def init_distributed(device: torch.device) -> Tuple[bool, int, int, int]:
     if world_size <= 1:
         return False, rank, world_size, local_rank
 
-    if device.type != "cuda":
-        raise ValueError("Distributed validation currently requires CUDA.")
-    torch.cuda.set_device(local_rank)
+    if device.type == "cuda":
+        torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl")
+        backend = "nccl" if device.type == "cuda" else "gloo"
+        dist.init_process_group(backend=backend)
     return True, rank, world_size, local_rank
 
 

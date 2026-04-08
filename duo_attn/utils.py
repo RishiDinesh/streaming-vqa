@@ -9,6 +9,14 @@ import os
 import json
 
 
+def normalize_device_string(device: str) -> str:
+    normalized = str(device).strip().lower()
+    if normalized.startswith("hip:") or normalized.startswith("rocm:"):
+        suffix = normalized.split(":", 1)[1]
+        return f"cuda:{suffix}"
+    return str(device)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="kv_reduction")
 
@@ -70,7 +78,11 @@ def parse_args():
     training_group.add_argument("--deploy_recent_size", type=int, default=None)
     training_group.add_argument("--reg_weight", type=float, default=0.05)
     training_group.add_argument("--initial_value", type=float, default=1.0)
-    training_group.add_argument("--streaming_attn_implementation", type=str, default="blocksparse")
+    training_group.add_argument(
+        "--streaming_attn_implementation",
+        type=str,
+        default="auto",
+    )
     training_group.add_argument("--disable_wandb", action="store_true")
     training_group.add_argument("--enable_pp", action="store_true")
     training_group.add_argument("--enable_tp", action="store_true")
@@ -106,9 +118,12 @@ def parse_args():
 
 
 def parse_device(device: str):
+    device = normalize_device_string(device)
     if "," in device:
         return [int(d) for d in device.split(",")]
     elif device in ["auto", "cpu"]:
+        return device
+    if device.startswith("cuda:"):
         return device
     return f"cuda:{device}"
 
@@ -130,33 +145,58 @@ def get_model(model_name):
 from transformers import (
     PretrainedConfig,
 )
-from typing import Sequence
-from tensor_parallel.config import Config
-from tensor_parallel.communications import CollectiveOperation
-from tensor_parallel.aux_actions import (
-    gather_kv,
-    select_kv_for_rank,
-    split_inner_dim,
-    split_num_heads,
-)
-from tensor_parallel.state_actions import (
-    Split,
-    SplitInChunks,
-)
+from typing import Any, Sequence
 from functools import partial
-import tensor_parallel as tp
-from tensor_parallel.pretrained_model import find_predefined_tensor_parallel_config
-from tensor_parallel.autoconfig import get_default_config
-from tensor_parallel.state_actions import Split
 import re
+
+
+def _import_tensor_parallel():
+    from tensor_parallel.config import Config
+    from tensor_parallel.communications import CollectiveOperation
+    from tensor_parallel.aux_actions import (
+        gather_kv,
+        select_kv_for_rank,
+        split_inner_dim,
+        split_num_heads,
+    )
+    from tensor_parallel.state_actions import (
+        Split,
+        SplitInChunks,
+    )
+    import tensor_parallel as tp
+    from tensor_parallel.pretrained_model import find_predefined_tensor_parallel_config
+    from tensor_parallel.autoconfig import get_default_config
+
+    return {
+        "Config": Config,
+        "CollectiveOperation": CollectiveOperation,
+        "gather_kv": gather_kv,
+        "select_kv_for_rank": select_kv_for_rank,
+        "split_inner_dim": split_inner_dim,
+        "split_num_heads": split_num_heads,
+        "Split": Split,
+        "SplitInChunks": SplitInChunks,
+        "tp": tp,
+        "find_predefined_tensor_parallel_config": find_predefined_tensor_parallel_config,
+        "get_default_config": get_default_config,
+    }
 
 
 def get_mistral_config(
     model_config: PretrainedConfig, devices: Sequence[torch.device]
-) -> Config:
+) -> Any:
     assert (
         model_config.model_type == "mistral"
     ), f"Trying to pass {model_config.model_type} as mistral config"
+    tp_mod = _import_tensor_parallel()
+    Config = tp_mod["Config"]
+    CollectiveOperation = tp_mod["CollectiveOperation"]
+    gather_kv = tp_mod["gather_kv"]
+    split_inner_dim = tp_mod["split_inner_dim"]
+    split_num_heads = tp_mod["split_num_heads"]
+    Split = tp_mod["Split"]
+    SplitInChunks = tp_mod["SplitInChunks"]
+    select_kv_for_rank = tp_mod["select_kv_for_rank"]
 
     world_size = len(devices)
     head_dim = model_config.hidden_size // model_config.num_attention_heads
@@ -226,6 +266,13 @@ def to_device(
     even_split_layers=True,
 ):
     if enable_tp and isinstance(device, list):
+        tp_mod = _import_tensor_parallel()
+        Split = tp_mod["Split"]
+        tp = tp_mod["tp"]
+        find_predefined_tensor_parallel_config = tp_mod[
+            "find_predefined_tensor_parallel_config"
+        ]
+        get_default_config = tp_mod["get_default_config"]
         if len(device) == 1:
             return model.to(f"cuda:{device[0]}")
         device_ids = [f"cuda:{idx}" for idx in device]
@@ -367,9 +414,10 @@ def seed_everything(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = True
 
 
 def sparsify_attention_heads(full_attention_heads, threshold=None, sparsity=None):

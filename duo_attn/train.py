@@ -52,7 +52,8 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 def setup():
     # initialize the process group
-    dist.init_process_group("nccl")
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    dist.init_process_group(backend)
 
 
 def cleanup():
@@ -204,6 +205,9 @@ def train(
         pbar = tqdm(range(args.num_steps))
 
     local_rank = int(os.environ["LOCAL_RANK"])
+    local_device = (
+        torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
+    )
 
     global_step = 0
     local_step = 0
@@ -229,7 +233,7 @@ def train(
 
             batch = move_batch_to_device(
                 batch,
-                device=torch.device(f"cuda:{local_rank}"),
+                device=local_device,
                 model_dtype=next(model.parameters()).dtype,
             )
 
@@ -413,7 +417,8 @@ def main(args):
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
-    torch.cuda.set_device(local_rank)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
     setup()
 
     run_str = "0p5b" if "0.5b" in args.model_name else "7b"
@@ -536,11 +541,14 @@ def main(args):
     )
 
     if is_llava_onevision:
-        llava_model_for_inputs.to(f"cuda:{local_rank}")
+        llava_model_for_inputs.to(
+            torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
+        )
 
     apply_activation_checkpointing(train_model)
 
-    mesh = DeviceMesh(device_type="cuda", mesh=[i for i in range(world_size)])
+    mesh_device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    mesh = DeviceMesh(device_type=mesh_device_type, mesh=[i for i in range(world_size)])
 
     # Llava path keeps root unsharded so multimodal embedding construction stays stable.
     shard_root = False if is_llava_onevision else True

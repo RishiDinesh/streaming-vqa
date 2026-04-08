@@ -6,9 +6,12 @@ from tqdm import tqdm
 from transformers import AutoConfig
 
 from duo_attn.data import create_video_qa_dataloader
+from duo_attn.utils import normalize_device_string
 
 
 def resolve_cuda_device(device_arg) -> torch.device:
+    if isinstance(device_arg, str):
+        device_arg = normalize_device_string(device_arg)
     if isinstance(device_arg, list):
         if len(device_arg) == 0:
             raise ValueError("Empty --device list is not supported.")

@@ -2,9 +2,16 @@ from transformers.models.llama.modeling_llama import LlamaRMSNorm
 from transformers.models.mistral.modeling_mistral import MistralRMSNorm
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
 import torch
-import flashinfer
 import types
 from typing import Optional
+
+try:
+    import flashinfer
+
+    FLASHINFER_AVAILABLE = True
+except ImportError:
+    flashinfer = None
+    FLASHINFER_AVAILABLE = False
 
 
 def flashinfer_rmsnorm_forward(self, hidden_states):
@@ -18,6 +25,9 @@ def flashinfer_rmsnorm_forward(self, hidden_states):
 
 
 def enable_flashinfer_rmsnorm(model):
+    if not FLASHINFER_AVAILABLE:
+        print("flashinfer is unavailable; keeping native RMSNorm modules.")
+        return model
     print("Replacing RMSNorm with Flashinfer's RMSNorm")
     for name, module in model.named_modules():
         if isinstance(module, LlamaRMSNorm):
@@ -37,6 +47,8 @@ def apply_rope_inplace(
     rope_theta: float,
     indptr: Optional[torch.Tensor] = None,
 ):
+    if not FLASHINFER_AVAILABLE:
+        raise ImportError("flashinfer is required for apply_rope_inplace.")
     bsz, seq_len, num_heads, head_dim = q.size()
     _, _, num_kv_heads, _ = k.size()
     nnz = bsz * seq_len

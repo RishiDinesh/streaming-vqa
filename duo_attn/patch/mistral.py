@@ -24,6 +24,7 @@ from .streaming_attn import (
     streaming_attn_sdpa,
     generate_streaming_info_blocksparse_flash_attn,
     streaming_attn_blocksparse_flash_attn,
+    resolve_streaming_attn_implementation,
 )
 
 from .static_kv_cache import (
@@ -33,8 +34,12 @@ from .static_kv_cache import (
 from .tuple_kv_cache import enable_tuple_kv_cache_for_mistral
 from .flashinfer_utils import apply_rope_inplace, enable_flashinfer_rmsnorm
 
-from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
-from flash_attn import flash_attn_func, flash_attn_with_kvcache
+try:
+    from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
+except Exception:
+    class TensorParallelPreTrainedModel:  # type: ignore
+        pass
+from .attention_backend import flash_attn_func
 from duo_attn.ulysses import UlyssesAttention
 
 
@@ -443,6 +448,9 @@ def enable_mistral_duo_attention_training(
     enable_ulysses_attention=False,
     streaming_attn_implementation="blocksparse",
 ):
+    streaming_attn_implementation = resolve_streaming_attn_implementation(
+        streaming_attn_implementation
+    )
     enable_tuple_kv_cache_for_mistral(model)
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype

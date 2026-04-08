@@ -21,8 +21,21 @@ from transformers.models.llava_onevision.modeling_llava_onevision import (
 )
 import types
 
-from flash_attn import flash_attn_func, flash_attn_varlen_func
-from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
+from .attention_backend import (
+    FLASH_ATTN_VARLEN_AVAILABLE,
+    flash_attn_func,
+    flash_attn_varlen_func,
+    repeat_kv_for_gqa_if_needed,
+    supports_sdpa_enable_gqa,
+    supports_sdpa_scale,
+)
+
+try:
+    from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
+except ImportError:
+    index_first_axis = None
+    pad_input = None
+    unpad_input = None
 
 
 def _get_unpad_data(padding_mask):
@@ -154,7 +167,7 @@ def _flash_attention_forward(
             The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim)
     """
     # Contains at least one padding token in the sequence
-    if padding_mask is not None:
+    if padding_mask is not None and FLASH_ATTN_VARLEN_AVAILABLE and unpad_input is not None:
         batch_size = query_states.shape[0]
         (
             query_states,
@@ -184,6 +197,35 @@ def _flash_attention_forward(
         )
 
         attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
+    elif padding_mask is not None:
+        query_states_t = query_states.transpose(1, 2)
+        key_states_t = key_states.transpose(1, 2)
+        value_states_t = value_states.transpose(1, 2)
+
+        sdpa_kwargs = {
+            "attn_mask": padding_mask[:, None, None, :].to(dtype=torch.bool),
+            "dropout_p": dropout,
+            "is_causal": True,
+        }
+        if supports_sdpa_enable_gqa():
+            sdpa_kwargs["enable_gqa"] = True
+        else:
+            key_states_t, value_states_t = repeat_kv_for_gqa_if_needed(
+                query_states,
+                key_states,
+                value_states,
+            )
+            key_states_t = key_states_t.transpose(1, 2)
+            value_states_t = value_states_t.transpose(1, 2)
+        if softmax_scale is not None and supports_sdpa_scale():
+            sdpa_kwargs["scale"] = softmax_scale
+
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            query_states_t,
+            key_states_t,
+            value_states_t,
+            **sdpa_kwargs,
+        ).transpose(1, 2)
     else:
         attn_output = flash_attn_func(
             query_states,
