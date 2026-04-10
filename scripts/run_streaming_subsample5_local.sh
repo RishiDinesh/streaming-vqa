@@ -2,6 +2,25 @@
 set -euo pipefail
 
 activate_duo_env() {
+  # Prefer /opt/venv (torch 2.9 + ROCm 7) over the duo conda env (torch 2.4 + ROCm 6.1).
+  # ROCm 7 ships tuned MI300X kernels that are ~3-5x faster for this model.
+  local _check_pkgs='
+import importlib
+for name in ("torch", "numpy", "matplotlib", "transformers", "tqdm", "duo_attn"):
+    importlib.import_module(name)
+'
+
+  if [[ -x "/opt/venv/bin/python" ]]; then
+    if /opt/venv/bin/python - <<PY >/dev/null 2>&1
+${_check_pkgs}
+PY
+    then
+      export PATH="/opt/venv/bin:${PATH}"
+      echo "[env] Using /opt/venv (torch $(/opt/venv/bin/python -c 'import torch; print(torch.__version__)'))" >&2
+      return
+    fi
+  fi
+
   if command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"
     conda activate duo
@@ -28,11 +47,11 @@ for name in ("torch", "numpy", "matplotlib", "transformers", "tqdm"):
     importlib.import_module(name)
 PY
   then
-    echo "[warn] Could not locate the 'duo' Conda environment; using current Python: $(command -v python)" >&2
+    echo "[warn] Could not locate preferred environment; using current Python: $(command -v python)" >&2
     return
   fi
 
-  echo "Could not locate Conda activation script for the 'duo' environment, and the current Python is missing required packages." >&2
+  echo "Could not locate a suitable Python environment with required packages." >&2
   exit 1
 }
 

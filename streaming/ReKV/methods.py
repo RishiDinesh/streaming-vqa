@@ -915,7 +915,9 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
             sink_size,
             recent_size,
         )
-        for layer in self.model.language_model.model.layers:
+        _lang = self.model.language_model
+        _layers = _lang.layers if hasattr(_lang, "layers") else _lang.model.layers
+        for layer in _layers:
             layer.self_attn.rekv_duo_enabled = True
 
         self.attn_dir = attn_config["attn_dir"]

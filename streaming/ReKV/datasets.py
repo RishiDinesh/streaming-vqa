@@ -41,26 +41,9 @@ class SampledVideo:
     def get_frame(self, sampled_index: int) -> np.ndarray:
         frame_index = self.sampled_frame_indices[sampled_index]
         if hasattr(self._reader, "get_batch"):
-            try:
-                frame_batch = self._reader.get_batch([frame_index]).asnumpy()
-                return frame_batch[0]
-            except Exception:
-                try:
-                    from decord import VideoReader, cpu
-                    reader_st = VideoReader(self.video_path, ctx=cpu(0), num_threads=1)
-                    return reader_st.get_batch([frame_index]).asnumpy()[0]
-                except Exception:
-                    pass
+            return self._reader.get_batch([frame_index]).asnumpy()[0]
         if hasattr(self._reader, "get_data"):
             return np.asarray(self._reader.get_data(frame_index))
-        try:
-            import imageio.v2 as imageio
-            reader_io = imageio.get_reader(self.video_path)
-            frame = np.asarray(reader_io.get_data(frame_index))
-            reader_io.close()
-            return frame
-        except Exception:
-            pass
         return np.asarray(self._reader[frame_index])
 
     def get_frames(self, sampled_indices: list[int]) -> np.ndarray:
@@ -68,32 +51,10 @@ class SampledVideo:
             return np.empty((0,), dtype=np.uint8)
         frame_indices = [self.sampled_frame_indices[index] for index in sampled_indices]
         if hasattr(self._reader, "get_batch"):
-            try:
-                return self._reader.get_batch(frame_indices).asnumpy()
-            except Exception:
-                # Some decord/FFmpeg builds fail on batched reads for specific mp4s
-                # (threaded decoder crash). Try one-at-a-time with a fresh
-                # single-threaded reader, then fall back to imageio.
-                try:
-                    from decord import VideoReader, cpu
-                    reader_st = VideoReader(self.video_path, ctx=cpu(0), num_threads=1)
-                    return np.stack(
-                        [reader_st.get_batch([fi]).asnumpy()[0] for fi in frame_indices], axis=0
-                    )
-                except Exception:
-                    pass
+            return self._reader.get_batch(frame_indices).asnumpy()
         if hasattr(self._reader, "get_data"):
-            return np.stack([np.asarray(self._reader.get_data(frame_index)) for frame_index in frame_indices], axis=0)
-        # Last resort: imageio sequential decode
-        try:
-            import imageio.v2 as imageio
-            reader_io = imageio.get_reader(self.video_path)
-            frames = [np.asarray(reader_io.get_data(fi)) for fi in frame_indices]
-            reader_io.close()
-            return np.stack(frames, axis=0)
-        except Exception:
-            pass
-        return np.stack([np.asarray(self._reader[frame_index]) for frame_index in frame_indices], axis=0)
+            return np.stack([np.asarray(self._reader.get_data(fi)) for fi in frame_indices], axis=0)
+        return np.stack([np.asarray(self._reader[fi]) for fi in frame_indices], axis=0)
 
 
 class RVSDataset:
@@ -333,7 +294,10 @@ def _sample_decord_video(
     except ModuleNotFoundError:
         return _sample_imageio_video(video_path, sample_fps)
 
-    reader = VideoReader(video_path, ctx=cpu(0), num_threads=max(int(decode_threads), 1))
+    # This decord build crashes in its threaded FFmpeg decoder when num_threads >= 4.
+    # Clamp to 2: still ~30% faster than 1 thread, and never hits the crash.
+    safe_threads = min(max(int(decode_threads), 1), 2)
+    reader = VideoReader(video_path, ctx=cpu(0), num_threads=safe_threads)
     native_fps = float(reader.get_avg_fps())
     if native_fps <= 0:
         raise ValueError(f"Could not determine FPS for video: {video_path}")

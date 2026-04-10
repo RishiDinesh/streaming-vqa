@@ -449,7 +449,11 @@ def _get_qwen2_layers(model):
     if isinstance(model, Qwen2Model):
         return model.layers
     if isinstance(model, LlavaOnevisionForConditionalGeneration):
-        return model.language_model.model.layers
+        # transformers >=4.50: language_model may be Qwen2Model directly (no .model wrapper)
+        lang = model.language_model
+        if isinstance(lang, Qwen2Model):
+            return lang.layers
+        return lang.model.layers
     raise ValueError(f"Unsupported model type: {type(model)}")
 
 def _enable_qwen2_layers_duo_attention_training(
@@ -762,7 +766,9 @@ def get_qwen2_full_attention_heads(model):
                 continue
             full_attention_heads.append(module.full_attention_heads)
     elif isinstance(model, LlavaOnevisionForConditionalGeneration):
-        for layer in model.language_model.model.layers:
+        lang = model.language_model
+        _layers = lang.layers if isinstance(lang, Qwen2Model) else lang.model.layers
+        for layer in _layers:
             module = layer.self_attn
             if not hasattr(module, "full_attention_heads"):
                 continue
@@ -803,7 +809,9 @@ def set_qwen2_full_attention_heads(model, full_attention_heads):
                 module.full_attention_heads.dtype,
             )
     elif isinstance(model, LlavaOnevisionForConditionalGeneration):
-        for layer_idx, layer in enumerate(model.language_model.model.layers):
+        lang = model.language_model
+        _layers = lang.layers if isinstance(lang, Qwen2Model) else lang.model.layers
+        for layer_idx, layer in enumerate(_layers):
             module = layer.self_attn
             if not hasattr(module, "full_attention_heads"):
                 continue
@@ -836,7 +844,9 @@ def map_qwen2_full_attention_heads(model, func):
                 continue
             func(module.full_attention_heads)
     elif isinstance(model, LlavaOnevisionForConditionalGeneration):
-        for layer in model.language_model.model.layers:
+        lang = model.language_model
+        _layers = lang.layers if isinstance(lang, Qwen2Model) else lang.model.layers
+        for layer in _layers:
             module = layer.self_attn
             if not hasattr(module, "full_attention_heads"):
                 continue

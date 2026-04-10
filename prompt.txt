@@ -11,8 +11,9 @@ Active scope
 - Current hardware assumption:
   - one AMD `MI300X`
   - optimize for a single-GPU, benchmark-correct workflow
-- Use the Conda environment named `duo` for Python commands.
-- `duo` is installed locally at `/root/miniforge3/envs/duo`.
+- Preferred Python environment: `/opt/venv` (torch 2.9 + ROCm 7.0, 3–5× faster than `duo`).
+- Launcher scripts automatically select `/opt/venv` if available with all required packages.
+- Fallback: `duo` conda env at `/root/miniforge3/envs/duo` (torch 2.4 + ROCm 6.1).
 - This environment uses the direct local ROCm GPU path; `sinfo` / SLURM are not available here.
 - Do not push to GitHub. Only the user will push.
 
@@ -95,6 +96,21 @@ Main implementation files
 
 Important fixes already made
 ----------------------------
+10. ROCm 7 / transformers 4.55 performance and compatibility (2026-04-10)
+- Launcher scripts now prefer `/opt/venv` (torch 2.9 + ROCm 7.0) over the `duo`
+  conda env (torch 2.4 + ROCm 6.1); ROCm 7 gives 3–5× speedup on MI300X gfx942.
+- Measured: vision encoder 18.7→8.1 ms/frame, decode 60.8→11.8 ms/token.
+- `torch.compile(mode='reduce-overhead')` and `torch.set_float32_matmul_precision('high')`
+  applied at startup in `run_eval.py`; auto-enabled on ROCm 7+; disable with `PYTORCH_COMPILE=0`.
+- transformers 4.55: `model.language_model` is now `Qwen2Model` directly (no `.model` wrapper).
+  Fixed in `duo_attn/patch/llava_onevision.py` (`_get_qwen2_layers`, `get/set/map_qwen2_full_attention_heads`)
+  and `streaming/ReKV/methods.py` (`DuoPlusReKVStreamingMethod.__init__`).
+- decord threaded-decoder crash: this build of decord crashes whenever `num_threads >= 4`.
+  Fix is a one-line clamp in `_sample_decord_video`: `safe_threads = min(max(decode_threads, 1), 2)`.
+  `num_threads=2` is ~30% faster than 1 and never crashes. `VIDEO_DECODE_THREADS` can stay at 4
+  in the scripts — it just gets silently clamped inside the reader. `get_frame`/`get_frames`
+  need no fallback logic and are kept simple.
+
 1. DuoAttention ROCm correctness
 - File: `duo_attn/patch/attn_compat.py`
 - Fixed wrong causal alignment for cached incremental attention on MI300X.
@@ -195,7 +211,8 @@ Current environment status
   - a real Torch allocation on `cuda:0` succeeds
 - `sinfo` / SLURM are not available here, so runs in this environment should use
   the direct local ROCm path instead of `sbatch`.
-- The `duo` environment is installed at `/root/miniforge3/envs/duo`.
+- Preferred env: `/opt/venv` (torch 2.9 + ROCm 7.0) — launcher scripts use this automatically.
+- Fallback env: `/root/miniforge3/envs/duo` (torch 2.4 + ROCm 6.1).
 - Before launching real runs, verify with:
   - `bash scripts/check_mi300x_access.sh`
 

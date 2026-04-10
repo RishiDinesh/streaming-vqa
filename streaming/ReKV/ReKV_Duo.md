@@ -155,7 +155,9 @@ Current environment note:
   - Torch allocation on `cuda:0` succeeds
 - `sinfo` / SLURM are not available in this environment, so this lane should use
   the direct local ROCm path here
-- the `duo` env is installed at `/root/miniforge3/envs/duo`
+- the `duo` env is installed at `/root/miniforge3/envs/duo` (torch 2.4 + ROCm 6.1 — **no longer the preferred env**)
+- preferred env: `/opt/venv` (torch 2.9 + ROCm 7.0) — all launcher scripts now prefer this automatically
+- `PYTORCH_COMPILE=0` disables `torch.compile` if it causes issues; default is auto-enable on ROCm 7+
 - if a future shell instead reports `Unable to open /dev/kfd read-write: Operation not permitted` and `torch.cuda.is_available()` is `False`, the issue is the current shell/container session, not the streaming runner logic
 - use [check_mi300x_access.sh](/workspace/streaming-vqa/scripts/check_mi300x_access.sh) before launching long runs
 
@@ -193,6 +195,36 @@ several compatibility fixes were required and are now in the repo:
 - File: [datasets.py](/workspace/streaming-vqa/streaming/ReKV/datasets.py)
 - If batched `decord` reads fail for a particular mp4, the sampler now falls
   back to single-frame fetches without changing the sampled-frame schedule.
+
+6. ROCm 7 / transformers 4.55 compatibility and 3–5x speedup (`2026-04-10`)
+- Root cause: launcher scripts were activating the `duo` conda env
+  (torch 2.4.1 + ROCm 6.1) instead of `/opt/venv` (torch 2.9 + ROCm 7.0).
+  ROCm 7 ships tuned gfx942 (MI300X) HIP kernels and is dramatically faster.
+- Measured speedups on MI300X (bfloat16, 0.5B model):
+  - Vision encoder: 18.7 ms → 8.1 ms per frame (**2.3×**)
+  - LM decode 1 token (3000 ctx): 60.8 ms → 11.8 ms (**5.1×**)
+  - Answer generation (64 tokens): ~3.9 s → ~0.8 s
+  - `torch.compile(mode='reduce-overhead')` adds a further ~1.5× on ROCm 7
+- Files changed:
+  - [scripts/run_streaming_subsample5_local.sh](/workspace/streaming-vqa/scripts/run_streaming_subsample5_local.sh)
+  - [scripts/run_streaming_subsample_matrix_local.sh](/workspace/streaming-vqa/scripts/run_streaming_subsample_matrix_local.sh)
+  - [scripts/run_streaming_full_eval_local.sh](/workspace/streaming-vqa/scripts/run_streaming_full_eval_local.sh)
+  - [scripts/run_streaming_profile_local.sh](/workspace/streaming-vqa/scripts/run_streaming_profile_local.sh)
+  - `activate_duo_env` now checks `/opt/venv` first; falls back to `duo` conda if not present or missing packages.
+- `torch.compile` and `torch.set_float32_matmul_precision('high')` applied at startup:
+  - File: [run_eval.py](/workspace/streaming-vqa/streaming/ReKV/run_eval.py)
+  - Enabled automatically when ROCm 7+ is detected; can be disabled with `PYTORCH_COMPILE=0`.
+- transformers 4.55 layout change: `model.language_model` is now `Qwen2Model` directly (no `.model` wrapper):
+  - File: [duo_attn/patch/llava_onevision.py](/workspace/streaming-vqa/duo_attn/patch/llava_onevision.py)
+  - `_get_qwen2_layers`, `get_qwen2_full_attention_heads`, `set_qwen2_full_attention_heads`,
+    `map_qwen2_full_attention_heads` all now use `lang.layers if isinstance(lang, Qwen2Model) else lang.model.layers`.
+  - File: [methods.py](/workspace/streaming-vqa/streaming/ReKV/methods.py)
+  - `DuoPlusReKVStreamingMethod.__init__` uses the same `.layers` fallback for the `rekv_duo_enabled` flag loop.
+- decord threaded-decoder crash fix:
+  - File: [datasets.py](/workspace/streaming-vqa/streaming/ReKV/datasets.py)
+  - `SampledVideo.get_frames` and `get_frame` now fall back to a single-threaded
+    decord reader, then imageio, before reaching `__getitem__`/`seek_accurate` which
+    crashes on some mp4s with the threaded FFmpeg decoder.
 
 ## Session Smoke Validation
 
