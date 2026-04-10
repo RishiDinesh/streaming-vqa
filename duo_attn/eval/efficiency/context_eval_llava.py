@@ -79,9 +79,9 @@ def format_context_label(context_len: int) -> str:
 
 def infer_model_heading(model_name: Optional[str]) -> str:
     if not model_name:
-        return "LLaVA-OneVision Context Sweep"
+        return "LLaVA-OneVision Decoding Efficiency"
     short_name = str(model_name).rstrip("/").split("/")[-1]
-    return f"{short_name} Context Sweep"
+    return f"{short_name} Decoding Efficiency"
 
 
 def build_mode_rows(
@@ -98,48 +98,68 @@ def build_mode_rows(
     return [row_map.get(context_len) for context_len in context_points]
 
 
-def metric_values_with_oom_bars(
+def metric_values_with_oom_markers(
     mode_rows: Sequence[Optional[Dict[str, Any]]],
     metric: str,
     divisor: float,
-) -> List[float]:
+) -> tuple[List[float], List[bool], float]:
     finite_vals = [
         float(row[metric]) / divisor
         for row in mode_rows
         if row is not None and row.get(metric) is not None
     ]
-    oom_bar_height = max(finite_vals) * 1.05 if finite_vals else 1.0
+    oom_marker_height = max(finite_vals) * 1.05 if finite_vals else 1.0
 
     values: List[float] = []
+    oom_mask: List[bool] = []
     for row in mode_rows:
         if row is None:
             values.append(np.nan)
+            oom_mask.append(False)
         elif row.get(metric) is not None:
             values.append(float(row[metric]) / divisor)
-        elif row.get("oom"):
-            values.append(oom_bar_height)
+            oom_mask.append(False)
+        elif row.get("oom", False):
+            values.append(oom_marker_height)
+            oom_mask.append(True)
         else:
             values.append(np.nan)
-    return values
+            oom_mask.append(False)
+    return values, oom_mask, oom_marker_height
 
 
-def annotate_values(ax, bars, mode_rows, metric: str, divisor: float) -> None:
-    heights = [bar.get_height() for bar in bars if np.isfinite(bar.get_height())]
-    if not heights:
+def annotate_points(
+    ax,
+    x: np.ndarray,
+    values: Sequence[float],
+    oom_mask: Sequence[bool],
+    divisor: float,
+) -> None:
+    finite_vals = [float(v) for v, is_oom in zip(values, oom_mask) if np.isfinite(v) and not is_oom]
+    if not finite_vals:
         return
 
-    ymax = max(heights)
-    offset = max(ymax * 0.025, 0.8 if divisor == 1.0 else 0.03)
+    ymax = max(finite_vals)
+    if divisor == 1.0:
+        offset = max(ymax * 0.025, 0.8)
+    else:
+        offset = max(ymax * 0.04, 1e-5)
 
-    for bar, row in zip(bars, mode_rows):
-        if row is None or row.get(metric) is None or row.get("oom"):
+    for xi, value, is_oom in zip(x, values, oom_mask):
+        if not np.isfinite(value) or is_oom:
             continue
 
-        value = float(row[metric]) / divisor
-        label = f"{int(round(value))}" if divisor == 1.0 else f"{value:.1f}"
+        if divisor == 1.0:
+            label = f"{int(round(value))}"
+        elif abs(value) >= 0.1:
+            label = f"{value:.2f}"
+        elif abs(value) >= 0.01:
+            label = f"{value:.3f}"
+        else:
+            label = f"{value:.4f}"
         ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + offset,
+            xi,
+            value + offset,
             label,
             ha="center",
             va="bottom",
@@ -147,21 +167,30 @@ def annotate_values(ax, bars, mode_rows, metric: str, divisor: float) -> None:
         )
 
 
-def annotate_oom(ax, bars, mode_rows) -> None:
-    for bar, row in zip(bars, mode_rows):
-        if row is None or not row.get("oom"):
+def annotate_oom_points(
+    ax,
+    x: np.ndarray,
+    values: Sequence[float],
+    oom_mask: Sequence[bool],
+) -> None:
+    for xi, value, is_oom in zip(x, values, oom_mask):
+        if not is_oom or not np.isfinite(value):
             continue
-        bar.set_facecolor("#f2f2f2")
-        bar.set_hatch("//")
-        bar.set_linestyle("--")
-        bar.set_linewidth(1.5)
+        ax.scatter(
+            [xi],
+            [value],
+            marker="x",
+            s=90,
+            linewidths=2.0,
+            color="#444444",
+            zorder=5,
+        )
         ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() * 0.5,
+            xi,
+            value,
             "OOM",
             ha="center",
-            va="center",
-            rotation=90,
+            va="bottom",
             fontsize=10,
             fontweight="bold",
         )
@@ -187,25 +216,54 @@ def plot_context_results(
     plot_specs = (
         (
             axes[0],
-            "ctx_latency",
-            "Latency (ms)",
+            "gen_latency",
+            "Latency (ms/token)",
             "Context Length",
-            "Prefill Latency by Context Length",
+            "Per-Token Decoding Latency by Context Length",
             1.0,
+            False,
         ),
         (
             axes[1],
-            "ctx_memory",
+            "gen_memory",
             "Memory (GB)",
             "Context Length",
-            "Peak Prefill Memory by Context Length",
+            "Decoding Memory by Context Length",
             1024.0,
+            False,
         ),
     )
 
-    for ax, metric, ylabel, xlabel, subtitle, divisor in plot_specs:
-        baseline_vals = metric_values_with_oom_bars(baseline_rows, metric, divisor)
-        duo_vals = metric_values_with_oom_bars(duo_rows, metric, divisor)
+    for ax, metric, ylabel, xlabel, subtitle, divisor, normalize_by_context in plot_specs:
+        plot_baseline_rows = []
+        plot_duo_rows = []
+
+        for row in baseline_rows:
+            if row is None:
+                plot_baseline_rows.append(None)
+                continue
+            row_copy = dict(row)
+            if normalize_by_context and row_copy.get(metric) is not None:
+                context_len = max(1, int(row_copy["actual_context"]))
+                row_copy[metric] = float(row_copy[metric]) / context_len
+            plot_baseline_rows.append(row_copy)
+
+        for row in duo_rows:
+            if row is None:
+                plot_duo_rows.append(None)
+                continue
+            row_copy = dict(row)
+            if normalize_by_context and row_copy.get(metric) is not None:
+                context_len = max(1, int(row_copy["actual_context"]))
+                row_copy[metric] = float(row_copy[metric]) / context_len
+            plot_duo_rows.append(row_copy)
+
+        baseline_vals, baseline_oom, _ = metric_values_with_oom_markers(
+            plot_baseline_rows, metric, divisor
+        )
+        duo_vals, duo_oom, _ = metric_values_with_oom_markers(
+            plot_duo_rows, metric, divisor
+        )
 
         baseline_bars = ax.bar(
             x - width / 2,
@@ -228,10 +286,12 @@ def plot_context_results(
         ax.set_xlabel(xlabel)
         ax.set_title(subtitle)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
-        annotate_values(ax, baseline_bars, baseline_rows, metric, divisor)
-        annotate_values(ax, duo_bars, duo_rows, metric, divisor)
-        annotate_oom(ax, baseline_bars, baseline_rows)
-        annotate_oom(ax, duo_bars, duo_rows)
+        if divisor != 1.0:
+            ax.ticklabel_format(axis="y", style="plain", useOffset=False)
+        annotate_points(ax, x - width / 2, baseline_vals, baseline_oom, divisor)
+        annotate_points(ax, x + width / 2, duo_vals, duo_oom, divisor)
+        annotate_oom_points(ax, x - width / 2, baseline_vals, baseline_oom)
+        annotate_oom_points(ax, x + width / 2, duo_vals, duo_oom)
 
     axes[0].set_xticks(x)
     axes[0].set_xticklabels(labels)

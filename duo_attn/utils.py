@@ -394,7 +394,7 @@ def visualize_pruned_attention_heads(full_attention_heads):
 
 def load_attn_pattern(attn_load_dir):
     full_attention_heads = np.loadtxt(
-        os.path.join(attn_load_dir, "full_attention_heads.tsv"),
+        os.path.join(attn_load_dir, "full_attention_heads_latest.tsv"),
         dtype=float,
         delimiter="\t",
     )

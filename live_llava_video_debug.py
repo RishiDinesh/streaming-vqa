@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import importlib.util
 import json
 import logging
 import os
@@ -614,6 +615,13 @@ def main() -> None:
     silence_runtime_noise()
     seed_everything(args.seed)
     device, dtype = resolve_device_and_dtype(args)
+    flash_attn_available = importlib.util.find_spec("flash_attn") is not None
+
+    print(
+        "Attention setup:",
+        f"requested={args.attn_implementation},",
+        f"flash_attn_installed={flash_attn_available}",
+    )
 
     video_path = os.path.abspath(args.video_path)
     if not os.path.isfile(video_path):

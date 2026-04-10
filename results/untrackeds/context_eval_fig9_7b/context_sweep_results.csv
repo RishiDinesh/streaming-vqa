@@ -1,0 +1,13 @@
+mode,target_context,actual_context,prefix_seconds,prefix_ratio,num_frames,sparsity,ctx_latency,ctx_memory,gen_latency,gen_memory,prefill_total_ms,decode_tokens,oom,error
+baseline,4000,4124,148.6,0.125,21,0.0,371.3368896484375,20358.640625,24.2016357421875,18318.6953125,,100,False,
+baseline,8000,8044,297.167,0.25,41,0.0,1054.8796875,33582.8330078125,33.4941015625,21119.65478515625,,100,False,
+baseline,12000,12160,445.733,0.375,62,0.0,2079.6708984375,56358.99462890625,40.49664306640625,24062.1494140625,,100,False,
+baseline,16000,16080,594.3,0.5,82,0.0,3363.762109375,86524.24365234375,46.3718359375,26864.2041015625,,100,False,
+baseline,24000,24116,891.433,0.75,123,0.0,,,,,,,True,"HIP out of memory. Tried to allocate 60.66 GiB. GPU 0 has a total capacity of 191.69 GiB of which 21.62 GiB is free. Of the allocated memory 108.49 GiB is allocated by PyTorch, and 60.92 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+baseline,32000,32000,1188.567,1.0,164,0.0,,,,,,,True,"HIP out of memory. Tried to allocate 106.81 GiB. GPU 0 has a total capacity of 191.69 GiB of which 10.59 GiB is free. Of the allocated memory 178.42 GiB is allocated by PyTorch, and 2.02 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+duo,4000,4124,148.6,0.125,21,0.5,215.6490478515625,16100.3525390625,45.29736328125,15772.51513671875,,100,False,
+duo,8000,8044,297.167,0.25,41,0.5,393.6161865234375,16758.15283203125,46.15220703125,16080.57763671875,,100,False,
+duo,12000,12160,445.733,0.375,62,0.5,597.5884765625,17449.44775390625,47.0762109375,16398.9677734375,,100,False,
+duo,16000,16080,594.3,0.5,82,0.5,807.308837890625,18107.81591796875,47.7596142578125,16707.88134765625,,100,False,
+duo,24000,24116,891.433,0.75,123,0.5,1394.71044921875,19458.6279296875,49.3015380859375,17335.572265625,,100,False,
+duo,32000,32000,1188.567,1.0,164,0.5,1903.8984375,20781.83935546875,50.9855712890625,17952.06396484375,,100,False,
