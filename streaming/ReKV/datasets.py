@@ -41,8 +41,11 @@ class SampledVideo:
     def get_frame(self, sampled_index: int) -> np.ndarray:
         frame_index = self.sampled_frame_indices[sampled_index]
         if hasattr(self._reader, "get_batch"):
-            frame_batch = self._reader.get_batch([frame_index]).asnumpy()
-            return frame_batch[0]
+            try:
+                frame_batch = self._reader.get_batch([frame_index]).asnumpy()
+                return frame_batch[0]
+            except Exception:
+                pass
         if hasattr(self._reader, "get_data"):
             return np.asarray(self._reader.get_data(frame_index))
         return np.asarray(self._reader[frame_index])
@@ -52,7 +55,13 @@ class SampledVideo:
             return np.empty((0,), dtype=np.uint8)
         frame_indices = [self.sampled_frame_indices[index] for index in sampled_indices]
         if hasattr(self._reader, "get_batch"):
-            return self._reader.get_batch(frame_indices).asnumpy()
+            try:
+                return self._reader.get_batch(frame_indices).asnumpy()
+            except Exception:
+                # Some decord/FFmpeg builds fail on batched reads for specific mp4s
+                # even though single-frame access is fine. Fall back without
+                # changing the sampled-frame schedule.
+                pass
         if hasattr(self._reader, "get_data"):
             return np.stack([np.asarray(self._reader.get_data(frame_index)) for frame_index in frame_indices], axis=0)
         return np.stack([np.asarray(self._reader[frame_index]) for frame_index in frame_indices], axis=0)

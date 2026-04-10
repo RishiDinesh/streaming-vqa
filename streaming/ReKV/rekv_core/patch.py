@@ -45,6 +45,33 @@ def patch_hf(
     from transformers import LlamaForCausalLM, MistralForCausalLM, Qwen2ForCausalLM, Qwen2Model
     from transformers.models.llama.modeling_llama import LlamaAttention, LlamaModel, BaseModelOutputWithPast
 
+    def _resolve_model_core(hf_model):
+        return hf_model.model if hasattr(hf_model, "model") else hf_model
+
+    def _infer_attention_shape(attn_module, model_core):
+        dim_head = getattr(attn_module, "head_dim", None)
+        num_heads = getattr(attn_module, "num_heads", None)
+        num_heads_kv = getattr(attn_module, "num_key_value_heads", None)
+        config = getattr(model_core, "config", None)
+
+        if num_heads is None and config is not None:
+            num_heads = getattr(config, "num_attention_heads", None)
+        if num_heads_kv is None and config is not None:
+            num_heads_kv = getattr(config, "num_key_value_heads", None)
+        if dim_head is None and config is not None and num_heads is not None:
+            hidden_size = getattr(config, "hidden_size", None)
+            if hidden_size is not None:
+                dim_head = int(hidden_size // num_heads)
+
+        if dim_head is None:
+            raise ValueError(f"Could not infer attention head dimension for {attn_module.__class__.__name__}.")
+        if num_heads is None:
+            num_heads = int(attn_module.q_proj.out_features // dim_head)
+        if num_heads_kv is None:
+            num_heads_kv = int(attn_module.k_proj.out_features // dim_head)
+
+        return int(dim_head), int(num_heads), int(num_heads_kv)
+
     def model_forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -98,23 +125,28 @@ def patch_hf(
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            layer_outputs = decoder_layer(
+            residual = hidden_states
+            hidden_states = decoder_layer.input_layernorm(hidden_states)
+            attn_output, _, layer_past_key_value = decoder_layer.self_attn(
                 hidden_states,
                 attention_mask=attention_mask,
-                position_ids=self.position_bias,
+                position_bias=self.position_bias,
                 past_key_value=past_key_values[i] if past_key_values is not None else None,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
             )
+            hidden_states = residual + attn_output
 
-            hidden_states = layer_outputs[0]
+            residual = hidden_states
+            hidden_states = decoder_layer.post_attention_layernorm(hidden_states)
+            hidden_states = decoder_layer.mlp(hidden_states)
+            hidden_states = residual + hidden_states
 
             if use_cache:
-                _cache = layer_outputs[2 if output_attentions else 1]
-                pkv = pkv + (_cache,)
+                pkv = pkv + (layer_past_key_value,)
 
             if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+                all_self_attns += (None,)
 
         hidden_states = self.norm(hidden_states)
 
@@ -133,22 +165,18 @@ def patch_hf(
 
     forward = huggingface_forward(rekv_attention_forward(**attn_kwargs))
 
-    if isinstance(model, LlamaForCausalLM):
-        Attention = model.model.layers[0].self_attn.__class__
-        Model = model.model.__class__
-    elif isinstance(model, MistralForCausalLM):
-        Attention = model.model.layers[0].self_attn.__class__
-        Model = model.model.__class__
-    elif isinstance(model, Qwen2ForCausalLM) or isinstance(model, Qwen2Model):
-        Attention = model.model.layers[0].self_attn.__class__
-        Model = model.model.__class__
-    elif model.__class__.__name__ == "MiniCPMForCausalLM":
-        Attention = model.model.layers[0].self_attn.__class__
-        Model = model.model.__class__
+    if isinstance(model, (LlamaForCausalLM, MistralForCausalLM, Qwen2ForCausalLM, Qwen2Model)) or model.__class__.__name__ == "MiniCPMForCausalLM":
+        model_core = _resolve_model_core(model)
+        Attention = model_core.layers[0].self_attn.__class__
+        Model = model_core.__class__
     else:
         raise ValueError(f"Only supports llama, mistral and qwen2 models, not {model.__class__.__name__}.")
 
-    hf_rope = model.model.layers[0].self_attn.rotary_emb 
+    first_attn = model_core.layers[0].self_attn
+    dim, num_heads, num_heads_kv = _infer_attention_shape(first_attn, model_core)
+    hf_rope = getattr(first_attn, "rotary_emb", None)
+    if hf_rope is None:
+        hf_rope = getattr(model_core, "rotary_emb", None)
     if isinstance(hf_rope, Qwen2RotaryEmbedding):
         rope_config = getattr(hf_rope, "config", None)
         rope_kwargs = getattr(hf_rope, "rope_kwargs", {}) or {}
@@ -163,15 +191,17 @@ def patch_hf(
             dim = hf_rope.dim
         elif getattr(hf_rope, "inv_freq", None) is not None:
             dim = int(hf_rope.inv_freq.shape[0] * 2)
-        elif rope_config is not None:
-            dim = int(rope_config.hidden_size // rope_config.num_attention_heads)
-        else:
-            raise ValueError("Could not infer rotary embedding dimension for Qwen2.")
-    else:
+    elif hf_rope is not None:
         base = hf_rope.config.rope_theta
         distance_scale = distance_scale if distance_scale is not None else 1.0
         partial_rotary_factor = hf_rope.config.partial_rotary_factor if hasattr(hf_rope.config, "partial_rotary_factor") else 1.0
         dim = int((hf_rope.config.hidden_size // hf_rope.config.num_attention_heads) * partial_rotary_factor)
+    else:
+        config = getattr(model_core, "config", None)
+        if config is None or not hasattr(config, "rope_theta"):
+            raise ValueError(f"Could not infer rotary embedding settings for {model.__class__.__name__}.")
+        base = config.rope_theta
+        distance_scale = distance_scale if distance_scale is not None else 1.0
     rope_device = next(model.parameters()).device
     rope = RotaryEmbeddingESM(
         dim,
@@ -179,16 +209,48 @@ def patch_hf(
         distance_scale,
         device=rope_device,
     )
-    model.model.position_bias = rope
+    model_core.position_bias = rope
 
     def set_forward(m):
         if isinstance(m, Attention):
+            inferred_dim_head, inferred_num_heads, inferred_num_heads_kv = _infer_attention_shape(m, model_core)
+            if not hasattr(m, "head_dim"):
+                m.head_dim = inferred_dim_head
+            if not hasattr(m, "num_heads"):
+                m.num_heads = inferred_num_heads
+            if not hasattr(m, "num_key_value_heads"):
+                m.num_key_value_heads = inferred_num_heads_kv
             m._old_forward = m.forward
-            m.forward = forward.__get__(m, Attention)
+            bound_forward = forward.__get__(m, Attention)
+
+            def compat_forward(
+                self,
+                hidden_states: torch.Tensor,
+                attention_mask = None,
+                position_ids = None,
+                past_key_value = None,
+                output_attentions: bool = False,
+                use_cache: bool = False,
+                cache_position = None,
+                position_embeddings = None,
+                **inner_kwargs,
+            ):
+                del position_ids, cache_position, position_embeddings
+                return bound_forward(
+                    hidden_states=hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=model_core.position_bias,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    **inner_kwargs,
+                )
+
+            m.forward = compat_forward.__get__(m, Attention)
 
     model.apply(set_forward)
 
-    model.model._old_forward = model.model.forward
-    model.model.forward = model_forward.__get__(model.model, Model)
+    model_core._old_forward = model_core.forward
+    model_core.forward = model_forward.__get__(model_core, Model)
 
     return model
