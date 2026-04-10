@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 import time
 from abc import ABC, abstractmethod
@@ -274,6 +275,18 @@ def read_peak_memory_bytes(device: torch.device) -> int | None:
     return int(torch.cuda.max_memory_allocated(device))
 
 
+def _empty_retrieval_stats() -> dict[str, Any]:
+    return {
+        "retrieval_latency_sec": None,
+        "per_layer_retrieved_block_counts": [],
+        "avg_retrieved_block_count": 0.0,
+        "avg_global_block_count": 0.0,
+        "retrieved_block_indices_union": [],
+        "retrieved_frame_indices_union": [],
+        "retrieved_timestamps_sec_union": [],
+    }
+
+
 def greedy_decode_with_cache(
     *,
     language_model,
@@ -388,11 +401,13 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         device: str = "auto",
         dtype: str = "auto",
         max_new_tokens: int = 256,
+        clear_cuda_cache_on_reset: bool = False,
     ) -> None:
         self.pretrained = pretrained
         self.device = resolve_device(device)
         self.dtype = resolve_dtype(dtype, self.device)
         self.max_new_tokens = int(max_new_tokens)
+        self.clear_cuda_cache_on_reset = bool(clear_cuda_cache_on_reset)
         self.processor = AutoProcessor.from_pretrained(pretrained, trust_remote_code=True)
         self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(
             pretrained,
@@ -437,7 +452,7 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         self.ingested_timestamps_sec = []
         self.ingest_latencies_sec = []
         self.base_cache = None
-        if self.device.type == "cuda":
+        if self.device.type == "cuda" and self.clear_cuda_cache_on_reset:
             torch.cuda.empty_cache()
         self._encode_init_prompt()
 
@@ -543,12 +558,14 @@ class DuoStreamingMethod(_BaseLlavaStreamingMethod):
         seed: int = 42,
         deploy_sink_size: int | None = None,
         deploy_recent_size: int | None = None,
+        clear_cuda_cache_on_reset: bool = False,
     ) -> None:
         super().__init__(
             pretrained=pretrained,
             device=device,
             dtype=dtype,
             max_new_tokens=max_new_tokens,
+            clear_cuda_cache_on_reset=clear_cuda_cache_on_reset,
         )
         (
             full_attention_heads,
@@ -620,22 +637,52 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
         n_frame_tokens: int = 196,
         fattn: bool = False,
         pin_memory: bool = True,
+        short_memory_only: bool = False,
+        clear_cuda_cache_on_reset: bool = False,
     ) -> None:
         super().__init__(
             pretrained=pretrained,
             device=device,
             dtype=dtype,
             max_new_tokens=max_new_tokens,
+            clear_cuda_cache_on_reset=clear_cuda_cache_on_reset,
         )
+        self._init_rekv_backend(
+            n_local=n_local,
+            retrieve_size=retrieve_size,
+            retrieve_chunk_size=retrieve_chunk_size,
+            n_frame_tokens=n_frame_tokens,
+            fattn=fattn,
+            pin_memory=pin_memory,
+            short_memory_only=short_memory_only,
+        )
+
+    def _init_rekv_backend(
+        self,
+        *,
+        n_local: int,
+        retrieve_size: int,
+        retrieve_chunk_size: int,
+        n_frame_tokens: int,
+        fattn: bool,
+        pin_memory: bool,
+        short_memory_only: bool,
+        n_init_override: int | None = None,
+    ) -> None:
         self.n_local = int(n_local)
         self.retrieve_size = int(retrieve_size)
         self.retrieve_chunk_size = int(retrieve_chunk_size)
         self.n_frame_tokens = int(n_frame_tokens)
         self.fattn = bool(fattn)
+        self.short_memory_only = bool(short_memory_only)
         self.pin_memory = bool(pin_memory and self.device.type == "cuda")
+        effective_n_init = (
+            int(n_init_override) if n_init_override is not None
+            else int(self.init_prompt_ids.shape[-1])
+        )
         self.model.language_model = patch_hf(
             self.model.language_model,
-            n_init=int(self.init_prompt_ids.shape[-1]),
+            n_init=effective_n_init,
             n_local=self.n_local,
             fattn=self.fattn,
             block_size=self.n_frame_tokens,
@@ -644,8 +691,39 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
             max_cached_block=128,
             exc_block_size=self.n_frame_tokens,
             pin_memory=self.pin_memory,
+            short_memory_only=self.short_memory_only,
         )
-        self.last_retrieval_stats: dict[str, Any] = {}
+        self.last_retrieval_stats: dict[str, Any] = _empty_retrieval_stats()
+        self.cpu_offload_bytes_peak = 0
+
+    def reset(self, sample_metadata: dict[str, Any]) -> None:
+        super().reset(sample_metadata)
+        self.last_retrieval_stats = _empty_retrieval_stats()
+        self.cpu_offload_bytes_peak = 0
+
+    def _current_cpu_offload_bytes(self) -> int:
+        if self.base_cache is None:
+            return 0
+        total = 0
+        for layer_kv in self.base_cache:
+            if hasattr(layer_kv, "calculate_cpu_memory"):
+                total += int(layer_kv.calculate_cpu_memory())
+        return total
+
+    def _update_cpu_offload_peak(self) -> int:
+        current_bytes = self._current_cpu_offload_bytes()
+        self.cpu_offload_bytes_peak = max(self.cpu_offload_bytes_peak, current_bytes)
+        return current_bytes
+
+    def ingest_features(self, feature_tensor: torch.Tensor, timestamp_sec: float) -> dict[str, Any]:
+        return super().ingest_features(feature_tensor, timestamp_sec)
+
+    def _retrieved_timestamps(self, block_indices: list[int]) -> list[float]:
+        timestamps: list[float] = []
+        for block_idx in block_indices:
+            if 0 <= block_idx < len(self.ingested_timestamps_sec):
+                timestamps.append(float(self.ingested_timestamps_sec[block_idx]))
+        return timestamps
 
     def _validate_video_features(self, video_features: torch.Tensor) -> None:
         if video_features.ndim != 3 or video_features.shape[0] != 1:
@@ -657,6 +735,10 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
             )
 
     def _prepare_answer_cache(self, question: str, metadata: dict[str, Any]):
+        if self.short_memory_only:
+            self.last_retrieval_stats = _empty_retrieval_stats()
+            return self.base_cache
+
         question_ids = self.tokenizer(question, return_tensors="pt").input_ids.to(self.device)
         retrieval_start = time.perf_counter()
         for layer_kv in self.base_cache:
@@ -673,15 +755,26 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
 
         per_layer_retrieved_counts: list[int] = []
         per_layer_global_blocks: list[int] = []
+        retrieved_block_indices_union: set[int] = set()
         for layer_kv in self.base_cache:
             retrieved_indices = layer_kv.retrieved_block_indices or []
             if retrieved_indices and retrieved_indices[0] is not None:
-                per_layer_retrieved_counts.append(len(retrieved_indices[0]))
+                flat_indices = sorted(
+                    {
+                        int(block_idx)
+                        for batch_indices in retrieved_indices
+                        for block_idx in (batch_indices or [])
+                        if block_idx is not None
+                    }
+                )
+                per_layer_retrieved_counts.append(len(flat_indices))
+                retrieved_block_indices_union.update(flat_indices)
             else:
                 per_layer_retrieved_counts.append(0)
             per_layer_global_blocks.append(int(getattr(layer_kv, "num_global_block", 0)))
             layer_kv.reset_retrieval()
 
+        retrieved_block_indices_sorted = sorted(retrieved_block_indices_union)
         self.last_retrieval_stats = {
             "retrieval_latency_sec": retrieval_latency_sec,
             "per_layer_retrieved_block_counts": per_layer_retrieved_counts,
@@ -695,12 +788,25 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
                 if per_layer_global_blocks
                 else 0.0
             ),
+            "retrieved_block_indices_union": retrieved_block_indices_sorted,
+            "retrieved_frame_indices_union": list(retrieved_block_indices_sorted),
+            "retrieved_timestamps_sec_union": self._retrieved_timestamps(
+                retrieved_block_indices_sorted
+            ),
         }
         return retrieval_past
 
     def _build_answer_stats(self, question: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        current_offload_bytes = self._update_cpu_offload_peak()
         return {
             "method_name": self.method_name,
+            "retrieval_policy": (
+                "short_memory_only_discard_old_context"
+                if self.short_memory_only
+                else "rekv_native"
+            ),
+            "cpu_offload_bytes_current": current_offload_bytes,
+            "cpu_offload_bytes_peak": self.cpu_offload_bytes_peak,
             "n_local": self.n_local,
             "retrieve_size": self.retrieve_size,
             "retrieve_chunk_size": self.retrieve_chunk_size,
@@ -708,6 +814,25 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
             "fattn": self.fattn,
             **self.last_retrieval_stats,
         }
+
+    def get_runtime_stats(self) -> dict[str, Any]:
+        runtime_stats = super().get_runtime_stats()
+        current_offload_bytes = self._current_cpu_offload_bytes()
+        self.cpu_offload_bytes_peak = max(self.cpu_offload_bytes_peak, current_offload_bytes)
+        runtime_stats.update(
+            {
+                "cpu_offload_bytes_current": current_offload_bytes,
+                "cpu_offload_bytes_peak": self.cpu_offload_bytes_peak,
+            }
+        )
+        return runtime_stats
+
+
+class ReKVNoOffloadStreamingMethod(ReKVStreamingMethod):
+    method_name = "rekv_no_offload"
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs, short_memory_only=True)
 
 
 class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
@@ -732,6 +857,7 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
         n_frame_tokens: int = 196,
         fattn: bool = False,
         pin_memory: bool = True,
+        clear_cuda_cache_on_reset: bool = False,
     ) -> None:
         _BaseLlavaStreamingMethod.__init__(
             self,
@@ -739,6 +865,7 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
             device=device,
             dtype=dtype,
             max_new_tokens=max_new_tokens,
+            clear_cuda_cache_on_reset=clear_cuda_cache_on_reset,
         )
         (
             full_attention_heads,
@@ -753,7 +880,19 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
             deploy_sink_size=deploy_sink_size,
             deploy_recent_size=deploy_recent_size,
         )
-        enable_duo_attention_eval(self.model, full_attention_heads, sink_size, recent_size)
+        # Only apply the weight reordering and full_attention_heads registration
+        # from DuoAttention — skip the tuple KV cache patching since ReKV's
+        # patch_hf will overwrite the model forward anyway.
+        from duo_attn.patch.llava_onevision import (
+            _enable_qwen2_layers_duo_attention_eval,
+            _get_qwen2_layers,
+        )
+        _enable_qwen2_layers_duo_attention_eval(
+            _get_qwen2_layers(self.model),
+            full_attention_heads,
+            sink_size,
+            recent_size,
+        )
         for layer in self.model.language_model.model.layers:
             layer.self_attn.rekv_duo_enabled = True
 
@@ -764,32 +903,42 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
         self.learned_threshold = float(attn_config["learned_threshold"])
 
         self.n_local = int(n_local)
-        self.retrieve_size = int(retrieve_size)
-        self.retrieve_chunk_size = int(retrieve_chunk_size)
-        self.n_frame_tokens = int(n_frame_tokens)
-        self.fattn = bool(fattn)
-        self.pin_memory = bool(pin_memory and self.device.type == "cuda")
-        self.model.language_model = patch_hf(
-            self.model.language_model,
-            n_init=int(self.init_prompt_ids.shape[-1]),
-            n_local=self.n_local,
-            fattn=self.fattn,
-            block_size=self.n_frame_tokens,
-            topk=self.retrieve_size,
-            chunk_size=self.retrieve_chunk_size,
-            max_cached_block=128,
-            exc_block_size=self.n_frame_tokens,
-            pin_memory=self.pin_memory,
+        # Compute n_init for the ReKV context manager that preserves enough
+        # early tokens to serve as attention sinks for DuoAttention's streaming
+        # heads (trained with sink_size tokens).  n_init must be block-aligned
+        # after the init prompt, otherwise the context manager's block
+        # offloading assertion will fail.
+        init_prompt_len = int(self.init_prompt_ids.shape[-1])
+        if sink_size > init_prompt_len:
+            extra_blocks = math.ceil(
+                (sink_size - init_prompt_len) / n_frame_tokens
+            )
+            duo_n_init = init_prompt_len + extra_blocks * n_frame_tokens
+        else:
+            duo_n_init = init_prompt_len
+        self.duo_n_init = duo_n_init
+        self._init_rekv_backend(
+            n_local=n_local,
+            retrieve_size=retrieve_size,
+            retrieve_chunk_size=retrieve_chunk_size,
+            n_frame_tokens=n_frame_tokens,
+            fattn=fattn,
+            pin_memory=pin_memory,
+            short_memory_only=False,
+            n_init_override=duo_n_init,
         )
-        self.last_retrieval_stats: dict[str, Any] = {}
 
     def _build_answer_stats(self, question: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        current_offload_bytes = self._update_cpu_offload_peak()
         return {
             "method_name": self.method_name,
             "integration_mode": "rekv_memory_plus_duo_lm",
             "retrieval_policy": "rekv_native",
             "answer_attention_policy": "duo_post_retrieval",
+            "cpu_offload_bytes_current": current_offload_bytes,
+            "cpu_offload_bytes_peak": self.cpu_offload_bytes_peak,
             "attn_dir": self.attn_dir,
+            "duo_n_init": self.duo_n_init,
             "sink_size": self.sink_size,
             "recent_size": self.recent_size,
             "actual_sparsity": self.actual_sparsity,
@@ -809,6 +958,7 @@ def build_method_from_args(args) -> StreamingMethod:
         "device": args.device,
         "dtype": args.dtype,
         "max_new_tokens": args.max_new_tokens,
+        "clear_cuda_cache_on_reset": args.clear_cuda_cache_on_reset,
     }
     if args.method == "full_streaming":
         return FullStreamingMethod(**shared_kwargs)
@@ -824,6 +974,16 @@ def build_method_from_args(args) -> StreamingMethod:
         )
     if args.method == "rekv":
         return ReKVStreamingMethod(
+            **shared_kwargs,
+            n_local=args.n_local,
+            retrieve_size=args.retrieve_size,
+            retrieve_chunk_size=args.retrieve_chunk_size,
+            n_frame_tokens=args.n_frame_tokens,
+            fattn=args.rekv_fattn,
+            pin_memory=not args.disable_rekv_pin_memory,
+        )
+    if args.method == "rekv_no_offload":
+        return ReKVNoOffloadStreamingMethod(
             **shared_kwargs,
             n_local=args.n_local,
             retrieve_size=args.retrieve_size,

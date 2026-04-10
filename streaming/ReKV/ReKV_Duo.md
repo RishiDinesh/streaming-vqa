@@ -15,19 +15,190 @@
   - `retrieve_size = 64`
   - `n_local = 15000`
 - Current strongest overall standalone method on the validated subsamples: `rekv`
+- `duo_n_init = 601` (block-aligned sink token count: system prompt + 3 frames)
 - Current status:
-  - subsample-only evaluation is complete and packaged
+  - figure-ready subsample / profiling workflow is implemented
   - optimized full-eval workflow is implemented
+  - safe single-GPU speed knobs are implemented for the local MI300X path
+  - sink token mismatch fixed (n_init raised from 13 to 601 for duo_plus_rekv)
+  - tuple KV cache patching removed from duo_plus_rekv init
+  - previous subsample results used the unfixed n_init=13 and should be rerun
   - full-dataset runs are ready but have not been executed end to end yet
 
+## Current Direction Update
+
+As of `2026-04-09`, the active ReKV lane should reflect the following project decisions:
+
+- We care about **both** streaming datasets:
+  - `RVS-Ego`
+  - `RVS-Movie`
+- The intended streaming paper story is:
+  - `DuoAttention` alone is **not** expected to beat the streaming state of the art.
+  - The more important claim is that `DuoAttention` can act as an **add-on to ReKV** to reduce memory while preserving most of ReKV's accuracy.
+- In addition to the currently promoted hybrid setting, we want targeted subsample experiments for:
+  - `duo_plus_rekv` with `sparsity = 0.50`
+  - `duo_plus_rekv` with `sparsity = 0.75`
+- We do **not** plan to spend compute on a `duo_streaming (s=0.0)` control unless a later review shows it is necessary.
+- These subsample sweeps are mainly for checking whether higher Duo sparsity on top of ReKV gives:
+  - additional peak-memory savings
+  - acceptable accuracy retention relative to native `rekv`
+
+## External Paper Notes
+
+### Original ReKV paper / repo
+
+After reviewing the original paper and repository:
+
+- ReKV's core design is:
+  - streaming video ingest with sliding-window attention
+  - preservation of old KV cache outside the live GPU window
+  - question-time retrieval of relevant KV blocks
+- The official repo explicitly positions offloading as part of the method:
+  - old KV cache can be stored in `RAM` or `disk`
+  - retrieved KV is reloaded for answer-time reasoning
+- The official repo also supports both:
+  - `rvs_ego`
+  - `rvs_movie`
+
+### StreamMem note about `ReKV w/o offloading`
+
+After reviewing `StreamMem`:
+
+- `StreamMem` reports both:
+  - `ReKV`
+  - `ReKV w/o offloading`
+- Their text defines `ReKV w/o offloading` as a memory-constrained variant that:
+  - does **not** keep old KV via CPU offloading
+  - instead discards older KV and keeps only recent context as short-term memory
+- In other words, this is not the full ReKV method.
+  It is a constrained ablation that removes ReKV's long-range storage mechanism.
+
+## Relevance of `ReKV w/o offloading` for this repo
+
+Current recommendation:
+
+- `ReKV w/o offloading` is **relevant as an optional ablation**, not as the main comparison target.
+- It is useful if we want to answer:
+  - whether Duo+ReKV is only helping because of a favorable memory budget
+  - how much long-range memory really matters under a strict no-offload setting
+  - whether Duo can provide a cleaner memory/accuracy tradeoff than a naive short-memory fallback
+- It is **not** the main story for this project because:
+  - our current ReKV implementation already behaves like an in-process retrieval system rather than the official CPU/disk-offload pipeline
+  - the central claim we want is `ReKV + Duo` versus native `ReKV`, not versus a deliberately weakened ReKV ablation
+
+Practical interpretation for this codebase:
+
+- The local analogue is now implemented as:
+  - `rekv_no_offload`
+- Semantics:
+  - disable long-range retained retrieval memory
+  - keep only the recent/local live KV window plus init tokens
+  - answer from short-term memory only
+- It should be treated as an ablation, not as the main promoted ReKV setting.
+
+## Immediate Next Experimental Priorities
+
+1. Run promoted full-eval comparisons on both `RVS-Ego` and `RVS-Movie`.
+2. Run subsample checks for `duo_plus_rekv` at `sparsity = 0.50` and `0.75`.
+3. Confirm whether those higher-sparsity hybrids reduce peak memory while staying close to native `rekv`.
+4. Run the `rekv_no_offload` short-memory ablation on the same subsamples as a StreamMem-style control.
+5. Only after the subsample figures and diagnostics look correct, launch the narrow promoted full runs.
+
+## Single-MI300X Speed Notes
+
+Because this lane currently assumes access to one large local `MI300X`, the safe way to speed things up is to reduce overhead **without changing streaming semantics**.
+
+Implemented safe speed knobs:
+
+- `torch.cuda.empty_cache()` is no longer forced on every per-video reset.
+  - This avoids repeated allocator stalls between videos.
+  - It can still be re-enabled explicitly with:
+    - `CLEAR_CUDA_CACHE_ON_RESET=1`
+- Video decode now supports configurable CPU-side threading:
+  - `VIDEO_DECODE_THREADS=<n>`
+  - This only affects host-side frame decode and does not change sampled timestamps or model semantics.
+- The shared feature cache remains the main paper-safe acceleration path:
+  - precompute visual features once
+  - reuse them across all methods
+- Result logging for ReKV-based methods is derived from already-computed state.
+  - No extra benchmark-time forward passes were added for the new plots/figures.
+
+What we should still avoid for correctness:
+
+- batching multiple streamed frames into one LM ingest step
+- answering multiple questions from the same video in parallel
+- running multiple measured methods concurrently on the same GPU for final latency/memory numbers
+- changing the feature-extraction path to an approximation that does not match online ingest
+
+Recommended local settings for preview and full runs:
+
+- keep `USE_FEATURE_CACHE=1`
+- leave `CLEAR_CUDA_CACHE_ON_RESET=0` unless fragmentation becomes a real issue
+- try `VIDEO_DECODE_THREADS=4` first, then increase if CPU decode is clearly the bottleneck
+- keep `FLUSH_EVERY_CONVERSATIONS=1` so interrupted long runs can resume from inside a video
+- only change `FLUSH_EVERY_VIDEOS` if we want a small I/O reduction and are comfortable with less frequent checkpointing
+
+Practical compatibility fallbacks now present in the repo:
+
+- local launcher scripts still prefer the `duo` Conda env, but can fall back to the current Python with a warning if `duo` is not installed and required packages are present
+- video sampling still prefers `decord`, but can fall back to `imageio` when `decord` is unavailable
+
+Current environment note:
+
+- if `rocminfo` reports `Unable to open /dev/kfd read-write: Operation not permitted` and `torch.cuda.is_available()` is `False`, the issue is the current shell/container session, not the streaming runner logic
+- use [check_mi300x_access.sh](/workspace/streaming-vqa/scripts/check_mi300x_access.sh) before launching long runs
+
+## Long-Run Safety
+
+The streaming eval runner now supports **partial-video resume** in addition to whole-video resume.
+
+What is checkpointed:
+
+- completed videos
+- run metadata / aggregate progress
+- optional `in_progress_video`
+  - completed conversations so far
+  - frame-ingest progress so far
+  - enough metadata to replay the video stream and continue safely
+
+How resume works:
+
+- the output JSON is updated in place during the run
+- if a run stops after some conversations inside a video, `--resume` reconstructs the stream state by:
+  - resetting the method
+  - replaying frames up to the last checkpointed frame index
+  - continuing from the next unanswered conversation
+- this avoids trying to serialize live model KV state directly
+
+Current checkpoint defaults in the shell launchers:
+
+- `FLUSH_EVERY_VIDEOS=1`
+- `FLUSH_EVERY_CONVERSATIONS=1`
+
+Progress reporting is now implemented for the main long-running steps:
+
+- streaming eval:
+  - outer video bar
+  - inner per-video frame bar
+- feature precompute:
+  - outer video bar
+  - inner per-video frame/batch bar
+- profiling:
+  - per-video frame bar
+  - probe bar
+- judge:
+  - conversation bar
+
 ## What This Project Is
-We are comparing four streaming inference strategies on long-video streaming QA:
+We are comparing four main streaming inference strategies on long-video streaming QA,
+plus one short-memory ablation:
 
 | Method | Idea |
 | --- | --- |
 | `full_streaming` | plain streaming baseline with no DuoAttention and no ReKV |
 | `duo_streaming` | same streaming runner, but decoder attention uses DuoAttention |
 | `rekv` | same streaming runner, but long-range memory is handled by ReKV retrieval |
+| `rekv_no_offload` | ReKV-style local-window path, but old context is discarded instead of being kept for long-range retrieval |
 | `duo_plus_rekv` | ReKV retrieval plus DuoAttention only in the post-retrieval LM attention path |
 
 This project is deliberately about **streaming** behavior, so the runner never assumes the whole video is known in advance.
@@ -58,16 +229,22 @@ That means Duo does **not** interfere with ReKV’s retrieval selection.
 ### Main code
 - [run_eval.py](/workspace/streaming-vqa/streaming/ReKV/run_eval.py): main streaming runner
 - [datasets.py](/workspace/streaming-vqa/streaming/ReKV/datasets.py): `RVS-Ego` / `RVS-Movie` dataset adapters and sampling
-- [methods.py](/workspace/streaming-vqa/streaming/ReKV/methods.py): `full_streaming`, `duo_streaming`, `rekv`, `duo_plus_rekv`
+- [methods.py](/workspace/streaming-vqa/streaming/ReKV/methods.py): `full_streaming`, `duo_streaming`, `rekv`, `rekv_no_offload`, `duo_plus_rekv`
 - [feature_cache.py](/workspace/streaming-vqa/streaming/ReKV/feature_cache.py): strict feature-cache metadata/load helpers
 - [precompute_features.py](/workspace/streaming-vqa/streaming/ReKV/precompute_features.py): precompute shared frame features
 - [judge_results.py](/workspace/streaming-vqa/streaming/ReKV/judge_results.py): post-hoc local judge rescoring
 - [plot_results.py](/workspace/streaming-vqa/streaming/ReKV/plot_results.py): plot generation
 - [compare_subsamples.py](/workspace/streaming-vqa/streaming/ReKV/compare_subsamples.py): cross-slice comparisons
+- [profile_streaming.py](/workspace/streaming-vqa/streaming/ReKV/profile_streaming.py): fixed-horizon profiling runner
+- [plot_profile.py](/workspace/streaming-vqa/streaming/ReKV/plot_profile.py): profiling-curve plotting
+- [build_qualitative_bundle.py](/workspace/streaming-vqa/streaming/ReKV/build_qualitative_bundle.py): machine-readable / markdown qualitative bundle export
 
 ### Local launchers
-- [run_streaming_subsample5_local.sh](/workspace/streaming-vqa/scripts/run_streaming_subsample5_local.sh): subsample runs
+- [run_streaming_subsample5_local.sh](/workspace/streaming-vqa/scripts/run_streaming_subsample5_local.sh): subsample runs, judge, plots, qualitative bundle
+- [run_streaming_subsample_matrix_local.sh](/workspace/streaming-vqa/scripts/run_streaming_subsample_matrix_local.sh): multi-slice subsample runner with logs + `status.txt`
 - [run_streaming_full_eval_local.sh](/workspace/streaming-vqa/scripts/run_streaming_full_eval_local.sh): optimized local full eval
+- [run_streaming_profile_local.sh](/workspace/streaming-vqa/scripts/run_streaming_profile_local.sh): low-overhead fixed-horizon profiling lane
+- [check_mi300x_access.sh](/workspace/streaming-vqa/scripts/check_mi300x_access.sh): ROCm / Torch visibility diagnostic for the current shell
 
 ## Architecture Diagram
 
@@ -204,6 +381,7 @@ Key idea:
   - `full_streaming`
   - `duo_streaming`
   - `rekv`
+  - `rekv_no_offload`
   - `duo_plus_rekv`
 
 ### Evaluation and reporting
@@ -212,7 +390,21 @@ Key idea:
   - local LLM-judge rescoring
   - per-slice plots
   - cross-slice comparison bundles
+  - qualitative bundle export
+  - fixed-horizon profiling outputs and plots
   - curated final package under `outputs/evaluations_streaming/final_subsample_package/`
+
+### Figure-ready logging
+- Result JSONs now preserve:
+  - sample-level `extra_metadata`
+  - conversation-level `extra_metadata`
+  - `cpu_offload_bytes_current`
+  - `cpu_offload_bytes_peak`
+  - retrieved block / timestamp unions for ReKV-based answers
+- These fields are intended to support:
+  - CPU-offload tables
+  - memory-vs-context plots
+  - retrieval-timeline qualitative figures
 
 ### Safe full-eval optimization
 - Added a shared feature-cache workflow so visual features can be computed once and reused across methods.
@@ -255,6 +447,47 @@ Key idea:
 
 This is slower than the unsafe shortcut, but it preserves comparability.
 
+### 5. DuoPlusReKV sink token and initialization fix (2026-04-09)
+- Files: [methods.py](/workspace/streaming-vqa/streaming/ReKV/methods.py)
+
+**Problem A — Sink token mismatch**:
+- DuoAttention's streaming heads were trained with `sink_size=512` attention sink tokens.
+- In `duo_plus_rekv`, the ReKV context manager only preserved `n_init=13` tokens
+  (the system prompt) as init/sink tokens.
+- At answer time, streaming heads received only 13 sink tokens instead of the 512 they
+  were trained to expect.
+- This caused a significant mismatch between training and inference conditions for
+  streaming heads, likely degrading their attention quality.
+
+**Fix**: `n_init` for the ReKV context manager in `duo_plus_rekv` is now computed as
+`init_prompt_len + ceil((sink_size - init_prompt_len) / block_size) * block_size`.
+This rounds up to block boundaries to avoid breaking the context manager's block
+alignment assertions.  For the current config (`sink_size=512`, `init_prompt_len=13`,
+`block_size=196`): `n_init = 13 + 3*196 = 601`.  The first 601 tokens (system prompt
++ first 3 frames) are preserved as non-retrievable attention sinks.
+
+**Problem B — Unnecessary tuple KV cache patching**:
+- `enable_duo_attention_eval` patched both the model forward (for tuple KV caches)
+  and the attention weights (for head reordering).
+- ReKV's `patch_hf` then overwrote the model forward and attention forward.
+- The tuple KV cache patching from DuoAttention was never used in `duo_plus_rekv`;
+  only the weight reordering and `full_attention_heads` buffer registration mattered.
+- The leftover `old_qwen2_decoder_layer_forward` patches were harmless but added
+  unnecessary complexity.
+
+**Fix**: `DuoPlusReKVStreamingMethod.__init__` now directly calls
+`_enable_qwen2_layers_duo_attention_eval` (weight reordering + head registration only)
+instead of the full `enable_duo_attention_eval` (which also patches model/layer forwards
+for tuple KV caches).
+
+**Traceability**: `duo_n_init` is now recorded in `method_stats` so the effective
+sink token count is visible in result JSONs.
+
+**Impact**: All previous `duo_plus_rekv` subsample results used `n_init=13`
+(system prompt only) as sink tokens.  Fresh runs with this fix will use `n_init=601`.
+The existing subsample results should be considered pre-fix baselines.  Accuracy may
+improve because streaming heads now see the sink context they were trained with.
+
 ## Datasets and Official Protocol
 
 ### Datasets
@@ -286,20 +519,29 @@ This is slower than the unsafe shortcut, but it preserves comparability.
   - `full_streaming`
   - `duo_streaming (s=0.5)`
   - `rekv`
-  - `duo_plus_rekv (s=0.375)`
+  - one selected `duo_plus_rekv` sparsity for the final run
 - Ablation-only:
-  - `duo_streaming (s=0.0)`
+  - `duo_plus_rekv (s=0.375)`
+  - `duo_plus_rekv (s=0.5)`
+  - `duo_plus_rekv (s=0.75)`
+  - `rekv_no_offload`
 
 ## Main Results
 
 Important provenance note:
 - The promoted A+B setting is `duo_plus_rekv (s=0.375)`.
 - The checked-in promoted `RVS-Movie` A+B subsample JSONs already match that setting.
+- **All existing `duo_plus_rekv` results below used `n_init=13` (pre-fix).**
+  The sink token fix (2026-04-09) raises `n_init` to `601` for `duo_plus_rekv`.
+  These results should be treated as pre-fix baselines and rerun with the fix.
 - Some older checked-in `RVS-Ego` A+B subsample JSONs still use `s=0.5` and should be
   treated as legacy artifacts rather than the promoted package.
 - For any fresh subsample rerun, use
   [run_streaming_subsample5_local.sh](/workspace/streaming-vqa/scripts/run_streaming_subsample5_local.sh),
-  which now launches A+B with `s=0.375`.
+  which now supports:
+  - `rekv_no_offload`
+  - `duo_plus_rekv` at `s=0.375`, `0.5`, and `0.75`
+  - in-place judge, plot, and qualitative bundle generation
 
 ### RVS-Ego
 | Slice | Method | Judge | ROUGE-L F1 | Token F1 | Latency (s) | Peak Mem (GiB) |
@@ -428,7 +670,7 @@ If that passes, run a tiny real-data subsample check:
 MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh full
 MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh duo
 MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh rekv
-MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh ab
+MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_subsample5_local.sh ab_s0375
 ```
 
 What this verifies:
@@ -455,7 +697,8 @@ VIDEO_OFFSET=5 SUBSAMPLE_NAME=subsample5_offset5 bash scripts/run_streaming_subs
 Current promoted subsample settings:
 - `duo_streaming`: `s=0.5`
 - `rekv`: `retrieve_size=64`, `n_local=15000`
-- `duo_plus_rekv`: `s=0.375`, `retrieve_size=64`, `n_local=15000`
+- `duo_plus_rekv` sweep: `s=0.375`, `s=0.5`, `s=0.75`
+- `rekv_no_offload`: `n_local=15000`
 
 ### Optimized full eval
 Precompute once:
@@ -473,11 +716,12 @@ DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh all
 The official full-eval launcher already matches the promoted settings:
 - `duo_streaming`: `s=0.5`
 - `rekv`: `retrieve_size=64`, `n_local=15000`
-- `duo_plus_rekv`: `s=0.375`, `retrieve_size=64`, `n_local=15000`
+- `duo_plus_rekv`: selected by `AB_SPARSITY` after subsample review
 
-Run with Duo full-head ablation too:
+Choose the final hybrid only once:
 ```bash
-DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh all_with_control
+DATASET=rvs_ego AB_SPARSITY=0.375 bash scripts/run_streaming_full_eval_local.sh all
+DATASET=rvs_movie AB_SPARSITY=0.5 bash scripts/run_streaming_full_eval_local.sh all
 ```
 
 Resume:
@@ -578,8 +822,11 @@ If work resumes later:
    - `full_streaming`
    - `duo_streaming (s=0.5)`
    - `rekv`
-   - `duo_plus_rekv (s=0.375)`
-3. Use `duo_streaming (s=0.0)` only as an ablation.
+   - one chosen `duo_plus_rekv` sparsity
+3. Use subsamples to compare `duo_plus_rekv` at:
+   - `s=0.375`
+   - `s=0.5`
+   - `s=0.75`
 4. Use the new delta plots to answer the project question:
    - Does Duo help vs `full_streaming`?
    - Does Duo help when added on top of `rekv`?

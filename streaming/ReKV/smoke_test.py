@@ -1,20 +1,32 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 from .datasets import RVSEgoDataset, RVSMovieDataset, build_dataset_from_args, sample_video_frames
-from .methods import MethodAnswer, StreamingMethod
-from .plot_results import display_label
+from .plot_results import (
+    display_label,
+    plot_cpu_offload_comparison,
+    plot_efficiency_vs_context,
+    plot_rekv_retrieval,
+    plot_retrieval_timeline,
+)
 from .run_eval import conversation_target_frame_count, evaluate_samples
 
 
-class RecordingMethod(StreamingMethod):
+@dataclass(frozen=True)
+class MethodAnswer:
+    prediction: str
+    stats: dict
+
+
+class RecordingMethod:
     def __init__(self, method_name: str) -> None:
         self.method_name = method_name
         self.reset_calls = 0
@@ -39,15 +51,24 @@ class RecordingMethod(StreamingMethod):
             "frame_token_count": 196,
         }
 
+    def ingest_features(self, feature_tensor: np.ndarray, timestamp_sec: float) -> dict:
+        return self.ingest_frame(np.asarray(feature_tensor), timestamp_sec)
+
     def answer_question(self, question: str, metadata: dict | None = None) -> MethodAnswer:
         self.answer_calls += 1
         return MethodAnswer(
-            prediction=f"stub-answer-{self.answer_calls}",
+            prediction=f"stub-answer-{question}",
             stats={
                 "method_name": self.method_name,
                 "ttft_sec": 0.01,
                 "answer_latency_sec": 0.02,
                 "peak_memory_bytes": None,
+                "cpu_offload_bytes_current": 0,
+                "cpu_offload_bytes_peak": 0,
+                "retrieval_latency_sec": None,
+                "avg_retrieved_block_count": 0.0,
+                "retrieved_block_indices_union": [],
+                "retrieved_timestamps_sec_union": [],
                 "frames_ingested_so_far": self.frames_ingested,
             },
         )
@@ -61,30 +82,28 @@ class RecordingMethod(StreamingMethod):
                 if self.ingest_latencies_sec
                 else None
             ),
+            "cumulative_frame_ingest_latency_sec": sum(self.ingest_latencies_sec),
         }
 
 
-def create_toy_video(video_path: Path, fps: float = 4.0, num_frames: int = 8) -> None:
-    writer = cv2.VideoWriter(
-        str(video_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (32, 32),
+def create_toy_numpy_video(video_path: Path, num_frames: int = 8, height: int = 32, width: int = 32) -> None:
+    np.save(
+        video_path,
+        np.stack(
+            [np.full((height, width, 3), idx * 20, dtype=np.uint8) for idx in range(num_frames)],
+            axis=0,
+        ),
     )
-    for idx in range(num_frames):
-        frame = np.full((32, 32, 3), idx * 20, dtype=np.uint8)
-        writer.write(frame)
-    writer.release()
 
 
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="streaming_rekv_smoke_") as tmp_dir:
         root = Path(tmp_dir)
-        video_path = root / "toy.mp4"
-        second_video_path = root / "toy_second.mp4"
+        video_path = root / "toy.npy"
+        second_video_path = root / "toy_second.npy"
         movie_video_path = root / "toy_movie.npy"
-        create_toy_video(video_path)
-        create_toy_video(second_video_path)
+        create_toy_numpy_video(video_path)
+        create_toy_numpy_video(second_video_path)
         np.save(movie_video_path, np.stack([np.full((24, 40, 3), idx, dtype=np.uint8) for idx in range(6)]))
 
         annotation_path = root / "ego4d_oe.json"
@@ -95,18 +114,21 @@ def main() -> int:
                         "video_id": "toy-video",
                         "video_path": str(video_path),
                         "duration": 2.0,
+                        "scene_type": "ego_outdoor",
                         "conversations": [
                             {
                                 "question": "Q2",
                                 "answer": "A2",
                                 "start_time": 0.5,
                                 "end_time": 1.5,
+                                "qid": "ego-q2",
                             },
                             {
                                 "question": "Q1",
                                 "answer": "A1",
                                 "start_time": 0.0,
                                 "end_time": 0.5,
+                                "qid": "ego-q1",
                             },
                         ],
                     },
@@ -114,12 +136,14 @@ def main() -> int:
                         "video_id": "toy-video-2",
                         "video_path": str(second_video_path),
                         "duration": 2.0,
+                        "scene_type": "ego_indoor",
                         "conversations": [
                             {
                                 "question": "Q3",
                                 "answer": "A3",
                                 "start_time": 0.25,
                                 "end_time": 1.0,
+                                "qid": "ego-q3",
                             }
                         ],
                     }
@@ -220,6 +244,8 @@ def main() -> int:
         assert left_result["aggregate_metrics"]["primary_quality_score"] is not None
         assert "scores" in left_result["videos"][0]["conversations"][0]
         assert "rouge_l_f1" in left_result["videos"][0]["conversations"][0]["scores"]
+        assert left_result["videos"][0]["extra_metadata"] == {"scene_type": "ego_outdoor"}
+        assert left_result["videos"][0]["conversations"][0]["extra_metadata"] == {"qid": "ego-q1"}
         assert conversation_target_frame_count(0.5, [0.0, 0.5, 1.0, 1.5]) == 1
         assert conversation_target_frame_count(0.75, [0.0, 0.5, 1.0, 1.5]) == 2
         assert conversation_target_frame_count(1.0, [0.0, 0.5, 1.0, 1.5]) == 2
@@ -247,6 +273,50 @@ def main() -> int:
         assert resumed_result["videos"][1]["video_id"] == "toy-video-2"
         assert resumed_result["run_state"]["completed_videos"] == 2
         assert resumed_result["run_state"]["total_requested_videos"] == 2
+        assert resumed_result["in_progress_video"] is None
+
+        partial_video = copy.deepcopy(left_result["videos"][0])
+        partial_video["conversations"] = partial_video["conversations"][:1]
+        partial_video["runtime_stats"] = {
+            "method_name": "recording_partial",
+            "frames_ingested": 1,
+            "avg_frame_ingest_latency_sec": 0.001,
+            "cumulative_frame_ingest_latency_sec": 0.001,
+            "last_ingested_timestamp_sec": 0.0,
+        }
+        partial_video["checkpoint_state"] = {
+            "completed_conversations": 1,
+            "frames_ingested": 1,
+            "ingested_until_frame_index": 0,
+            "last_ingested_timestamp_sec": 0.0,
+        }
+        partial_resumed = RecordingMethod("recording_partial_resumed")
+        partial_resumed_result = evaluate_samples(
+            samples=samples[:1],
+            method=partial_resumed,
+            sample_fps=2.0,
+            run_config=run_config,
+            total_requested_videos=1,
+            started_at_utc="2026-04-04T00:00:00+00:00",
+            show_progress_bar=False,
+            existing_in_progress_video=partial_video,
+        )
+        assert partial_resumed.reset_calls == 1
+        assert partial_resumed.answer_calls == 1
+        assert partial_resumed_result["run_state"]["completed_videos"] == 1
+        assert partial_resumed_result["in_progress_video"] is None
+        assert (
+            partial_resumed_result["videos"][0]["conversations"][0]["prediction"]
+            == left_result["videos"][0]["conversations"][0]["prediction"]
+        )
+        assert (
+            partial_resumed_result["videos"][0]["conversations"][1]["prediction"]
+            == left_result["videos"][0]["conversations"][1]["prediction"]
+        )
+        assert abs(
+            partial_resumed_result["videos"][0]["runtime_stats"]["cumulative_frame_ingest_latency_sec"]
+            - 0.003
+        ) < 1e-9
 
         assert display_label({"run_config": {"method": "full_streaming", "sparsity": 0.5}}) == (
             "full_streaming"
@@ -261,8 +331,77 @@ def main() -> int:
             {"run_config": {"method": "rekv", "retrieve_size": 64, "n_local": 15000}}
         ) == "rekv (topk=64,n_local=15000)"
         assert display_label(
+            {"run_config": {"method": "rekv_no_offload", "n_local": 15000}}
+        ) == "rekv_no_offload (n_local=15000)"
+        assert display_label(
             {"run_config": {"method": "duo_plus_rekv", "retrieve_size": 64, "sparsity": 0.375}}
         ) == "duo_plus_rekv (topk=64,s=0.375)"
+
+        rekv_payload = copy.deepcopy(left_result)
+        rekv_payload["run_config"] = {"method": "rekv", "retrieve_size": 64, "n_local": 15000}
+        for conversation in rekv_payload["videos"][0]["conversations"]:
+            conversation["method_stats"].update(
+                {
+                    "peak_memory_bytes": 1024**3,
+                    "cpu_offload_bytes_current": 256 * 1024**2,
+                    "cpu_offload_bytes_peak": 512 * 1024**2,
+                    "retrieval_latency_sec": 0.03,
+                    "avg_retrieved_block_count": 4.0,
+                    "retrieved_block_indices_union": [0, 1],
+                    "retrieved_timestamps_sec_union": [0.0, 0.5],
+                }
+            )
+        rekv_payload["aggregate_metrics"]["peak_cpu_offload_bytes"] = 512 * 1024**2
+
+        no_offload_payload = copy.deepcopy(left_result)
+        no_offload_payload["run_config"] = {"method": "rekv_no_offload", "n_local": 15000}
+        for conversation in no_offload_payload["videos"][0]["conversations"]:
+            conversation["method_stats"].update(
+                {
+                    "peak_memory_bytes": 900 * 1024**2,
+                    "cpu_offload_bytes_current": 0,
+                    "cpu_offload_bytes_peak": 0,
+                    "retrieval_latency_sec": None,
+                    "avg_retrieved_block_count": 0.0,
+                    "retrieved_block_indices_union": [],
+                    "retrieved_timestamps_sec_union": [],
+                }
+            )
+        no_offload_payload["aggregate_metrics"]["peak_cpu_offload_bytes"] = 0
+
+        hybrid_payload = copy.deepcopy(left_result)
+        hybrid_payload["run_config"] = {
+            "method": "duo_plus_rekv",
+            "retrieve_size": 64,
+            "sparsity": 0.5,
+        }
+        for conversation in hybrid_payload["videos"][0]["conversations"]:
+            conversation["method_stats"].update(
+                {
+                    "peak_memory_bytes": 1100 * 1024**2,
+                    "cpu_offload_bytes_current": 128 * 1024**2,
+                    "cpu_offload_bytes_peak": 256 * 1024**2,
+                    "retrieval_latency_sec": 0.02,
+                    "avg_retrieved_block_count": 3.0,
+                    "retrieved_block_indices_union": [1],
+                    "retrieved_timestamps_sec_union": [0.5],
+                }
+            )
+        hybrid_payload["aggregate_metrics"]["peak_cpu_offload_bytes"] = 256 * 1024**2
+
+        plot_dir = root / "smoke_plots"
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        cpu_plot = plot_cpu_offload_comparison(
+            [rekv_payload, no_offload_payload, hybrid_payload],
+            plot_dir,
+        )
+        assert cpu_plot is not None and cpu_plot.is_file()
+        assert plot_efficiency_vs_context(
+            [rekv_payload, no_offload_payload, hybrid_payload],
+            plot_dir,
+        ).is_file()
+        assert plot_rekv_retrieval([rekv_payload, no_offload_payload, hybrid_payload], plot_dir).is_file()
+        assert plot_retrieval_timeline([rekv_payload, hybrid_payload], plot_dir).is_file()
 
         print("streaming/ReKV smoke test passed")
     return 0

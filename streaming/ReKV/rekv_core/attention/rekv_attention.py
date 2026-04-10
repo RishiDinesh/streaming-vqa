@@ -53,6 +53,22 @@ def _full_causal_attention(
     )
 
 
+def _empty_kv_cache(
+    *,
+    batch_size: int,
+    num_heads_kv: int,
+    dim_head: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    empty = torch.empty(
+        (batch_size, num_heads_kv, 0, dim_head),
+        device=device,
+        dtype=dtype,
+    )
+    return empty, empty.clone()
+
+
 def _rekv_local_init_attention(
     Attn,
     position_bias,
@@ -113,6 +129,7 @@ def rekv_attention_forward(
     exc_block_size, fattn,
     async_global_stream=True,
     pin_memory=False,
+    short_memory_only=False,
     *args, **kwargs
 ):
     Attn, _ = get_multi_stage_dot_production_attention(fattn)
@@ -150,14 +167,23 @@ def rekv_attention_forward(
                 position_bias._sin_cached = position_bias._sin_cached.to(h_q.device)
 
         if past_key_value is None:
-            past_key_value = ContextManager(
-                position_bias,
-                n_init, n_local, 
-                block_size, max_cached_block, topk, chunk_size, exc_block_size,
-                fattn,
-                async_global_stream,
-                pin_memory,
-            )
+            if short_memory_only:
+                past_key_value = _empty_kv_cache(
+                    batch_size=batch_size,
+                    num_heads_kv=num_heads_kv,
+                    dim_head=dim_head,
+                    device=h_k.device,
+                    dtype=h_k.dtype,
+                )
+            else:
+                past_key_value = ContextManager(
+                    position_bias,
+                    n_init, n_local,
+                    block_size, max_cached_block, topk, chunk_size, exc_block_size,
+                    fattn,
+                    async_global_stream,
+                    pin_memory,
+                )
 
         local_q, local_k, local_v = h_q, h_k, h_v
         global_q, global_k, global_v = h_q, h_k, h_v

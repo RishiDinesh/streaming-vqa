@@ -23,10 +23,11 @@ from .feature_cache import (
     load_cached_feature_video,
     load_feature_cache_manifest,
 )
-from .methods import DEFAULT_DUO_ATTN_DIR, build_method_from_args
 
 
 def parse_args() -> argparse.Namespace:
+    from .methods import DEFAULT_DUO_ATTN_DIR
+
     parser = argparse.ArgumentParser(
         description=(
             "Causal streaming RVS evaluation for LLaVA-OneVision 0.5B using "
@@ -45,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         default="duo_streaming",
-        choices=["full_streaming", "duo_streaming", "rekv", "duo_plus_rekv"],
+        choices=["full_streaming", "duo_streaming", "rekv", "rekv_no_offload", "duo_plus_rekv"],
     )
     parser.add_argument("--sample-fps", type=float, default=0.5)
     parser.add_argument("--max-videos", type=int, default=None)
@@ -57,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--video-decode-threads", type=int, default=4)
+    parser.add_argument("--clear-cuda-cache-on-reset", action="store_true")
     parser.add_argument(
         "--dtype",
         default="auto",
@@ -67,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--overwrite-output", action="store_true")
     parser.add_argument("--flush-every-videos", type=int, default=1)
+    parser.add_argument("--flush-every-conversations", type=int, default=1)
     parser.add_argument("--disable-progress-bar", action="store_true")
 
     parser.add_argument("--attn-dir", default=DEFAULT_DUO_ATTN_DIR)
@@ -141,6 +145,8 @@ def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
         "max_new_tokens": args.max_new_tokens,
         "seed": args.seed,
         "device": args.device,
+        "video_decode_threads": args.video_decode_threads,
+        "clear_cuda_cache_on_reset": args.clear_cuda_cache_on_reset,
         "dtype": args.dtype,
         "attn_dir": args.attn_dir,
         "sparsity": args.sparsity,
@@ -172,6 +178,10 @@ def summarize_aggregate_metrics(video_results: list[dict[str, Any]]) -> dict[str
     answer_latencies: list[float] = []
     frame_ingest_latencies: list[float] = []
     peak_memories: list[int] = []
+    cpu_offload_currents: list[int] = []
+    cpu_offload_peaks: list[int] = []
+    retrieval_latencies: list[float] = []
+    retrieved_block_counts: list[float] = []
     total_frames_ingested = 0
 
     for video in video_results:
@@ -193,6 +203,14 @@ def summarize_aggregate_metrics(video_results: list[dict[str, Any]]) -> dict[str
                 answer_latencies.append(float(method_stats["answer_latency_sec"]))
             if method_stats.get("peak_memory_bytes") is not None:
                 peak_memories.append(int(method_stats["peak_memory_bytes"]))
+            if method_stats.get("cpu_offload_bytes_current") is not None:
+                cpu_offload_currents.append(int(method_stats["cpu_offload_bytes_current"]))
+            if method_stats.get("cpu_offload_bytes_peak") is not None:
+                cpu_offload_peaks.append(int(method_stats["cpu_offload_bytes_peak"]))
+            if method_stats.get("retrieval_latency_sec") is not None:
+                retrieval_latencies.append(float(method_stats["retrieval_latency_sec"]))
+            if method_stats.get("avg_retrieved_block_count") is not None:
+                retrieved_block_counts.append(float(method_stats["avg_retrieved_block_count"]))
 
     aggregate_metrics = {
         "avg_ttft_sec": float(sum(ttfts) / len(ttfts)) if ttfts else None,
@@ -204,7 +222,21 @@ def summarize_aggregate_metrics(video_results: list[dict[str, Any]]) -> dict[str
             if frame_ingest_latencies
             else None
         ),
+        "avg_retrieval_latency_sec": (
+            float(sum(retrieval_latencies) / len(retrieval_latencies)) if retrieval_latencies else None
+        ),
+        "avg_retrieved_block_count": (
+            float(sum(retrieved_block_counts) / len(retrieved_block_counts))
+            if retrieved_block_counts
+            else None
+        ),
         "peak_memory_bytes": max(peak_memories) if peak_memories else None,
+        "avg_cpu_offload_bytes_current": (
+            float(sum(cpu_offload_currents) / len(cpu_offload_currents))
+            if cpu_offload_currents
+            else None
+        ),
+        "peak_cpu_offload_bytes": max(cpu_offload_peaks) if cpu_offload_peaks else None,
         "total_frames_ingested": total_frames_ingested,
         "total_conversations_answered": len(score_bundles),
         "evaluation_mode": "open_ended_bundle",
@@ -222,6 +254,7 @@ def build_result_payload(
     started_at_utc: str,
     total_requested_videos: int,
     status: str,
+    in_progress_video: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "run_config": run_config,
@@ -232,10 +265,111 @@ def build_result_payload(
             "completed_videos": len(video_results),
             "total_requested_videos": total_requested_videos,
             "completed_sample_ids": [video["sample_id"] for video in video_results],
+            "in_progress_sample_id": (
+                str(in_progress_video["sample_id"]) if in_progress_video is not None else None
+            ),
         },
         "aggregate_metrics": summarize_aggregate_metrics(video_results),
         "videos": video_results,
+        "in_progress_video": in_progress_video,
     }
+
+
+def _cumulative_ingest_latency_sec(runtime_stats: dict[str, Any]) -> float:
+    cumulative = runtime_stats.get("cumulative_frame_ingest_latency_sec")
+    if cumulative is not None:
+        return float(cumulative)
+    avg_latency = runtime_stats.get("avg_frame_ingest_latency_sec")
+    frames_ingested = int(runtime_stats.get("frames_ingested", 0) or 0)
+    if avg_latency is None or frames_ingested <= 0:
+        return 0.0
+    return float(avg_latency) * frames_ingested
+
+
+def build_video_runtime_stats(
+    *,
+    method,
+    frames_ingested_total: int,
+    cumulative_ingest_latency_sec: float,
+    last_ingested_timestamp_sec: float | None,
+) -> dict[str, Any]:
+    runtime_stats = dict(method.get_runtime_stats())
+    runtime_stats["frames_ingested"] = int(frames_ingested_total)
+    runtime_stats["avg_frame_ingest_latency_sec"] = (
+        float(cumulative_ingest_latency_sec / frames_ingested_total)
+        if frames_ingested_total > 0
+        else None
+    )
+    runtime_stats["cumulative_frame_ingest_latency_sec"] = float(cumulative_ingest_latency_sec)
+    runtime_stats["last_ingested_timestamp_sec"] = last_ingested_timestamp_sec
+    return runtime_stats
+
+
+def build_video_result(
+    *,
+    sample,
+    sample_fps: float,
+    ingest_source: str,
+    feature_cache_path: str | None,
+    sampled_native_fps: float,
+    sampled_base_fps: int,
+    sampled_total_frames: int,
+    sampled_frame_indices_total: list[int],
+    sampled_timestamps_total: list[float],
+    conversation_results: list[dict[str, Any]],
+    runtime_stats: dict[str, Any],
+) -> dict[str, Any]:
+    frames_ingested = int(runtime_stats.get("frames_ingested", 0) or 0)
+    return {
+        "sample_id": sample.sample_id,
+        "video_id": sample.video_id,
+        "video_path": sample.video_path,
+        "duration": sample.duration,
+        "sample_fps": sample_fps,
+        "native_fps": sampled_native_fps,
+        "sampling_base_fps": sampled_base_fps,
+        "num_sampled_frames_total": sampled_total_frames,
+        "sampled_frame_indices_total": sampled_frame_indices_total,
+        "sampled_timestamps_sec_total": sampled_timestamps_total,
+        "ingest_source": ingest_source,
+        "feature_cache_path": feature_cache_path,
+        "extra_metadata": sample.extra_metadata,
+        "conversations": conversation_results,
+        "runtime_stats": runtime_stats,
+        "checkpoint_state": {
+            "completed_conversations": len(conversation_results),
+            "frames_ingested": frames_ingested,
+            "ingested_until_frame_index": (frames_ingested - 1) if frames_ingested > 0 else -1,
+            "last_ingested_timestamp_sec": runtime_stats.get("last_ingested_timestamp_sec"),
+        },
+    }
+
+
+def _replay_frames(
+    *,
+    method,
+    cached_video,
+    sampled_video,
+    sampled_timestamps_total: list[float],
+    end_frame_count: int,
+) -> int:
+    if end_frame_count <= 0:
+        return -1
+    replay_indices = list(range(end_frame_count))
+    if cached_video is not None:
+        for idx in replay_indices:
+            method.ingest_features(
+                cached_video.get_feature(idx),
+                sampled_timestamps_total[idx],
+            )
+    elif sampled_video is not None:
+        decoded_frames = sampled_video.get_frames(replay_indices)
+        for batch_offset, idx in enumerate(replay_indices):
+            method.ingest_frame(
+                decoded_frames[batch_offset],
+                sampled_timestamps_total[idx],
+            )
+    return end_frame_count - 1
 
 
 def validate_resume_payload(existing_payload: dict[str, Any], run_config: dict[str, Any]) -> None:
@@ -265,30 +399,52 @@ def evaluate_samples(
     started_at_utc: str | None = None,
     checkpoint_path: Path | None = None,
     flush_every_videos: int = 1,
+    flush_every_conversations: int = 1,
     show_progress_bar: bool = True,
     feature_cache_root: Path | None = None,
+    existing_in_progress_video: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     video_results: list[dict[str, Any]] = list(existing_videos or [])
     completed_sample_ids = {video["sample_id"] for video in video_results}
-    pending_samples = [sample for sample in samples if sample.sample_id not in completed_sample_ids]
+    in_progress_sample_id = (
+        str(existing_in_progress_video["sample_id"])
+        if existing_in_progress_video is not None
+        else None
+    )
+    pending_samples = [
+        sample
+        for sample in samples
+        if sample.sample_id not in completed_sample_ids
+        and sample.sample_id != in_progress_sample_id
+    ]
+    if existing_in_progress_video is not None:
+        matching_samples = [sample for sample in samples if sample.sample_id == in_progress_sample_id]
+        if not matching_samples:
+            raise ValueError(
+                f"Resume payload references an in-progress sample that is not present in this run: {in_progress_sample_id}"
+            )
+        pending_samples = [matching_samples[0], *pending_samples]
     if total_requested_videos is None:
         total_requested_videos = len(samples)
     if started_at_utc is None:
         started_at_utc = utc_now_iso()
 
-    iterable = pending_samples
     progress = None
     if show_progress_bar and tqdm is not None:
         progress = tqdm(
-            pending_samples,
-            total=len(pending_samples),
+            total=total_requested_videos,
+            initial=len(video_results),
             desc=f"{run_config['method']} videos",
             unit="video",
         )
-        iterable = progress
 
     newly_completed = 0
-    for sample in iterable:
+    for sample in pending_samples:
+        partial_video_result = (
+            dict(existing_in_progress_video)
+            if existing_in_progress_video is not None and sample.sample_id == in_progress_sample_id
+            else None
+        )
         ingest_source = "raw_frames"
         sampled_frame_indices_total: list[int]
         sampled_timestamps_total: list[float]
@@ -317,6 +473,7 @@ def evaluate_samples(
                 sample.video_path,
                 sample_fps,
                 duration_sec=sample.duration,
+                decode_threads=run_config.get("video_decode_threads", 1),
             )
             sampled_frame_indices_total = list(sampled_video.sampled_frame_indices)
             sampled_timestamps_total = list(sampled_video.sampled_timestamps_sec)
@@ -332,13 +489,62 @@ def evaluate_samples(
                 "duration": sample.duration,
                 "ingest_source": ingest_source,
                 "feature_cache_path": feature_cache_path,
+                "extra_metadata": sample.extra_metadata,
             }
         )
 
-        ingested_until_idx = -1
         conversation_results: list[dict[str, Any]] = []
+        video_frames_ingested_total = 0
+        video_cumulative_ingest_latency_sec = 0.0
+        last_ingested_timestamp_sec: float | None = None
+        starting_conversation_index = 0
+        ingested_until_idx = -1
 
-        for conversation in sample.conversations:
+        if partial_video_result is not None:
+            conversation_results = list(partial_video_result.get("conversations", []))
+            starting_conversation_index = len(conversation_results)
+            partial_runtime_stats = dict(partial_video_result.get("runtime_stats", {}))
+            video_frames_ingested_total = int(partial_runtime_stats.get("frames_ingested", 0) or 0)
+            if video_frames_ingested_total <= 0 and conversation_results:
+                video_frames_ingested_total = int(
+                    conversation_results[-1].get("num_frames_ingested_before_answer", 0) or 0
+                )
+            video_cumulative_ingest_latency_sec = _cumulative_ingest_latency_sec(partial_runtime_stats)
+            last_ingested_timestamp_sec = partial_runtime_stats.get("last_ingested_timestamp_sec")
+            expected_sample_id = str(partial_video_result.get("sample_id"))
+            if expected_sample_id != sample.sample_id:
+                raise ValueError(
+                    "Resume payload sample mismatch for in-progress video: "
+                    f"expected {sample.sample_id!r}, got {expected_sample_id!r}"
+                )
+            ingested_until_idx = _replay_frames(
+                method=method,
+                cached_video=cached_video,
+                sampled_video=sampled_video,
+                sampled_timestamps_total=sampled_timestamps_total,
+                end_frame_count=video_frames_ingested_total,
+            )
+            if progress is not None:
+                progress.write(
+                    f"[resume] restored partial video {sample.video_id}: "
+                    f"{starting_conversation_index}/{len(sample.conversations)} conversations, "
+                    f"{video_frames_ingested_total} frames"
+                )
+
+        frame_progress = None
+        if show_progress_bar and tqdm is not None:
+            frame_progress = tqdm(
+                total=sampled_total_frames,
+                initial=max(video_frames_ingested_total, 0),
+                desc=f"{sample.video_id} frames",
+                unit="frame",
+                leave=False,
+            )
+
+        for conversation_index, conversation in enumerate(
+            sample.conversations[starting_conversation_index:],
+            start=starting_conversation_index,
+        ):
             target_frame_count = min(
                 conversation_target_frame_count(
                     conversation.end_time,
@@ -356,6 +562,11 @@ def evaluate_samples(
                     )
                     ingest_records.append(ingest_record)
                     ingested_until_idx = idx
+                    video_frames_ingested_total += 1
+                    video_cumulative_ingest_latency_sec += float(ingest_record["ingest_latency_sec"])
+                    last_ingested_timestamp_sec = float(ingest_record["timestamp_sec"])
+                    if frame_progress is not None:
+                        frame_progress.update(1)
             elif sampled_video is not None and new_indices:
                 decoded_frames = sampled_video.get_frames(new_indices)
                 for batch_offset, idx in enumerate(new_indices):
@@ -365,6 +576,17 @@ def evaluate_samples(
                     )
                     ingest_records.append(ingest_record)
                     ingested_until_idx = idx
+                    video_frames_ingested_total += 1
+                    video_cumulative_ingest_latency_sec += float(ingest_record["ingest_latency_sec"])
+                    last_ingested_timestamp_sec = float(ingest_record["timestamp_sec"])
+                    if frame_progress is not None:
+                        frame_progress.update(1)
+
+            if frame_progress is not None:
+                frame_progress.set_postfix_str(
+                    f"conv={conversation_index + 1}/{len(sample.conversations)} "
+                    f"cutoff={conversation.end_time:.1f}s"
+                )
 
             answer = method.answer_question(
                 conversation.question,
@@ -388,31 +610,80 @@ def evaluate_samples(
                     "new_frame_timestamps_sec": [
                         float(record["timestamp_sec"]) for record in ingest_records
                     ],
+                    "extra_metadata": conversation.extra_metadata,
                     "method_stats": answer.stats,
                 }
             )
 
+            if (
+                checkpoint_path is not None
+                and flush_every_conversations > 0
+                and (conversation_index + 1) % flush_every_conversations == 0
+            ):
+                partial_video_payload = build_video_result(
+                    sample=sample,
+                    sample_fps=sample_fps,
+                    ingest_source=ingest_source,
+                    feature_cache_path=feature_cache_path,
+                    sampled_native_fps=sampled_native_fps,
+                    sampled_base_fps=sampled_base_fps,
+                    sampled_total_frames=sampled_total_frames,
+                    sampled_frame_indices_total=sampled_frame_indices_total,
+                    sampled_timestamps_total=sampled_timestamps_total,
+                    conversation_results=conversation_results,
+                    runtime_stats=build_video_runtime_stats(
+                        method=method,
+                        frames_ingested_total=video_frames_ingested_total,
+                        cumulative_ingest_latency_sec=video_cumulative_ingest_latency_sec,
+                        last_ingested_timestamp_sec=last_ingested_timestamp_sec,
+                    ),
+                )
+                checkpoint_payload = build_result_payload(
+                    run_config=run_config,
+                    video_results=video_results,
+                    started_at_utc=started_at_utc,
+                    total_requested_videos=total_requested_videos,
+                    status="in_progress",
+                    in_progress_video=partial_video_payload,
+                )
+                write_json_atomic(checkpoint_payload, checkpoint_path)
+                partial_message = (
+                    f"[checkpoint] saved partial {sample.video_id}: "
+                    f"{conversation_index + 1}/{len(sample.conversations)} conversations"
+                )
+                if progress is not None:
+                    progress.write(partial_message)
+                else:
+                    print(partial_message)
+
+        if frame_progress is not None:
+            frame_progress.close()
+
         video_results.append(
-            {
-                "sample_id": sample.sample_id,
-                "video_id": sample.video_id,
-                "video_path": sample.video_path,
-                "duration": sample.duration,
-                "sample_fps": sample_fps,
-                "native_fps": sampled_native_fps,
-                "sampling_base_fps": sampled_base_fps,
-                "num_sampled_frames_total": sampled_total_frames,
-                "sampled_frame_indices_total": sampled_frame_indices_total,
-                "sampled_timestamps_sec_total": sampled_timestamps_total,
-                "ingest_source": ingest_source,
-                "feature_cache_path": feature_cache_path,
-                "conversations": conversation_results,
-                "runtime_stats": method.get_runtime_stats(),
-            }
+            build_video_result(
+                sample=sample,
+                sample_fps=sample_fps,
+                ingest_source=ingest_source,
+                feature_cache_path=feature_cache_path,
+                sampled_native_fps=sampled_native_fps,
+                sampled_base_fps=sampled_base_fps,
+                sampled_total_frames=sampled_total_frames,
+                sampled_frame_indices_total=sampled_frame_indices_total,
+                sampled_timestamps_total=sampled_timestamps_total,
+                conversation_results=conversation_results,
+                runtime_stats=build_video_runtime_stats(
+                    method=method,
+                    frames_ingested_total=video_frames_ingested_total,
+                    cumulative_ingest_latency_sec=video_cumulative_ingest_latency_sec,
+                    last_ingested_timestamp_sec=last_ingested_timestamp_sec,
+                ),
+            )
         )
+        existing_in_progress_video = None
         newly_completed += 1
 
         if progress is not None:
+            progress.update(1)
             progress.set_postfix_str(
                 f"video_id={sample.video_id} convs={len(conversation_results)} completed={len(video_results)}/{total_requested_videos}"
             )
@@ -429,11 +700,16 @@ def evaluate_samples(
                 started_at_utc=started_at_utc,
                 total_requested_videos=total_requested_videos,
                 status="in_progress",
+                in_progress_video=None,
             )
             write_json_atomic(checkpoint_payload, checkpoint_path)
-            print(
+            message = (
                 f"[checkpoint] saved {len(video_results)}/{total_requested_videos} videos to {checkpoint_path}"
             )
+            if progress is not None:
+                progress.write(message)
+            else:
+                print(message)
 
     if progress is not None:
         progress.close()
@@ -443,10 +719,13 @@ def evaluate_samples(
         started_at_utc=started_at_utc,
         total_requested_videos=total_requested_videos,
         status="completed",
+        in_progress_video=None,
     )
 
 
 def run_eval(args: argparse.Namespace) -> dict[str, Any]:
+    from .methods import build_method_from_args
+
     run_config = build_run_config(args)
     feature_cache_root = Path(args.feature_cache_root) if args.feature_cache_root else None
     if feature_cache_root is not None:
@@ -496,6 +775,7 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         ]
 
     existing_videos: list[dict[str, Any]] = []
+    existing_in_progress_video: dict[str, Any] | None = None
     started_at_utc = utc_now_iso()
     checkpoint_path = Path(args.output_path) if args.output_path else default_output_path(args)
 
@@ -505,16 +785,22 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
                 existing_payload = json.load(handle)
             validate_resume_payload(existing_payload, run_config)
             existing_videos = existing_payload.get("videos", [])
+            existing_in_progress_video = existing_payload.get("in_progress_video")
             started_at_utc = (
                 existing_payload.get("run_state", {}).get("started_at_utc") or started_at_utc
             )
             completed_sample_ids = {video["sample_id"] for video in existing_videos}
-            if len(completed_sample_ids) == len(samples):
+            if len(completed_sample_ids) == len(samples) and existing_in_progress_video is None:
                 print(f"All requested videos already completed in {checkpoint_path}")
                 return existing_payload
             print(
                 f"Resuming {run_config['method']} from {checkpoint_path}: "
-                f"{len(existing_videos)}/{len(samples)} videos already completed."
+                f"{len(existing_videos)}/{len(samples)} videos already completed"
+                + (
+                    f", partial video={existing_in_progress_video.get('video_id')}"
+                    if existing_in_progress_video is not None
+                    else "."
+                )
             )
         elif not args.overwrite_output:
             raise FileExistsError(
@@ -534,8 +820,10 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         started_at_utc=started_at_utc,
         checkpoint_path=checkpoint_path,
         flush_every_videos=args.flush_every_videos,
+        flush_every_conversations=args.flush_every_conversations,
         show_progress_bar=not args.disable_progress_bar,
         feature_cache_root=feature_cache_root,
+        existing_in_progress_video=existing_in_progress_video,
     )
 
 
@@ -546,6 +834,8 @@ def main() -> int:
         raise ValueError("--resume requires an explicit --output-path so the runner knows which file to continue.")
     if args.flush_every_videos <= 0:
         raise ValueError("--flush-every-videos must be >= 1.")
+    if args.flush_every_conversations <= 0:
+        raise ValueError("--flush-every-conversations must be >= 1.")
 
     output_path = Path(args.output_path) if args.output_path else default_output_path(args)
     args.output_path = str(output_path)

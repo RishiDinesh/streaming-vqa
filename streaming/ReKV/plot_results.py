@@ -63,6 +63,9 @@ def display_label(payload: dict) -> str:
         if n_local is not None:
             parts.append(f"n_local={n_local}")
         return f"rekv ({','.join(parts)})" if parts else "rekv"
+    if method == "rekv_no_offload":
+        n_local = _format_display_value(run_config.get("n_local"))
+        return f"rekv_no_offload (n_local={n_local})" if n_local is not None else "rekv_no_offload"
     if method == "duo_plus_rekv":
         topk = _format_display_value(run_config.get("retrieve_size"))
         sparsity = _format_display_value(run_config.get("sparsity"))
@@ -95,7 +98,13 @@ def duo_display_sparsity(payload: dict) -> float | None:
 
 def sort_key(payload: dict) -> tuple[int, float, str]:
     method = method_family(payload)
-    family_order = {"full_streaming": 0, "duo_streaming": 1, "rekv": 2, "duo_plus_rekv": 3}.get(method, 99)
+    family_order = {
+        "full_streaming": 0,
+        "duo_streaming": 1,
+        "rekv": 2,
+        "rekv_no_offload": 3,
+        "duo_plus_rekv": 4,
+    }.get(method, 99)
     duo_priority = 0.0
     if method == "duo_streaming":
         sparsity = duo_display_sparsity(payload)
@@ -108,6 +117,7 @@ def color_for_method(label: str) -> str:
         "full_streaming": "#4c78a8",
         "duo_streaming": "#f58518",
         "rekv": "#54a24b",
+        "rekv_no_offload": "#72b7b2",
         "duo_plus_rekv": "#b279a2",
     }
     return palette.get(label, "#9c755f")
@@ -128,6 +138,8 @@ def marker_for_payload(payload: dict) -> str:
         return "s" if (duo_display_sparsity(payload) or 0.5) <= 0.0 else "D"
     if method == "rekv":
         return "^"
+    if method == "rekv_no_offload":
+        return "X"
     if method == "duo_plus_rekv":
         return "P"
     return "o"
@@ -200,6 +212,26 @@ def plot_memory_comparison(results: list[dict], output_dir: Path) -> Path:
     ax.tick_params(axis="x", rotation=15)
     fig.tight_layout()
     out_path = output_dir / "peak_memory_comparison.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def plot_cpu_offload_comparison(results: list[dict], output_dir: Path) -> Path | None:
+    results = ordered_results(results)
+    values = [maybe_gb(item["aggregate_metrics"].get("peak_cpu_offload_bytes")) for item in results]
+    if not any(value is not None for value in values):
+        return None
+
+    labels = [display_label(item) for item in results]
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.bar(labels, [value if value is not None else 0.0 for value in values], color=[color_for_payload(item) for item in results])
+    ax.set_title("Peak CPU / Offloaded KV")
+    ax.set_ylabel("GB")
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.tick_params(axis="x", rotation=15)
+    fig.tight_layout()
+    out_path = output_dir / "peak_cpu_offload_comparison.png"
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     return out_path
@@ -416,10 +448,18 @@ def flatten_conversations(payload: dict) -> list[dict]:
                     "end_time": float(conversation["end_time"]),
                     "frames_ingested": int(conversation["num_frames_ingested_before_answer"]),
                     "peak_memory_bytes": conversation["method_stats"].get("peak_memory_bytes"),
+                    "cpu_offload_bytes_current": conversation["method_stats"].get("cpu_offload_bytes_current"),
+                    "cpu_offload_bytes_peak": conversation["method_stats"].get("cpu_offload_bytes_peak"),
                     "ttft_sec": conversation["method_stats"].get("ttft_sec"),
                     "answer_latency_sec": conversation["method_stats"].get("answer_latency_sec"),
                     "retrieval_latency_sec": conversation["method_stats"].get("retrieval_latency_sec"),
                     "avg_retrieved_block_count": conversation["method_stats"].get("avg_retrieved_block_count"),
+                    "retrieved_block_indices_union": conversation["method_stats"].get(
+                        "retrieved_block_indices_union", []
+                    ),
+                    "retrieved_timestamps_sec_union": conversation["method_stats"].get(
+                        "retrieved_timestamps_sec_union", []
+                    ),
                     "normalized_exact_match": scores.get(
                         "normalized_exact_match",
                         conversation.get("normalized_exact_match"),
@@ -462,7 +502,7 @@ def plot_per_conversation(results: list[dict], output_dir: Path) -> Path:
 
 def plot_efficiency_vs_context(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
     for payload in results:
         label = display_label(payload)
         rows = flatten_conversations(payload)
@@ -477,11 +517,19 @@ def plot_efficiency_vs_context(results: list[dict], output_dir: Path) -> Path:
             label=label,
             color=color,
         )
+        axes[2].plot(
+            xs,
+            [maybe_gb(row["cpu_offload_bytes_current"]) for row in rows],
+            marker=marker,
+            label=label,
+            color=color,
+        )
 
     axes[0].set_title("Latency and Memory vs Processed Frames")
     axes[0].set_ylabel("Answer Latency (s)")
     axes[1].set_ylabel("Peak GPU Memory (GB)")
-    axes[1].set_xlabel("Frames Ingested Before Answer")
+    axes[2].set_ylabel("CPU / Offloaded KV (GB)")
+    axes[2].set_xlabel("Frames Ingested Before Answer")
     for axis in axes:
         axis.grid(True, linestyle="--", alpha=0.3)
         axis.legend()
@@ -556,7 +604,7 @@ def plot_question_timeline(results: list[dict], output_dir: Path) -> Path:
 def plot_rekv_retrieval(results: list[dict], output_dir: Path) -> Path | None:
     results = ordered_results(results)
     retrieval_payloads = [
-        payload for payload in results if method_family(payload) in {"rekv", "duo_plus_rekv"}
+        payload for payload in results if method_family(payload) in {"rekv", "duo_plus_rekv", "rekv_no_offload"}
     ]
     if not retrieval_payloads:
         return None
@@ -602,6 +650,55 @@ def plot_rekv_retrieval(results: list[dict], output_dir: Path) -> Path | None:
     return out_path
 
 
+def plot_retrieval_timeline(results: list[dict], output_dir: Path) -> Path | None:
+    results = ordered_results(results)
+    retrieval_payloads = [
+        payload for payload in results if method_family(payload) in {"rekv", "duo_plus_rekv"}
+    ]
+    if not retrieval_payloads:
+        return None
+
+    fig, axes = plt.subplots(len(retrieval_payloads), 1, figsize=(10, 4 * len(retrieval_payloads)))
+    if len(retrieval_payloads) == 1:
+        axes = [axes]
+
+    any_points = False
+    for axis, payload in zip(axes, retrieval_payloads):
+        rows = flatten_conversations(payload)
+        for row_idx, row in enumerate(rows):
+            retrieved_timestamps = [float(value) for value in row["retrieved_timestamps_sec_union"]]
+            if retrieved_timestamps:
+                any_points = True
+                axis.scatter(
+                    retrieved_timestamps,
+                    [row_idx] * len(retrieved_timestamps),
+                    s=26,
+                    color=color_for_payload(payload),
+                    alpha=0.75,
+                )
+            axis.scatter(
+                [row["end_time"]],
+                [row_idx],
+                s=60,
+                color="#333333",
+                marker="x",
+            )
+        axis.set_title(f"Retrieved Context Timeline: {display_label(payload)}")
+        axis.set_ylabel("Conversation Index")
+        axis.grid(True, linestyle="--", alpha=0.3)
+
+    if not any_points:
+        plt.close(fig)
+        return None
+
+    axes[-1].set_xlabel("Timestamp (s)")
+    fig.tight_layout()
+    out_path = output_dir / "retrieval_timeline.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
 def plot_auto_sweeps(results: list[dict], output_dir: Path) -> list[Path]:
     candidate_keys = [
         ("sparsity", "Sparsity"),
@@ -613,6 +710,7 @@ def plot_auto_sweeps(results: list[dict], output_dir: Path) -> list[Path]:
         "full_streaming": {"sample_fps"},
         "duo_streaming": {"sample_fps", "sparsity"},
         "rekv": {"sample_fps", "retrieve_size", "n_local"},
+        "rekv_no_offload": {"sample_fps", "n_local"},
         "duo_plus_rekv": {"sample_fps", "retrieve_size", "n_local", "sparsity"},
     }
     generated: list[Path] = []
@@ -700,12 +798,18 @@ def main() -> int:
     delta_plot = plot_delta_to_baseline(results, output_dir)
     if delta_plot is not None:
         generated["delta_to_baseline"] = str(delta_plot)
+    cpu_offload_plot = plot_cpu_offload_comparison(results, output_dir)
+    if cpu_offload_plot is not None:
+        generated["peak_cpu_offload_comparison"] = str(cpu_offload_plot)
     pareto_plot = plot_pareto_with_arrows(results, output_dir)
     if pareto_plot is not None:
         generated["pareto_tradeoffs_with_arrows"] = str(pareto_plot)
     rekv_plot = plot_rekv_retrieval(results, output_dir)
     if rekv_plot is not None:
         generated["rekv_retrieval_diagnostics"] = str(rekv_plot)
+    retrieval_timeline_plot = plot_retrieval_timeline(results, output_dir)
+    if retrieval_timeline_plot is not None:
+        generated["retrieval_timeline"] = str(retrieval_timeline_plot)
     sweep_plots = plot_auto_sweeps(results, output_dir)
     if sweep_plots:
         generated["sweep_curves"] = [str(path) for path in sweep_plots]

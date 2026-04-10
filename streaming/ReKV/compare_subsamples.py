@@ -75,6 +75,7 @@ def collect_rows(results: list[dict]) -> list[dict[str, object]]:
                 "avg_frame_ingest_latency_sec": agg.get("avg_frame_ingest_latency_sec"),
                 "avg_ttft_sec": agg.get("avg_ttft_sec"),
                 "peak_memory_bytes": agg.get("peak_memory_bytes"),
+                "peak_cpu_offload_bytes": agg.get("peak_cpu_offload_bytes"),
                 "total_frames_ingested": agg.get("total_frames_ingested"),
                 "total_conversations_answered": agg.get("total_conversations_answered"),
                 "source_path": payload.get("_source_path"),
@@ -99,6 +100,7 @@ def write_summary_markdown(rows: list[dict[str, object]], output_path: Path) -> 
         "primary_quality_score",
         "avg_answer_latency_sec",
         "peak_memory_bytes",
+        "peak_cpu_offload_bytes",
         "total_conversations_answered",
     ]
     lines = [
@@ -123,6 +125,11 @@ def build_stability_report(rows: list[dict[str, object]]) -> dict[str, object]:
         quality_values = [item["primary_quality_score"] for item in ordered if item["primary_quality_score"] is not None]
         latency_values = [item["avg_answer_latency_sec"] for item in ordered if item["avg_answer_latency_sec"] is not None]
         memory_values = [item["peak_memory_bytes"] for item in ordered if item["peak_memory_bytes"] is not None]
+        cpu_offload_values = [
+            item["peak_cpu_offload_bytes"]
+            for item in ordered
+            if item["peak_cpu_offload_bytes"] is not None
+        ]
         report["groups"].append(
             {
                 "dataset": dataset,
@@ -136,6 +143,11 @@ def build_stability_report(rows: list[dict[str, object]]) -> dict[str, object]:
                 ),
                 "peak_memory_range_bytes": (
                     max(memory_values) - min(memory_values) if len(memory_values) >= 2 else 0
+                ),
+                "peak_cpu_offload_range_bytes": (
+                    max(cpu_offload_values) - min(cpu_offload_values)
+                    if len(cpu_offload_values) >= 2
+                    else 0
                 ),
                 "source_paths": [item["source_path"] for item in ordered],
             }

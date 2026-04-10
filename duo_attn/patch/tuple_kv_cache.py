@@ -1,14 +1,12 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.functional as F
+from torch.nn import CrossEntropyLoss
 
 from transformers.models.llama.modeling_llama import (
     LlamaForCausalLM,
     CausalLMOutputWithPast,
-    List,
-    Union,
-    CrossEntropyLoss,
     BaseModelOutputWithPast,
     apply_rotary_pos_emb,
 )

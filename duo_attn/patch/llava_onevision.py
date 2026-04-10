@@ -37,7 +37,11 @@ from .static_kv_cache import (
 )
 from .flashinfer_utils import enable_flashinfer_rmsnorm
 
-from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
+try:
+    from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
+except ImportError:  # pragma: no cover
+    class TensorParallelPreTrainedModel:  # type: ignore[override]
+        pass
 from .attn_compat import flash_attn_func
 from duo_attn.ulysses import UlyssesAttention
 

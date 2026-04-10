@@ -1,8 +1,11 @@
 dataset/
 datasets/
 outputs/*/*step*
+outputs/evaluations_streaming/
 untracked/
 logs/
+*.json.tmp
+*.tmp
 
 # Synthetic video gen — large files
 # Ignore all data and output folders, only track code

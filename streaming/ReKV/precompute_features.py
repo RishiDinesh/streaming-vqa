@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video-offset", type=int, default=0)
     parser.add_argument("--video-index", type=int, default=None)
     parser.add_argument("--video-id", default=None)
+    parser.add_argument("--video-decode-threads", type=int, default=4)
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--dtype",
@@ -89,18 +90,17 @@ def main() -> int:
     videos_dir = cache_root / "videos"
     videos_dir.mkdir(parents=True, exist_ok=True)
 
-    iterable = samples
     progress = None
     if not args.disable_progress_bar and tqdm is not None:
-        progress = tqdm(samples, total=len(samples), desc="feature cache", unit="video")
-        iterable = progress
+        progress = tqdm(total=len(samples), desc="feature cache videos", unit="video")
 
     cached_sample_ids: list[str] = []
-    for sample in iterable:
+    for sample in samples:
         output_path = feature_cache_path(cache_root, sample.sample_id)
         if output_path.is_file() and not args.overwrite_existing:
             cached_sample_ids.append(sample.sample_id)
             if progress is not None:
+                progress.update(1)
                 progress.set_postfix_str(f"skip {sample.video_id}")
             continue
 
@@ -108,10 +108,19 @@ def main() -> int:
             sample.video_path,
             args.sample_fps,
             duration_sec=sample.duration,
+            decode_threads=args.video_decode_threads,
         )
 
         frame_feature_batches: list[torch.Tensor] = []
         total_sampled_frames = len(sampled_video.sampled_frame_indices)
+        frame_progress = None
+        if progress is not None:
+            frame_progress = tqdm(
+                total=total_sampled_frames,
+                desc=f"{sample.video_id} frames",
+                unit="frame",
+                leave=False,
+            )
         for start_idx in range(0, total_sampled_frames, args.feature_batch_size):
             end_idx = min(start_idx + args.feature_batch_size, total_sampled_frames)
             sampled_indices = list(range(start_idx, end_idx))
@@ -121,6 +130,11 @@ def main() -> int:
             frame_feature_batches.append(
                 batch_features.detach().to(device="cpu", dtype=torch.bfloat16).contiguous()
             )
+            if frame_progress is not None:
+                frame_progress.update(end_idx - start_idx)
+                frame_progress.set_postfix_str(
+                    f"batch={start_idx // args.feature_batch_size + 1}"
+                )
 
         features = torch.cat(frame_feature_batches, dim=0) if frame_feature_batches else torch.empty((0, 0, 0), dtype=torch.bfloat16)
         payload = {
@@ -142,8 +156,11 @@ def main() -> int:
             "features": features,
         }
         torch.save(payload, output_path)
+        if frame_progress is not None:
+            frame_progress.close()
         cached_sample_ids.append(sample.sample_id)
         if progress is not None:
+            progress.update(1)
             progress.set_postfix_str(
                 f"{sample.video_id} frames={total_sampled_frames} tokens={payload['num_frame_tokens']}"
             )
@@ -159,6 +176,7 @@ def main() -> int:
         "sample_fps": float(args.sample_fps),
         "feature_dtype": "bfloat16",
         "feature_batch_size": int(args.feature_batch_size),
+        "video_decode_threads": int(args.video_decode_threads),
         "num_cached_videos": len(cached_sample_ids),
         "cached_sample_ids": cached_sample_ids,
     }

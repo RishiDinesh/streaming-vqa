@@ -43,6 +43,8 @@ class SampledVideo:
         if hasattr(self._reader, "get_batch"):
             frame_batch = self._reader.get_batch([frame_index]).asnumpy()
             return frame_batch[0]
+        if hasattr(self._reader, "get_data"):
+            return np.asarray(self._reader.get_data(frame_index))
         return np.asarray(self._reader[frame_index])
 
     def get_frames(self, sampled_indices: list[int]) -> np.ndarray:
@@ -51,6 +53,8 @@ class SampledVideo:
         frame_indices = [self.sampled_frame_indices[index] for index in sampled_indices]
         if hasattr(self._reader, "get_batch"):
             return self._reader.get_batch(frame_indices).asnumpy()
+        if hasattr(self._reader, "get_data"):
+            return np.stack([np.asarray(self._reader.get_data(frame_index)) for frame_index in frame_indices], axis=0)
         return np.stack([np.asarray(self._reader[frame_index]) for frame_index in frame_indices], axis=0)
 
 
@@ -280,10 +284,18 @@ def _sample_numpy_video(
     )
 
 
-def _sample_decord_video(video_path: str, sample_fps: float) -> SampledVideo:
-    from decord import VideoReader, cpu
+def _sample_decord_video(
+    video_path: str,
+    sample_fps: float,
+    *,
+    decode_threads: int = 1,
+) -> SampledVideo:
+    try:
+        from decord import VideoReader, cpu
+    except ModuleNotFoundError:
+        return _sample_imageio_video(video_path, sample_fps)
 
-    reader = VideoReader(video_path, ctx=cpu(0), num_threads=1)
+    reader = VideoReader(video_path, ctx=cpu(0), num_threads=max(int(decode_threads), 1))
     native_fps = float(reader.get_avg_fps())
     if native_fps <= 0:
         raise ValueError(f"Could not determine FPS for video: {video_path}")
@@ -304,11 +316,45 @@ def _sample_decord_video(video_path: str, sample_fps: float) -> SampledVideo:
     )
 
 
+def _sample_imageio_video(video_path: str, sample_fps: float) -> SampledVideo:
+    import imageio.v2 as imageio
+
+    reader = imageio.get_reader(video_path)
+    metadata = reader.get_meta_data()
+    native_fps = float(metadata.get("fps") or 0.0)
+    if native_fps <= 0:
+        raise ValueError(f"Could not determine FPS for video: {video_path}")
+
+    try:
+        num_source_frames = int(reader.count_frames())
+    except Exception:
+        duration = metadata.get("duration")
+        if duration is None or float(duration) <= 0:
+            raise ValueError(f"Could not determine frame count for video: {video_path}")
+        num_source_frames = max(int(round(float(duration) * native_fps)), 1)
+
+    sampling_base_fps = max(int(round(native_fps)), 1)
+    stride = max(int(sampling_base_fps / sample_fps), 1)
+    frame_indices = list(range(0, num_source_frames, stride))
+    timestamps_sec = [frame_index / sampling_base_fps for frame_index in frame_indices]
+
+    return SampledVideo(
+        video_path=os.path.abspath(video_path),
+        native_fps=native_fps,
+        sampling_base_fps=sampling_base_fps,
+        num_source_frames=num_source_frames,
+        sampled_frame_indices=frame_indices,
+        sampled_timestamps_sec=timestamps_sec,
+        _reader=reader,
+    )
+
+
 def sample_video_frames(
     video_path: str,
     sample_fps: float,
     *,
     duration_sec: float | None = None,
+    decode_threads: int = 1,
 ) -> SampledVideo:
     if sample_fps <= 0:
         raise ValueError(f"sample_fps must be > 0, got {sample_fps}")
@@ -316,4 +362,4 @@ def sample_video_frames(
     suffix = Path(video_path).suffix.lower()
     if suffix == ".npy":
         return _sample_numpy_video(video_path, sample_fps, duration_sec)
-    return _sample_decord_video(video_path, sample_fps)
+    return _sample_decord_video(video_path, sample_fps, decode_threads=decode_threads)

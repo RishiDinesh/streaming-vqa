@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 import os
 import torch
 from torch import nn
@@ -9,9 +9,6 @@ from transformers.models.llama.modeling_llama import (
     repeat_kv,
     apply_rotary_pos_emb,
     CausalLMOutputWithPast,
-    List,
-    Union,
-    CrossEntropyLoss,
     BaseModelOutputWithPast,
 )
 import types
@@ -34,7 +31,11 @@ from .static_kv_cache import (
 from .tuple_kv_cache import enable_tuple_kv_cache_for_llama
 from .flashinfer_utils import apply_rope_inplace, enable_flashinfer_rmsnorm
 
-from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
+try:
+    from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
+except ImportError:  # pragma: no cover
+    class TensorParallelPreTrainedModel:  # type: ignore[override]
+        pass
 from .attn_compat import flash_attn_func, flash_attn_with_kvcache
 from duo_attn.ulysses import UlyssesAttention
 

@@ -1,6 +1,0 @@
-{
-  "summary_csv": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/comparison_bundle/summary.csv",
-  "summary_md": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/comparison_bundle/summary.md",
-  "stability_report": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/comparison_bundle/stability_report.json",
-  "slice_stability_plot": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-movie/subsample5_movie/comparison_bundle/slice_stability.png"
-}
