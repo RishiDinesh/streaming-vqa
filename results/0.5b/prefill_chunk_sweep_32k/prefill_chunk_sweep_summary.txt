@@ -1,96 +1,96 @@
 baseline | chunk=4000 | context=32000 | frames=164
-  prefill_total_ms=3542.3564453125
-  prefill_latency_ms_per_chunk=442.7945556640625
+  prefill_total_ms=3540.245361328125
+  prefill_latency_ms_per_chunk=442.5306701660156
   prefill_memory_mb=22405.90576171875
   num_chunks=8 oom=False
 
 baseline | chunk=8000 | context=32000 | frames=164
-  prefill_total_ms=3582.731689453125
-  prefill_latency_ms_per_chunk=895.6829223632812
+  prefill_total_ms=3571.0146484375
+  prefill_latency_ms_per_chunk=892.753662109375
   prefill_memory_mb=42033.74853515625
   num_chunks=4 oom=False
 
 baseline | chunk=12000 | context=32000 | frames=164
-  prefill_total_ms=3911.73779296875
-  prefill_latency_ms_per_chunk=1303.91259765625
+  prefill_total_ms=3904.0048828125
+  prefill_latency_ms_per_chunk=1301.3349609375
   prefill_memory_mb=48450.69287109375
   num_chunks=3 oom=False
 
 baseline | chunk=16000 | context=32000 | frames=164
-  prefill_total_ms=3989.690185546875
-  prefill_latency_ms_per_chunk=1994.8450927734375
+  prefill_total_ms=3980.711181640625
+  prefill_latency_ms_per_chunk=1990.3555908203125
   prefill_memory_mb=81289.00439453125
   num_chunks=2 oom=False
 
 baseline | chunk=20000 | context=32000 | frames=164
-  prefill_total_ms=4707.984375
-  prefill_latency_ms_per_chunk=2353.9921875
+  prefill_total_ms=4713.65869140625
+  prefill_latency_ms_per_chunk=2356.829345703125
   prefill_memory_mb=66300.98974609375
   num_chunks=2 oom=False
 
 baseline | chunk=24000 | context=32000 | frames=164
-  prefill_total_ms=7539.8173828125
-  prefill_latency_ms_per_chunk=3769.90869140625
+  prefill_total_ms=7541.609375
+  prefill_latency_ms_per_chunk=3770.8046875
   prefill_memory_mb=80414.21337890625
   num_chunks=2 oom=False
 
 baseline | chunk=28000 | context=32000 | frames=164
-  prefill_total_ms=6916.236328125
-  prefill_latency_ms_per_chunk=3458.1181640625
+  prefill_total_ms=6919.04248046875
+  prefill_latency_ms_per_chunk=3459.521240234375
   prefill_memory_mb=108662.2734375
   num_chunks=2 oom=False
 
 baseline | chunk=32000 | context=32000 | frames=164
-  prefill_total_ms=10111.6025390625
-  prefill_latency_ms_per_chunk=10111.6025390625
+  prefill_total_ms=10114.7109375
+  prefill_latency_ms_per_chunk=10114.7109375
   prefill_memory_mb=141246.56298828125
   num_chunks=1 oom=False
 
 duo | chunk=4000 | context=32000 | frames=164
-  prefill_total_ms=577.3056030273438
-  prefill_latency_ms_per_chunk=72.16320037841797
+  prefill_total_ms=583.3642578125
+  prefill_latency_ms_per_chunk=72.9205322265625
   prefill_memory_mb=2419.39599609375
   num_chunks=8 oom=False
 
 duo | chunk=8000 | context=32000 | frames=164
-  prefill_total_ms=334.830078125
-  prefill_latency_ms_per_chunk=83.70751953125
+  prefill_total_ms=334.66290283203125
+  prefill_latency_ms_per_chunk=83.66572570800781
   prefill_memory_mb=2528.21142578125
   num_chunks=4 oom=False
 
 duo | chunk=12000 | context=32000 | frames=164
-  prefill_total_ms=320.9667053222656
-  prefill_latency_ms_per_chunk=106.98890177408855
+  prefill_total_ms=318.0884094238281
+  prefill_latency_ms_per_chunk=106.0294698079427
   prefill_memory_mb=2548.078125
   num_chunks=3 oom=False
 
 duo | chunk=16000 | context=32000 | frames=164
-  prefill_total_ms=305.7498474121094
-  prefill_latency_ms_per_chunk=152.8749237060547
+  prefill_total_ms=307.5794982910156
+  prefill_latency_ms_per_chunk=153.7897491455078
   prefill_memory_mb=2745.9560546875
   num_chunks=2 oom=False
 
 duo | chunk=20000 | context=32000 | frames=164
-  prefill_total_ms=325.7066345214844
-  prefill_latency_ms_per_chunk=162.8533172607422
+  prefill_total_ms=325.8821716308594
+  prefill_latency_ms_per_chunk=162.9410858154297
   prefill_memory_mb=2708.00048828125
   num_chunks=2 oom=False
 
 duo | chunk=24000 | context=32000 | frames=164
-  prefill_total_ms=340.0209655761719
-  prefill_latency_ms_per_chunk=170.01048278808594
+  prefill_total_ms=340.84521484375
+  prefill_latency_ms_per_chunk=170.422607421875
   prefill_memory_mb=2862.74560546875
   num_chunks=2 oom=False
 
 duo | chunk=28000 | context=32000 | frames=164
-  prefill_total_ms=371.8341369628906
-  prefill_latency_ms_per_chunk=185.9170684814453
+  prefill_total_ms=371.0793151855469
+  prefill_latency_ms_per_chunk=185.53965759277344
   prefill_memory_mb=3017.7177734375
   num_chunks=2 oom=False
 
 duo | chunk=32000 | context=32000 | frames=164
-  prefill_total_ms=387.71209716796875
-  prefill_latency_ms_per_chunk=387.71209716796875
+  prefill_total_ms=384.228515625
+  prefill_latency_ms_per_chunk=384.228515625
   prefill_memory_mb=3174.244140625
   num_chunks=1 oom=False
 

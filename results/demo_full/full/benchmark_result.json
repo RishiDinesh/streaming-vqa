@@ -1,0 +1,14 @@
+{
+  "mode": "Full Attention",
+  "model_name": "llava-hf/llava-onevision-qwen2-0.5b-ov-hf",
+  "num_frames": 64,
+  "processed_batches": 1,
+  "average_input_sequence_length": 12602.0,
+  "sparsity": 0.0,
+  "average_prefilling_time_s": 1.300970947265625,
+  "average_prefill_latency_ms": 1300.970947265625,
+  "peak_prefill_memory_mb": 23570.2021484375,
+  "average_generation_latency_ms": 38.830989837646484,
+  "peak_generation_memory_mb": 9451.28515625,
+  "final_generated_text": ""
+}

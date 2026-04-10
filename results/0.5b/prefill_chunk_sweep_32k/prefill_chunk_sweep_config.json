@@ -17,5 +17,5 @@
     32000
   ],
   "video_path": "data/samplee.mp4",
-  "model_name": "/root/streaming-vqa/models/llava-hf/llava-onevision-qwen2-0.5b-ov-hf"
+  "model_name": "models/llava-hf-llava-onevision-qwen2-0.5b-ov-hf"
 }

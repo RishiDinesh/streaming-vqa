@@ -1,0 +1,112 @@
+baseline | target=4000 | actual=4160 | frames=21
+  prefill_latency_ms=122.92025146484374
+  prefill_memory_mb=5428.2119140625
+  generation_latency_ms=14.238233642578125
+  generation_memory_mb=4281.4912109375
+  prefix_seconds=148.60 oom=False
+
+baseline | target=8000 | actual=8080 | frames=41
+  prefill_latency_ms=350.3166015625
+  prefill_memory_mb=10780.6552734375
+  generation_latency_ms=21.3946533203125
+  generation_memory_mb=6677.134765625
+  prefix_seconds=297.17 oom=False
+
+baseline | target=12000 | actual=12000 | frames=61
+  prefill_latency_ms=732.005419921875
+  prefill_memory_mb=21548.56591796875
+  generation_latency_ms=25.10667724609375
+  generation_memory_mb=9082.77587890625
+  prefix_seconds=445.73 oom=False
+
+baseline | target=16000 | actual=16116 | frames=82
+  prefill_latency_ms=1339.9212890625
+  prefill_memory_mb=37324.22021484375
+  generation_latency_ms=28.68325927734375
+  generation_memory_mb=11600.130859375
+  prefix_seconds=594.30 oom=False
+
+baseline | target=20000 | actual=20036 | frames=102
+  prefill_latency_ms=2734.486328125
+  prefill_memory_mb=56622.57958984375
+  generation_latency_ms=32.150234375
+  generation_memory_mb=14002.35888671875
+  prefix_seconds=742.87 oom=False
+
+baseline | target=24000 | actual=24152 | frames=123
+  prefill_latency_ms=3568.141796875
+  prefill_memory_mb=81359.24658203125
+  generation_latency_ms=35.8235986328125
+  generation_memory_mb=16525.3876953125
+  prefix_seconds=891.43 oom=False
+
+baseline | target=28000 | actual=28072 | frames=143
+  prefill_latency_ms=4538.524609375
+  prefill_memory_mb=109186.28369140625
+  generation_latency_ms=39.4477294921875
+  generation_memory_mb=18927.56591796875
+  prefix_seconds=1040.00 oom=False
+
+baseline | target=32000 | actual=32000 | frames=164
+  prefill_latency_ms=5332.728125
+  prefill_memory_mb=141246.81298828125
+  generation_latency_ms=42.4257275390625
+  generation_memory_mb=21335.77392578125
+  prefix_seconds=1188.57 oom=False
+
+duo | target=4000 | actual=4160 | frames=21
+  prefill_latency_ms=51.9064697265625
+  prefill_memory_mb=1920.76708984375
+  generation_latency_ms=13.116962890625
+  generation_memory_mb=1832.24755859375
+  prefix_seconds=148.60 oom=False
+
+duo | target=8000 | actual=8080 | frames=41
+  prefill_latency_ms=80.31575927734374
+  prefill_memory_mb=2098.28662109375
+  generation_latency_ms=13.41818603515625
+  generation_memory_mb=1912.162109375
+  prefix_seconds=297.17 oom=False
+
+duo | target=12000 | actual=12000 | frames=61
+  prefill_latency_ms=111.1600341796875
+  prefill_memory_mb=2277.814453125
+  generation_latency_ms=13.2081396484375
+  generation_memory_mb=1998.22314453125
+  prefix_seconds=445.73 oom=False
+
+duo | target=16000 | actual=16116 | frames=82
+  prefill_latency_ms=152.986279296875
+  prefill_memory_mb=2459.54541015625
+  generation_latency_ms=13.0918896484375
+  generation_memory_mb=2078.57421875
+  prefix_seconds=594.30 oom=False
+
+duo | target=20000 | actual=20036 | frames=102
+  prefill_latency_ms=207.88173828125
+  prefill_memory_mb=2637.6376953125
+  generation_latency_ms=13.257032470703125
+  generation_memory_mb=2160.587890625
+  prefix_seconds=742.87 oom=False
+
+duo | target=24000 | actual=24152 | frames=123
+  prefill_latency_ms=256.2197998046875
+  prefill_memory_mb=2822.5712890625
+  generation_latency_ms=13.183433837890625
+  generation_memory_mb=2247.01171875
+  prefix_seconds=891.43 oom=False
+
+duo | target=28000 | actual=28072 | frames=143
+  prefill_latency_ms=317.569140625
+  prefill_memory_mb=2998.19580078125
+  generation_latency_ms=13.316859130859376
+  generation_memory_mb=2328.7138671875
+  prefix_seconds=1040.00 oom=False
+
+duo | target=32000 | actual=32000 | frames=164
+  prefill_latency_ms=384.520556640625
+  prefill_memory_mb=3176.154296875
+  generation_latency_ms=13.637747802734374
+  generation_memory_mb=2412.19921875
+  prefix_seconds=1188.57 oom=False
+

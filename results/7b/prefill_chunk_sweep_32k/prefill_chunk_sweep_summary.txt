@@ -1,0 +1,100 @@
+baseline | chunk=4000 | context=32000 | frames=164
+  prefill_total_ms=8981.5634765625
+  prefill_latency_ms_per_chunk=1122.6954345703125
+  prefill_memory_mb=56276.6669921875
+  num_chunks=8 oom=False
+
+baseline | chunk=8000 | context=32000 | frames=164
+  prefill_total_ms=10665.619140625
+  prefill_latency_ms_per_chunk=2666.40478515625
+  prefill_memory_mb=92887.1796875
+  num_chunks=4 oom=False
+
+baseline | chunk=12000 | context=32000 | frames=164
+  prefill_total_ms=9911.8759765625
+  prefill_latency_ms_per_chunk=3303.9586588541665
+  prefill_memory_mb=102694.9873046875
+  num_chunks=3 oom=False
+
+baseline | chunk=16000 | context=32000 | frames=164
+  prefill_total_ms=13102.79296875
+  prefill_latency_ms_per_chunk=6551.396484375
+  prefill_memory_mb=166107.708984375
+  num_chunks=2 oom=False
+
+baseline | chunk=20000 | context=32000 | frames=164
+  prefill_total_ms=None
+  prefill_latency_ms_per_chunk=None
+  prefill_memory_mb=None
+  num_chunks=None oom=True
+  error=HIP out of memory. Tried to allocate 40.05 GiB. GPU 0 has a total capacity of 191.69 GiB of which 37.62 GiB is free. Of the allocated memory 89.21 GiB is allocated by PyTorch, and 64.20 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+baseline | chunk=24000 | context=32000 | frames=164
+  prefill_total_ms=None
+  prefill_latency_ms_per_chunk=None
+  prefill_memory_mb=None
+  num_chunks=None oom=True
+  error=HIP out of memory. Tried to allocate 60.08 GiB. GPU 0 has a total capacity of 191.69 GiB of which 58.43 GiB is free. Of the allocated memory 107.25 GiB is allocated by PyTorch, and 25.36 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+baseline | chunk=28000 | context=32000 | frames=164
+  prefill_total_ms=None
+  prefill_latency_ms_per_chunk=None
+  prefill_memory_mb=None
+  num_chunks=None oom=True
+  error=HIP out of memory. Tried to allocate 81.78 GiB. GPU 0 has a total capacity of 191.69 GiB of which 36.99 GiB is free. Of the allocated memory 140.30 GiB is allocated by PyTorch, and 13.75 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+baseline | chunk=32000 | context=32000 | frames=164
+  prefill_total_ms=None
+  prefill_latency_ms_per_chunk=None
+  prefill_memory_mb=None
+  num_chunks=None oom=True
+  error=HIP out of memory. Tried to allocate 106.81 GiB. GPU 0 has a total capacity of 191.69 GiB of which 65.36 GiB is free. Of the allocated memory 71.60 GiB is allocated by PyTorch, and 54.07 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+duo | chunk=4000 | context=32000 | frames=164
+  prefill_total_ms=1756.2835693359375
+  prefill_latency_ms_per_chunk=219.5354461669922
+  prefill_memory_mb=17972.82421875
+  num_chunks=8 oom=False
+
+duo | chunk=8000 | context=32000 | frames=164
+  prefill_total_ms=1529.333251953125
+  prefill_latency_ms_per_chunk=382.33331298828125
+  prefill_memory_mb=18379.8544921875
+  num_chunks=4 oom=False
+
+duo | chunk=12000 | context=32000 | frames=164
+  prefill_total_ms=1600.6280517578125
+  prefill_latency_ms_per_chunk=533.5426839192709
+  prefill_memory_mb=18379.4326171875
+  num_chunks=3 oom=False
+
+duo | chunk=16000 | context=32000 | frames=164
+  prefill_total_ms=1599.3616943359375
+  prefill_latency_ms_per_chunk=799.6808471679688
+  prefill_memory_mb=19193.54052734375
+  num_chunks=2 oom=False
+
+duo | chunk=20000 | context=32000 | frames=164
+  prefill_total_ms=1640.090576171875
+  prefill_latency_ms_per_chunk=820.0452880859375
+  prefill_memory_mb=18901.49072265625
+  num_chunks=2 oom=False
+
+duo | chunk=24000 | context=32000 | frames=164
+  prefill_total_ms=1683.864990234375
+  prefill_latency_ms_per_chunk=841.9324951171875
+  prefill_memory_mb=19528.19287109375
+  num_chunks=2 oom=False
+
+duo | chunk=28000 | context=32000 | frames=164
+  prefill_total_ms=1814.8426513671875
+  prefill_latency_ms_per_chunk=907.4213256835938
+  prefill_memory_mb=20154.5673828125
+  num_chunks=2 oom=False
+
+duo | chunk=32000 | context=32000 | frames=164
+  prefill_total_ms=1897.873046875
+  prefill_latency_ms_per_chunk=1897.873046875
+  prefill_memory_mb=20781.73828125
+  num_chunks=1 oom=False
+

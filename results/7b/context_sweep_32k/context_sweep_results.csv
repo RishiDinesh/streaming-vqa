@@ -1,0 +1,17 @@
+mode,target_context,actual_context,prefix_seconds,prefix_ratio,num_frames,sparsity,ctx_latency,ctx_memory,gen_latency,gen_memory,prefill_total_ms,decode_tokens,oom,error
+baseline,4000,4160,148.6,0.125,21,0.0,369.699658203125,20443.2724609375,24.02551513671875,18343.521484375,,100,False,
+baseline,8000,8080,297.167,0.25,41,0.0,1004.8419921875,33742.05712890625,33.41497802734375,21145.23291015625,,100,False,
+baseline,12000,12000,445.733,0.375,61,0.0,2012.5220703125,55302.6572265625,40.30719970703125,23947.66162109375,,100,False,
+baseline,16000,16116,594.3,0.5,82,0.0,3528.550390625,86839.81787109375,46.3993212890625,26889.7734375,,100,False,
+baseline,20000,20036,742.867,0.625,102,0.0,6937.79609375,125346.4404296875,52.942314453125,29692.046875,,100,False,
+baseline,24000,24152,891.433,0.75,123,0.0,,,,,,,True,"HIP out of memory. Tried to allocate 60.85 GiB. GPU 0 has a total capacity of 191.69 GiB of which 50.13 GiB is free. Of the allocated memory 108.54 GiB is allocated by PyTorch, and 32.36 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+baseline,28000,28072,1040.0,0.875,143,0.0,,,,,,,True,"HIP out of memory. Tried to allocate 82.20 GiB. GPU 0 has a total capacity of 191.69 GiB of which 48.21 GiB is free. Of the allocated memory 140.90 GiB is allocated by PyTorch, and 1.92 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+baseline,32000,32000,1188.567,1.0,164,0.0,,,,,,,True,"HIP out of memory. Tried to allocate 106.81 GiB. GPU 0 has a total capacity of 191.69 GiB of which 10.70 GiB is free. Of the allocated memory 178.42 GiB is allocated by PyTorch, and 1.91 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_HIP_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+duo,4000,4160,148.6,0.125,21,0.5,213.982373046875,16106.7490234375,44.3601416015625,15775.59228515625,,100,False,
+duo,8000,8080,297.167,0.25,41,0.5,384.2792724609375,16763.86328125,45.1094140625,16081.9326171875,,100,False,
+duo,12000,12000,445.733,0.375,61,0.5,597.567529296875,17422.89794921875,46.0020654296875,16386.99560546875,,100,False,
+duo,16000,16116,594.3,0.5,82,0.5,832.654296875,18114.52880859375,46.84439453125,16711.00830078125,,100,False,
+duo,20000,20036,742.867,0.625,102,0.5,1089.93125,18771.04052734375,47.396123046875,17013.37890625,,100,False,
+duo,24000,24152,891.433,0.75,123,0.5,1300.3986328125,19462.98095703125,48.4059619140625,17336.2529296875,,100,False,
+duo,28000,28072,1040.0,0.875,143,0.5,1601.90146484375,20120.74609375,49.1259521484375,17640.74267578125,,100,False,
+duo,32000,32000,1188.567,1.0,164,0.5,1898.8091796875,20781.83935546875,50.2334912109375,17952.06396484375,,100,False,

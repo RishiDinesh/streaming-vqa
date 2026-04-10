@@ -1,19 +1,22 @@
+#!/usr/bin/env python3
 import argparse
+import csv
 import json
 import math
 import os
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from PIL import Image
+from tqdm import tqdm
 from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 
-from duo_attn.eval.efficiency.benchmark_dynamic_llava import (
-    move_batch_to_device,
-)
+from duo_attn.eval.efficiency.benchmark_dynamic_llava import move_batch_to_device
+from duo_attn.eval.efficiency.utils import bench_func
 from duo_attn.patch import enable_duo_attention_eval
 from duo_attn.patch.tuple_kv_cache import enable_tuple_kv_cache
 from duo_attn.train import build_llava_video_inputs_embeds
@@ -22,7 +25,6 @@ from duo_attn.utils import (
     seed_everything,
     sparsify_attention_heads,
 )
-from duo_attn.eval.efficiency.utils import bench_func
 
 
 @dataclass
@@ -37,10 +39,49 @@ class SweepPoint:
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Sweep LLaVA-OneVision context lengths on one video and compare "
-            "baseline vs DuoAttention."
+            "Standalone LLaVA efficiency suite for context sweep, prefill chunk "
+            "sweep, and plot regeneration."
         )
     )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    context_parser = subparsers.add_parser("context", help="Run context sweep.")
+    add_shared_args(context_parser)
+    context_parser.add_argument("--max_context", type=int, default=32000)
+    context_parser.add_argument("--num_points", type=int, default=5)
+    context_parser.add_argument("--target_contexts", type=int, nargs="+", default=None)
+    context_parser.add_argument("--decode_tokens", type=int, default=100)
+
+    prefill_parser = subparsers.add_parser(
+        "prefill", help="Run fixed-context prefill chunk sweep."
+    )
+    add_shared_args(prefill_parser)
+    prefill_parser.add_argument("--target_context", type=int, default=32000)
+    prefill_parser.add_argument(
+        "--prefill_chunk_sizes",
+        type=int,
+        nargs="+",
+        default=[4000, 8000, 12000, 16000, 20000, 24000, 28000, 32000],
+    )
+
+    context_plot_parser = subparsers.add_parser(
+        "context-plot", help="Regenerate context sweep plot from JSON."
+    )
+    context_plot_parser.add_argument("--input_json", type=str, required=True)
+    context_plot_parser.add_argument("--output_plot", type=str, default=None)
+
+    prefill_plot_parser = subparsers.add_parser(
+        "prefill-plot", help="Regenerate prefill chunk sweep plot from JSON."
+    )
+    prefill_plot_parser.add_argument("--input_json", type=str, required=True)
+    prefill_plot_parser.add_argument("--config_json", type=str, default=None)
+    prefill_plot_parser.add_argument("--output_plot", type=str, default=None)
+    prefill_plot_parser.add_argument("--title", type=str, default=None)
+
+    return parser.parse_args()
+
+
+def add_shared_args(parser):
     parser.add_argument("--model_name", type=str, required=True)
     parser.add_argument("--video_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
@@ -48,54 +89,13 @@ def parse_args():
     parser.add_argument("--prompt", type=str, default="Describe this video in detail.")
     parser.add_argument("--prompt_file", type=str, default=None)
     parser.add_argument("--max_length", type=int, default=32000)
-    parser.add_argument(
-        "--max_context",
-        type=int,
-        default=32000,
-        help="Largest target context length in tokens.",
-    )
-    parser.add_argument(
-        "--num_points",
-        type=int,
-        default=5,
-        help="Number of evenly spaced context targets up to max_context.",
-    )
-    parser.add_argument(
-        "--target_contexts",
-        type=int,
-        nargs="+",
-        default=None,
-        help="Explicit target context lengths. Overrides --num_points.",
-    )
-    parser.add_argument(
-        "--max_num_frames",
-        type=int,
-        default=512,
-        help="Upper bound for frame-count search.",
-    )
-    parser.add_argument(
-        "--decode_tokens",
-        type=int,
-        default=100,
-        help="Number of decode steps to benchmark after prefill.",
-    )
+    parser.add_argument("--max_num_frames", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--sparsity", type=float, default=0.5)
     parser.add_argument("--sink_size", type=int, default=None)
     parser.add_argument("--recent_size", type=int, default=None)
-    parser.add_argument(
-        "--skip_plot",
-        action="store_true",
-        help="Skip plot generation and only write JSON/CSV/summary outputs.",
-    )
-    parser.add_argument(
-        "--plot_only_json",
-        type=str,
-        default=None,
-        help="Load existing JSON results and only regenerate the plot.",
-    )
-    return parser.parse_args()
+    parser.add_argument("--skip_plot", action="store_true")
 
 
 def resolve_prompt(args) -> str:
@@ -576,8 +576,312 @@ def safe_benchmark_one_point(*args, **kwargs) -> Dict[str, Any]:
         }
 
 
-def plot_results(rows: Sequence[Dict[str, Any]], output_path: str):
-    labels = [f"{row['actual_context'] // 1000}K" for row in rows]
+def run_prefill_only(model, inputs_embeds: torch.Tensor, prefill_chunk_size: int):
+    seq_len = int(inputs_embeds.shape[1])
+    chunk_size = max(1, int(prefill_chunk_size))
+    num_chunks = (seq_len + chunk_size - 1) // chunk_size
+
+    torch.cuda.reset_peak_memory_stats()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+
+    past_key_values = None
+    start.record()
+    pbar = tqdm(range(num_chunks), leave=False)
+    for i in pbar:
+        s = i * chunk_size
+        e = min((i + 1) * chunk_size, seq_len)
+        chunk = inputs_embeds[:, s:e, :]
+        with torch.no_grad():
+            outputs = model.language_model(
+                inputs_embeds=chunk,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+        past_key_values = outputs.past_key_values
+        mem_gb = torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024
+        pbar.set_description(
+            f"Prefill chunk sweep ({e}/{seq_len}, Mem: {mem_gb:.2f} GB)"
+        )
+
+    end.record()
+    torch.cuda.synchronize()
+
+    prefill_total_ms = float(start.elapsed_time(end))
+    peak_memory_mb = float(torch.cuda.max_memory_allocated() / 1024 / 1024)
+    print(f"Peak prefill ctx_memory: {peak_memory_mb:.2f} MB (max allocated GPU memory)")
+    return {
+        "ctx_latency": prefill_total_ms / max(1, num_chunks),
+        "ctx_memory": peak_memory_mb,
+        "prefill_total_ms": prefill_total_ms,
+        "num_chunks": num_chunks,
+        "oom": False,
+    }
+
+
+def safe_run_prefill_only(model, inputs_embeds: torch.Tensor, prefill_chunk_size: int):
+    try:
+        return run_prefill_only(model, inputs_embeds, prefill_chunk_size)
+    except RuntimeError as exc:
+        if "out of memory" not in str(exc).lower():
+            raise
+        print(f"OOM while benchmarking chunk size {prefill_chunk_size}: {exc}")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return {
+            "ctx_latency": None,
+            "ctx_memory": None,
+            "prefill_total_ms": None,
+            "num_chunks": None,
+            "oom": True,
+            "error": str(exc),
+        }
+
+
+def write_csv(rows: Sequence[Dict[str, Any]], output_path: Path):
+    if not rows:
+        return
+    fieldnames: List[str] = []
+    for row in rows:
+        for key in row.keys():
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with output_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def write_context_summary(rows: Sequence[Dict[str, Any]], output_path: Path):
+    with output_path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            label = (
+                f"{row['mode']} | target={row['target_context']} | "
+                f"actual={row['actual_context']} | frames={row['num_frames']}"
+            )
+            print(label, file=f)
+            print(f"  prefill_latency_ms={row['ctx_latency']}", file=f)
+            print(f"  prefill_memory_mb={row['ctx_memory']}", file=f)
+            print(f"  generation_latency_ms={row['gen_latency']}", file=f)
+            print(f"  generation_memory_mb={row['gen_memory']}", file=f)
+            print(f"  prefix_seconds={row['prefix_seconds']:.2f} oom={row['oom']}", file=f)
+            if row.get("error"):
+                print(f"  error={row['error']}", file=f)
+            print("", file=f)
+
+
+def write_prefill_summary(rows: Sequence[Dict[str, Any]], output_path: Path):
+    with output_path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            label = (
+                f"{row['mode']} | chunk={row['prefill_chunk_size']} | "
+                f"context={row['actual_context']} | frames={row['num_frames']}"
+            )
+            print(label, file=f)
+            print(f"  prefill_total_ms={row['prefill_total_ms']}", file=f)
+            print(f"  prefill_latency_ms_per_chunk={row['ctx_latency']}", file=f)
+            print(f"  prefill_memory_mb={row['ctx_memory']}", file=f)
+            print(f"  num_chunks={row['num_chunks']} oom={row['oom']}", file=f)
+            if row.get("error"):
+                print(f"  error={row['error']}", file=f)
+            print("", file=f)
+
+
+def load_json(path: Path):
+    if not path.exists():
+        raise FileNotFoundError(f"Missing file: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def format_chunk_label(chunk_size: int) -> str:
+    if chunk_size % 1000 == 0:
+        return f"{chunk_size // 1000}K"
+    return f"{chunk_size / 1000:.1f}K"
+
+
+def infer_prefill_title(config: Optional[Dict[str, Any]], rows: Sequence[Dict[str, Any]]) -> str:
+    if not rows:
+        return "Prefill Chunk Sweep"
+    sweep_point = config.get("sweep_point", {}) if isinstance(config, dict) else {}
+    target_context = sweep_point.get("target_context") or rows[0].get("target_context")
+    model_name = ""
+    if isinstance(config, dict):
+        model_name = str(config.get("model_name", "")).rstrip("/").split("/")[-1]
+    context_label = (
+        f"{int(target_context) // 1000}K Context" if target_context else "Fixed Context"
+    )
+    if model_name:
+        return f"{model_name} | {context_label}"
+    return f"Prefill Chunk Sweep | {context_label}"
+
+
+def build_mode_rows(
+    rows: Sequence[Dict[str, Any]],
+    chunk_sizes: Sequence[int],
+    mode: str,
+) -> List[Optional[Dict[str, Any]]]:
+    row_map: Dict[int, Dict[str, Any]] = {}
+    for row in rows:
+        if str(row.get("mode")) != mode:
+            continue
+        chunk_size = int(row["prefill_chunk_size"])
+        row_map[chunk_size] = row
+    return [row_map.get(chunk_size) for chunk_size in chunk_sizes]
+
+
+def metric_values_with_oom_bars(
+    mode_rows: Sequence[Optional[Dict[str, Any]]],
+    metric: str,
+    divisor: float,
+):
+    finite_vals = [
+        float(row[metric]) / divisor
+        for row in mode_rows
+        if row is not None and row.get(metric) is not None
+    ]
+    oom_bar_height = max(finite_vals) * 1.05 if finite_vals else 1.0
+
+    values = []
+    for row in mode_rows:
+        if row is None:
+            values.append(np.nan)
+        elif row.get(metric) is not None:
+            values.append(float(row[metric]) / divisor)
+        elif row.get("oom"):
+            values.append(oom_bar_height)
+        else:
+            values.append(np.nan)
+    return values
+
+
+def annotate_oom(ax, bars, mode_rows):
+    for bar, row in zip(bars, mode_rows):
+        if row is not None and row.get("oom"):
+            bar.set_facecolor("#f2f2f2")
+            bar.set_hatch("//")
+            bar.set_linestyle("--")
+            bar.set_linewidth(1.5)
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() * 0.5,
+                "OOM",
+                ha="center",
+                va="center",
+                rotation=90,
+                fontsize=10,
+                fontweight="bold",
+            )
+
+
+def annotate_values(ax, bars, mode_rows, metric: str, divisor: float):
+    heights = [bar.get_height() for bar in bars if np.isfinite(bar.get_height())]
+    if not heights:
+        return
+
+    ymax = max(heights)
+    offset = max(ymax * 0.025, 0.03)
+
+    for bar, row in zip(bars, mode_rows):
+        if row is None or row.get(metric) is None or row.get("oom"):
+            continue
+
+        value = float(row[metric]) / divisor
+        label = f"{int(round(value))}" if divisor == 1.0 else f"{value:.1f}"
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + offset,
+            label,
+            ha="center",
+            va="bottom",
+            fontsize=10,
+        )
+
+
+def plot_prefill_results(rows: Sequence[Dict[str, Any]], output_plot: Path, title: str):
+    if not rows:
+        raise ValueError("No rows to plot.")
+
+    chunk_sizes = sorted({int(row["prefill_chunk_size"]) for row in rows})
+    labels = [format_chunk_label(chunk_size) for chunk_size in chunk_sizes]
+    target_context = rows[0].get("target_context")
+    context_text = (
+        f"{int(target_context) // 1000}K Context / Prefill Chunk Size"
+        if target_context is not None
+        else "Fixed Context / Prefill Chunk Size"
+    )
+
+    baseline_rows = build_mode_rows(rows, chunk_sizes, mode="baseline")
+    duo_rows = build_mode_rows(rows, chunk_sizes, mode="duo")
+
+    x = np.arange(len(chunk_sizes))
+    width = 0.36
+    fig, axes = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
+
+    plot_specs = (
+        (
+            axes[0],
+            "prefill_total_ms",
+            "Latency (s)",
+            f"Prefill Total Time ({context_text})",
+            1000.0,
+        ),
+        (
+            axes[1],
+            "ctx_memory",
+            "Memory (GB)",
+            f"Peak Prefill Memory ({context_text})",
+            1024.0,
+        ),
+    )
+
+    for ax, metric, ylabel, subtitle, divisor in plot_specs:
+        baseline_vals = metric_values_with_oom_bars(baseline_rows, metric, divisor)
+        duo_vals = metric_values_with_oom_bars(duo_rows, metric, divisor)
+
+        baseline_bars = ax.bar(
+            x - width / 2,
+            baseline_vals,
+            width,
+            label="Baseline",
+            color="#d9d9d9",
+            edgecolor="#333333",
+        )
+        duo_bars = ax.bar(
+            x + width / 2,
+            duo_vals,
+            width,
+            label="DuoAttention",
+            color="#b22234",
+            edgecolor="#333333",
+        )
+
+        ax.set_ylabel(ylabel)
+        ax.set_title(subtitle)
+        ax.grid(axis="y", linestyle="--", alpha=0.35)
+        annotate_values(ax, baseline_bars, baseline_rows, metric, divisor)
+        annotate_values(ax, duo_bars, duo_rows, metric, divisor)
+        annotate_oom(ax, baseline_bars, baseline_rows)
+        annotate_oom(ax, duo_bars, duo_rows)
+
+    axes[0].set_xlabel("Prefill Chunk Size")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(labels)
+    axes[0].tick_params(axis="x", labelbottom=True)
+    axes[1].set_xlabel("Prefill Chunk Size")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(labels)
+    axes[0].legend(loc="upper left")
+    fig.suptitle(title, fontsize=18, y=0.99)
+
+    output_plot.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(output_plot, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_context_results(rows: Sequence[Dict[str, Any]], output_path: Path):
+    labels = [f"{row['actual_context'] // 1000}K" for row in rows if row["mode"] == "baseline"]
     x = np.arange(len(labels))
     width = 0.36
 
@@ -587,23 +891,15 @@ def plot_results(rows: Sequence[Dict[str, Any]], output_path: str):
     fig, axes = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
 
     for ax, metric, ylabel, title in (
-        (
-            axes[0],
-            "ctx_latency",
-            "Latency (ms)",
-            "Prefill Latency by Context Length",
-        ),
-        (
-            axes[1],
-            "ctx_memory",
-            "Memory (MB)",
-            "Prefill Memory by Context Length",
-        ),
+        (axes[0], "ctx_latency", "Latency (ms)", "Prefill Latency by Context Length"),
+        (axes[1], "ctx_memory", "Memory (MB)", "Prefill Memory by Context Length"),
     ):
         baseline_vals = [
             np.nan if row.get(metric) is None else float(row[metric]) for row in baseline_rows
         ]
-        duo_vals = [np.nan if row.get(metric) is None else float(row[metric]) for row in duo_rows]
+        duo_vals = [
+            np.nan if row.get(metric) is None else float(row[metric]) for row in duo_rows
+        ]
         bars1 = ax.bar(
             x - width / 2,
             baseline_vals,
@@ -647,67 +943,8 @@ def plot_results(rows: Sequence[Dict[str, Any]], output_path: str):
     plt.close(fig)
 
 
-def write_csv(rows: Sequence[Dict[str, Any]], output_path: str):
-    import csv
-
-    if not rows:
-        return
-    fieldnames = list(rows[0].keys())
-    with open(output_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-
-
-def write_summary(rows: Sequence[Dict[str, Any]], output_path: str):
-    with open(output_path, "w", encoding="utf-8") as f:
-        for row in rows:
-            label = (
-                f"{row['mode']} | target={row['target_context']} | "
-                f"actual={row['actual_context']} | frames={row['num_frames']}"
-            )
-            print(label, file=f)
-            print(
-                f"  prefill_latency_ms={row['ctx_latency']}",
-                file=f,
-            )
-            print(
-                f"  prefill_memory_mb={row['ctx_memory']}",
-                file=f,
-            )
-            print(
-                f"  generation_latency_ms={row['gen_latency']}",
-                file=f,
-            )
-            print(
-                f"  generation_memory_mb={row['gen_memory']}",
-                file=f,
-            )
-            print(
-                f"  prefix_seconds={row['prefix_seconds']:.2f} oom={row['oom']}",
-                file=f,
-            )
-            print("", file=f)
-
-
-def main():
-    args = parse_args()
+def run_context_command(args):
     os.makedirs(args.output_dir, exist_ok=True)
-    json_path = os.path.join(args.output_dir, "context_sweep_results.json")
-    csv_path = os.path.join(args.output_dir, "context_sweep_results.csv")
-    plot_path = os.path.join(args.output_dir, "context_sweep_plot.png")
-    summary_path = os.path.join(args.output_dir, "context_sweep_summary.txt")
-    sweep_path = os.path.join(args.output_dir, "context_sweep_points.json")
-    if args.plot_only_json:
-        with open(args.plot_only_json, "r", encoding="utf-8") as f:
-            rows = json.load(f)
-        if not rows:
-            raise ValueError(f"No rows found in {args.plot_only_json}")
-        plot_results(rows, plot_path)
-        print(f"Saved plot to {plot_path}")
-        return
-
     seed_everything(args.seed)
 
     prompt_text = resolve_prompt(args)
@@ -764,29 +1001,37 @@ def main():
                     decode_tokens=args.decode_tokens,
                     sweep_point=point,
                 )
-                row = {
-                    "mode": mode,
-                    "target_context": point.target_context,
-                    "actual_context": point.actual_context,
-                    "prefix_seconds": round(point.prefix_seconds, 3),
-                    "prefix_ratio": round(point.prefix_ratio, 6),
-                    "num_frames": point.num_frames,
-                    "sparsity": mode_sparsity if mode == "duo" else 0.0,
-                    **result,
-                }
-                rows.append(row)
+                rows.append(
+                    {
+                        "mode": mode,
+                        "target_context": point.target_context,
+                        "actual_context": point.actual_context,
+                        "prefix_seconds": round(point.prefix_seconds, 3),
+                        "prefix_ratio": round(point.prefix_ratio, 6),
+                        "num_frames": point.num_frames,
+                        "sparsity": mode_sparsity if mode == "duo" else 0.0,
+                        **result,
+                    }
+                )
         finally:
             del model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
-    with open(sweep_path, "w", encoding="utf-8") as f:
-        json.dump([asdict(point) for point in sweep_points], f, indent=2)
+    output_dir = Path(args.output_dir)
+    json_path = output_dir / "context_sweep_results.json"
+    csv_path = output_dir / "context_sweep_results.csv"
+    plot_path = output_dir / "context_sweep_plot.png"
+    summary_path = output_dir / "context_sweep_summary.txt"
+    sweep_path = output_dir / "context_sweep_points.json"
 
+    json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    sweep_path.write_text(
+        json.dumps([asdict(point) for point in sweep_points], indent=2),
+        encoding="utf-8",
+    )
     write_csv(rows, csv_path)
-    write_summary(rows, summary_path)
+    write_context_summary(rows, summary_path)
 
     print(f"Saved sweep points to {sweep_path}")
     print(f"Saved JSON results to {json_path}")
@@ -795,37 +1040,196 @@ def main():
 
     if rows and not args.skip_plot:
         try:
-            plot_results(rows, plot_path)
+            plot_context_results(rows, plot_path)
             print(f"Saved plot to {plot_path}")
         except Exception as exc:
             print(
                 "Plot generation failed after results were saved. "
                 f"Error: {exc}"
             )
-            print(
-                "You can regenerate the plot later with "
-                f"--plot_only_json {json_path}"
+
+
+def run_prefill_command(args):
+    os.makedirs(args.output_dir, exist_ok=True)
+    if not os.path.isfile(args.video_path):
+        raise FileNotFoundError(f"Video file not found: {args.video_path}")
+
+    seed_everything(args.seed)
+    prompt_text = resolve_prompt(args)
+    processor = AutoProcessor.from_pretrained(args.model_name, trust_remote_code=True)
+
+    print(f"Calibrating a fixed context near {args.target_context} tokens...")
+    sweep_point = find_sweep_points(
+        processor=processor,
+        video_path=args.video_path,
+        prompt_text=prompt_text,
+        max_length=args.max_length,
+        max_context=args.target_context,
+        max_num_frames=args.max_num_frames,
+        targets=[args.target_context],
+    )[0]
+    print(
+        f"Locked context: target={sweep_point.target_context} "
+        f"actual={sweep_point.actual_context} frames={sweep_point.num_frames} "
+        f"prefix_seconds={sweep_point.prefix_seconds:.2f}"
+    )
+
+    frames, _ = load_video_frames(
+        video_path=args.video_path,
+        num_frames=sweep_point.num_frames,
+        prefix_ratio=sweep_point.prefix_ratio,
+    )
+    batch = encode_video_prompt(
+        processor=processor,
+        frames=frames,
+        prompt_text=prompt_text,
+        max_length=args.max_length,
+    )
+
+    rows: List[Dict[str, Any]] = []
+    for mode in ("baseline", "duo"):
+        if mode == "duo" and args.attn_load_dir is None:
+            print("Skipping duo mode because --attn_load_dir was not provided.")
+            continue
+
+        model, mode_sparsity = configure_model_for_mode(
+            model_name=args.model_name,
+            mode=mode,
+            attn_load_dir=args.attn_load_dir,
+            threshold=args.threshold,
+            sparsity=args.sparsity,
+            sink_size_override=args.sink_size,
+            recent_size_override=args.recent_size,
+        )
+
+        try:
+            batch_on_device = move_batch_to_device(
+                dict(batch),
+                device=torch.device("cuda"),
+                model_dtype=torch.bfloat16,
             )
+            with torch.no_grad():
+                inputs_embeds = build_llava_video_inputs_embeds(model, batch_on_device)
+
+            actual_seq_len = int(inputs_embeds.shape[1])
+            print(f"[{mode}] Fixed sequence length: {actual_seq_len}")
+
+            for chunk_size in args.prefill_chunk_sizes:
+                print(f"\n[{mode}] Benchmarking prefill_chunk_size={chunk_size}")
+                result = safe_run_prefill_only(model, inputs_embeds, chunk_size)
+                rows.append(
+                    {
+                        "mode": mode,
+                        "target_context": sweep_point.target_context,
+                        "actual_context": actual_seq_len,
+                        "prefix_seconds": round(sweep_point.prefix_seconds, 3),
+                        "prefix_ratio": round(sweep_point.prefix_ratio, 6),
+                        "num_frames": sweep_point.num_frames,
+                        "sparsity": mode_sparsity if mode == "duo" else 0.0,
+                        "prefill_chunk_size": int(chunk_size),
+                        **result,
+                    }
+                )
+        finally:
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    output_dir = Path(args.output_dir)
+    json_path = output_dir / "prefill_chunk_sweep_results.json"
+    csv_path = output_dir / "prefill_chunk_sweep_results.csv"
+    summary_path = output_dir / "prefill_chunk_sweep_summary.txt"
+    config_path = output_dir / "prefill_chunk_sweep_config.json"
+    plot_path = output_dir / "prefill_chunk_sweep_plot.png"
+
+    json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    config_path.write_text(
+        json.dumps(
+            {
+                "sweep_point": asdict(sweep_point),
+                "prefill_chunk_sizes": args.prefill_chunk_sizes,
+                "video_path": args.video_path,
+                "model_name": args.model_name,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    write_csv(rows, csv_path)
+    write_prefill_summary(rows, summary_path)
+
+    print(f"Saved JSON results to {json_path}")
+    print(f"Saved CSV results to {csv_path}")
+    print(f"Saved summary to {summary_path}")
+    print(f"Saved config to {config_path}")
+
+    if rows and not args.skip_plot:
+        try:
+            title = infer_prefill_title(load_json(config_path), rows)
+            plot_prefill_results(rows, plot_path, title)
+            print(f"Saved plot to {plot_path}")
+        except Exception as exc:
+            print(
+                "Plot generation failed after results were saved. "
+                f"Error: {exc}"
+            )
+
+
+def run_context_plot_command(args):
+    input_json = Path(args.input_json)
+    rows = load_json(input_json)
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f"No rows found in {input_json}")
+    output_plot = (
+        Path(args.output_plot)
+        if args.output_plot
+        else input_json.with_name("context_sweep_plot.png")
+    )
+    plot_context_results(rows, output_plot)
+    print(f"Loaded {len(rows)} rows from {input_json}")
+    print(f"Saved plot to {output_plot}")
+
+
+def run_prefill_plot_command(args):
+    input_json = Path(args.input_json)
+    rows = load_json(input_json)
+    if not isinstance(rows, list):
+        raise ValueError(f"Expected a list of rows in {input_json}")
+
+    config = None
+    if args.config_json:
+        config_path = Path(args.config_json)
+    else:
+        config_path = input_json.with_name("prefill_chunk_sweep_config.json")
+    if config_path.exists():
+        loaded_config = load_json(config_path)
+        if isinstance(loaded_config, dict):
+            config = loaded_config
+
+    output_plot = (
+        Path(args.output_plot)
+        if args.output_plot
+        else input_json.with_name("prefill_chunk_sweep_plot.png")
+    )
+    title = args.title or infer_prefill_title(config, rows)
+    plot_prefill_results(rows, output_plot, title)
+    print(f"Loaded {len(rows)} rows from {input_json}")
+    print(f"Saved plot to {output_plot}")
+
+
+def main():
+    args = parse_args()
+    if args.command == "context":
+        run_context_command(args)
+    elif args.command == "prefill":
+        run_prefill_command(args)
+    elif args.command == "context-plot":
+        run_context_plot_command(args)
+    elif args.command == "prefill-plot":
+        run_prefill_plot_command(args)
+    else:
+        raise ValueError(f"Unknown command: {args.command}")
 
 
 if __name__ == "__main__":
     main()
-
-
-# python -u duo_attn/eval/efficiency/benchmark_context_sweep_llava.py \
-#   --model_name /root/streaming-vqa/models/llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
-#   --video_path /some/real/video.mp4 \
-#   --output_dir /root/streaming-vqa/untracked/context_sweep_13min \
-#   --plot_only_json /root/streaming-vqa/untracked/context_sweep_13min/context_sweep_results.json
-
-
-# python -u duo_attn/eval/efficiency/benchmark_context_sweep_llava.py  \
-#      --model_name /root/streaming-vqa/models/llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
-#      --video_path /root/streaming-vqa/data/sample.mp4 \
-#      --attn_load_dir /root/streaming-vqa/outputs/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles1 \
-#      --prompt_file /root/streaming-vqa/long_prompt.txt \
-#      --max_length 32000 \
-#      --max_context 32000 \
-#      --output_dir /root/streaming-vqa/untracked/context_sweep_13min \
-#      --target_contexts 4000 8000 12000 16000 20000 24000 28000 32000 \
-#      --skip_plot

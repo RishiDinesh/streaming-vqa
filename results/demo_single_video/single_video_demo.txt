@@ -1,0 +1,42 @@
+Model: models/llava-hf-llava-onevision-qwen2-7b-ov-hf
+Video: data/samplee.mp4
+Prompt: Which of the silver cars in the video appears to be moving the fastest as they pass under the overhead gantry, and how does the bright sunlight reflecting off their metallic paint affect the visibility of their license plates?
+Frames: 64
+Video prefix duration used: 1188.57s
+Prefill chunk size: 32000
+Max new tokens: 64
+
+================================================================================
+BASELINE | Using Full Attention.
+================================================================================
+Input sequence length: 12588
+
+--- Pre-filling stage ---
+Pre-filling time: 2.31s
+
+--- Decoding stage ---
+Generated text: assistant
+Generated tokens: 3
+Stopped on EOS: True
+Average decode latency: 44.36 ms/tok
+Decode wall time: 0.14s
+Peak prefill memory: 57.86 GB
+Peak decode memory: 23.80 GB
+
+================================================================================
+DUO | Using DuoAttention.
+================================================================================
+Input sequence length: 12588
+Applied sparsity: 0.5000
+
+--- Pre-filling stage ---
+Pre-filling time: 0.64s
+
+--- Decoding stage ---
+Generated text: 
+Generated tokens: 64
+Stopped on EOS: False
+Average decode latency: 46.11 ms/tok
+Decode wall time: 3.03s
+Peak prefill memory: 17.11 GB
+Peak decode memory: 16.05 GB
