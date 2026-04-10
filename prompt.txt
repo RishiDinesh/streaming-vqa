@@ -237,6 +237,29 @@ Resume behavior:
 - the subsample matrix runner also keeps:
   - `outputs/evaluations_streaming/subsample_runner/status.txt`
   - per-step logs under `outputs/evaluations_streaming/subsample_runner/logs/`
+- for full eval, rerunning the same command with the same `OUTPUT_ROOT` and `RESUME=1`
+  will:
+  - move past already-complete method JSONs
+  - resume partially completed method JSONs
+  - start only the missing methods from scratch
+- if the GPU droplet must be stopped, the safe restart recipe is:
+  1. commit / push the result JSONs and plots
+  2. rebuild or restore feature precompute on the new machine
+  3. rerun the same full-eval command with the same `OUTPUT_ROOT`
+- cloning the repo alone is not enough for fast resume when `USE_FEATURE_CACHE=1`:
+  the shared feature cache under `outputs/evaluations_streaming/feature_cache/...`
+  is still required, and can either be restored or regenerated with `precompute`
+
+Exact restart commands:
+- precompute on a fresh machine:
+  - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf bash scripts/run_streaming_full_eval_local.sh precompute`
+  - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf bash scripts/run_streaming_full_eval_local.sh precompute`
+- resume / rerun full eval at `topk=64`:
+  - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk64_memavg REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
+  - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk64_memavg REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
+- matched full eval at `topk=32`:
+  - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk32_memavg REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
+  - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk32_memavg REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
 
 Current environment status
 --------------------------
@@ -282,6 +305,14 @@ Current workflow
 6. Run the promoted full package only once per dataset:
 - `DATASET=rvs_ego AB_SPARSITY=<chosen> bash scripts/run_streaming_full_eval_local.sh all`
 - `DATASET=rvs_movie AB_SPARSITY=<chosen> bash scripts/run_streaming_full_eval_local.sh all`
+
+Current recommended full-eval commands:
+- default / paper-style `topk=64`:
+  - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk64_memavg REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 bash scripts/run_streaming_full_eval_local.sh all`
+  - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk64_memavg REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 bash scripts/run_streaming_full_eval_local.sh all`
+- matched `topk=32`:
+  - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk32_memavg REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 bash scripts/run_streaming_full_eval_local.sh all`
+  - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk32_memavg REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 bash scripts/run_streaming_full_eval_local.sh all`
 
 Validated smoke run
 -------------------
