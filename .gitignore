@@ -2,6 +2,7 @@ dataset/
 datasets/
 outputs/*/*step*
 outputs/evaluations_streaming/feature_cache/
+outputs/evaluations_streaming/**/qualitative/qualitative_bundle.json
 untracked/
 logs/
 *.json.tmp
