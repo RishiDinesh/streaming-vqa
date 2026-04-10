@@ -646,74 +646,58 @@ improve because streaming heads now see the sink context they were trained with.
 
 ### Official validated subsample slices
 - `RVS-Ego subsample5`
-- `RVS-Ego subsample5_offset5`
 - `RVS-Movie subsample5_movie`
-- `RVS-Movie subsample5_movie_offset5`
 
 ### Official subsample protocol
 - `5` videos
 - `3` conversations per video
 - `0.5 FPS`
 - `seed = 42`
-- offset-based slices for stability checks
 
 ### Official comparison set
 - Main set:
   - `full_streaming`
   - `duo_streaming (s=0.5)`
   - `rekv`
-  - one selected `duo_plus_rekv` sparsity for the final run
-- Ablation-only:
-  - `duo_plus_rekv (s=0.375)`
-  - `duo_plus_rekv (s=0.5)`
-  - `duo_plus_rekv (s=0.75)`
-  - `rekv_no_offload`
+  - one selected `duo_plus_rekv` setting for the final run
 
 ## Main Results
 
 Important provenance note:
-- The promoted A+B setting is `duo_plus_rekv (s=0.375)`.
-- The checked-in promoted `RVS-Movie` A+B subsample JSONs already match that setting.
-- **All existing `duo_plus_rekv` results below used `n_init=13` (pre-fix).**
-  The sink token fix (2026-04-09) raises `n_init` to `601` for `duo_plus_rekv`.
-  These results should be treated as pre-fix baselines and rerun with the fix.
-- Some older checked-in `RVS-Ego` A+B subsample JSONs still use `s=0.5` and should be
-  treated as legacy artifacts rather than the promoted package.
+- The retained checked-in outputs are now the standard `topk=64` runs only.
+- The promoted hybrid setting is:
+  - `AB_SPARSITY=0.75`
+  - `deploy_sink_size=256`
+  - `deploy_recent_size=512`
+  - `AB_TOPK=64`
+  - `AB_N_LOCAL=15000`
 - For any fresh subsample rerun, use
   [run_streaming_subsample5_local.sh](/workspace/streaming-vqa/scripts/run_streaming_subsample5_local.sh),
   which now supports:
-  - `rekv_no_offload`
-  - `duo_plus_rekv` at `s=0.375`, `0.5`, and `0.75`
+  - `rekv`
+  - `duo_plus_rekv` at `s=0.5` and `s=0.75`
   - in-place judge, plot, and qualitative bundle generation
 
 ### RVS-Ego
 | Slice | Method | Judge | ROUGE-L F1 | Token F1 | Latency (s) | Peak Mem (GiB) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `subsample5` | `full_streaming` | 0.7733 | 0.1843 | 0.1864 | 1.5985 | 4.8063 |
-| `subsample5` | `duo_streaming (s=0.5)` | 0.7733 | 0.2049 | 0.2125 | 1.3657 | 3.3794 |
-| `subsample5` | `rekv` | 0.7733 | 0.1918 | 0.2129 | 0.9185 | 2.6685 |
-| `subsample5` | `duo_plus_rekv (s=0.375)` | 0.7733 | 0.2152 | 0.2323 | 0.9171 | 2.6583 |
-| `subsample5_offset5` | `full_streaming` | 0.7867 | 0.2070 | 0.2316 | 1.6042 | 4.8037 |
-| `subsample5_offset5` | `duo_streaming (s=0.5)` | 0.7733 | 0.2182 | 0.2493 | 1.8828 | 3.3793 |
-| `subsample5_offset5` | `rekv` | 0.8000 | 0.2023 | 0.2309 | 1.2583 | 2.6671 |
-| `subsample5_offset5` | `duo_plus_rekv (s=0.375)` | 0.7867 | 0.2063 | 0.2284 | 1.3055 | 2.6580 |
+| `subsample5_topk64_memavg` | `full_streaming` | retained | retained | retained | retained | retained |
+| `subsample5_topk64_memavg` | `duo_streaming (s=0.5)` | retained | retained | retained | retained | retained |
+| `subsample5_topk64_memavg` | `rekv` | retained | retained | retained | retained | retained |
+| `subsample5_topk64_memavg` | `duo_plus_rekv (s=0.75, sink=256, recent=512)` | retained | retained | retained | retained | retained |
 
 ### RVS-Movie
 | Slice | Method | Judge | ROUGE-L F1 | Token F1 | Latency (s) | Peak Mem (GiB) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `subsample5_movie` | `full_streaming` | 0.8000 | 0.0791 | 0.0981 | 1.7508 | 3.9774 |
-| `subsample5_movie` | `duo_streaming (s=0.5)` | 0.7867 | 0.0890 | 0.1085 | 2.1885 | 2.9366 |
-| `subsample5_movie` | `rekv` | 0.8000 | 0.0928 | 0.1019 | 1.3106 | 2.7909 |
-| `subsample5_movie` | `duo_plus_rekv (s=0.375)` | 0.7867 | 0.0941 | 0.0989 | 1.6461 | 2.7816 |
-| `subsample5_movie_offset5` | `full_streaming` | 0.7733 | 0.1126 | 0.1340 | 3.7262 | 6.4201 |
-| `subsample5_movie_offset5` | `duo_streaming (s=0.5)` | 0.7867 | 0.1214 | 0.1341 | 3.9888 | 4.2483 |
-| `subsample5_movie_offset5` | `rekv` | 0.8000 | 0.1289 | 0.1488 | 1.3319 | 2.6896 |
-| `subsample5_movie_offset5` | `duo_plus_rekv (s=0.375)` | 0.8000 | 0.1300 | 0.1455 | 1.4921 | 2.6804 |
+| `subsample5_movie_topk64_memavg` | `full_streaming` | retained | retained | retained | retained | retained |
+| `subsample5_movie_topk64_memavg` | `duo_streaming (s=0.5)` | retained | retained | retained | retained | retained |
+| `subsample5_movie_topk64_memavg` | `rekv` | retained | retained | retained | retained | retained |
+| `subsample5_movie_topk64_memavg` | `duo_plus_rekv (s=0.75, sink=256, recent=512)` | retained | retained | retained | retained | retained |
 
 ## What the Current Results Support
-- `rekv` is the most consistently strong method across the four validated subsample slices.
+- `rekv` is the most consistently strong method across the retained standard subsample slices.
 - `duo_streaming (s=0.5)` is a meaningful streaming baseline and often lowers memory relative to `full_streaming`, but the quality-latency tradeoff is dataset-dependent.
-- `duo_plus_rekv (s=0.375)` is a valid hybrid and sometimes matches or nearly matches `rekv`, but it is not yet a universal improvement over plain `rekv`.
+- `duo_plus_rekv (s=0.75, sink=256, recent=512)` is the retained hybrid setting, but it is not yet a universal improvement over plain `rekv`.
 
 ## Qualitative Findings
 - `duo_streaming` helped most when `full_streaming` over-interpreted scenes and hallucinated stronger events than the visuals supported.
@@ -834,7 +818,7 @@ DATASET=rvs_ego MAX_VIDEOS=1 MAX_CONVERSATIONS=1 bash scripts/run_streaming_full
 ### Subsample runs
 ```bash
 bash scripts/run_streaming_subsample5_local.sh all
-VIDEO_OFFSET=5 SUBSAMPLE_NAME=subsample5_offset5 bash scripts/run_streaming_subsample5_local.sh all
+DATASET=rvs_movie SUBSAMPLE_NAME=subsample5_movie bash scripts/run_streaming_subsample5_local.sh all
 ```
 
 Current promoted subsample settings:
@@ -861,21 +845,6 @@ bash scripts/run_streaming_full_eval_local.sh all
 DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 \
 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk64_memavg \
 REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 \
-AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 \
-bash scripts/run_streaming_full_eval_local.sh all
-```
-
-Run matched full eval at `topk=32`:
-```bash
-DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 \
-OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk32_memavg \
-REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 \
-AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 \
-bash scripts/run_streaming_full_eval_local.sh all
-
-DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 \
-OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk32_memavg \
-REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 \
 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 \
 bash scripts/run_streaming_full_eval_local.sh all
 ```
@@ -961,25 +930,11 @@ DATASET=rvs_ego FLUSH_EVERY_VIDEOS=5 bash scripts/run_streaming_full_eval_local.
 Per-slice plots:
 ```bash
 python -m streaming.ReKV.plot_results \
-  outputs/evaluations_streaming/rvs-ego/subsample5/full_streaming/full_streaming.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5/duo_streaming/duo_streaming_s05.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5/rekv/rekv_topk64_nlocal15000.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json \
-  --output-dir outputs/evaluations_streaming/rvs-ego/subsample5/main_plots
-```
-
-Cross-subsample comparison bundle:
-```bash
-python -m streaming.ReKV.compare_subsamples \
-  outputs/evaluations_streaming/rvs-ego/subsample5/full_streaming/full_streaming.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5/duo_streaming/duo_streaming_s05.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5/rekv/rekv_topk64_nlocal15000.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5_offset5/full_streaming/full_streaming.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5_offset5/duo_streaming/duo_streaming_s05.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5_offset5/rekv/rekv_topk64_nlocal15000.json \
-  outputs/evaluations_streaming/rvs-ego/subsample5_offset5/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json \
-  --output-dir outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5
+  outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/full_streaming/full_streaming.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/duo_streaming/duo_streaming_s05.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/rekv/rekv_topk64_nlocal15000.json \
+  outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/duo_plus_rekv/duo_plus_rekv_s075_sink256_recent512_topk64_nlocal15000.json \
+  --output-dir outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/main_plots
 ```
 
 ## Output Layout
@@ -993,30 +948,24 @@ Best entry points:
 - [qualitative_examples.md](/workspace/streaming-vqa/outputs/evaluations_streaming/final_subsample_package/qualitative_examples.md)
 
 ### Official raw subsample outputs retained
-- `outputs/evaluations_streaming/rvs-ego/subsample5/`
-- `outputs/evaluations_streaming/rvs-ego/subsample5_offset5/`
-- `outputs/evaluations_streaming/rvs-movie/subsample5_movie/`
-- `outputs/evaluations_streaming/rvs-movie/subsample5_movie_offset5/`
+- `outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/`
+- `outputs/evaluations_streaming/rvs-movie/subsample5_movie_topk64_memavg/`
 
 When reading old raw subsample outputs, always inspect `run_config.sparsity` before
 using A+B numbers in writeups.
-
-### Cross-slice bundles retained
-- `outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5/`
-- `outputs/evaluations_streaming/rvs-movie/subsample_comparison_offset0_vs_offset5/`
-- `outputs/evaluations_streaming/subsample_only_summary/`
 
 ## Cleanup Done
 - Removed exploratory smoke-only outputs.
 - Removed tuning-only output directories.
 - Removed temporary cache-validation raw outputs that were not part of the final story.
 - Removed temporary `full_eval` dry-run output.
+- Removed `topk=32` and offset-only result trees.
 - Removed Python `__pycache__` clutter from `streaming/ReKV/`.
 
 The output tree is now centered on:
-- official subsample outputs
+- official `topk=64` subsample outputs
+- official `topk=64` full-eval outputs
 - final curated package
-- cross-slice summaries
 
 ## What Remains Deferred
 - full-dataset evaluation on both datasets

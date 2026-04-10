@@ -257,9 +257,6 @@ Exact restart commands:
 - resume / rerun full eval at `topk=64`:
   - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk64_memavg REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
   - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk64_memavg REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
-- matched full eval at `topk=32`:
-  - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk32_memavg REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
-  - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk32_memavg REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 RESUME=1 bash scripts/run_streaming_full_eval_local.sh all`
 
 Current environment status
 --------------------------
@@ -278,9 +275,7 @@ Current environment status
 Official subsample slices
 -------------------------
 - `RVS-Ego subsample5`
-- `RVS-Ego subsample5_offset5`
 - `RVS-Movie subsample5_movie`
-- `RVS-Movie subsample5_movie_offset5`
 
 Current workflow
 ----------------
@@ -290,10 +285,9 @@ Current workflow
 - `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh precompute`
 - `DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh precompute`
 
-3. Run subsample sweeps first:
+3. Run the standard subsample slice first:
 - `bash scripts/run_streaming_subsample5_local.sh all`
-- `VIDEO_OFFSET=5 SUBSAMPLE_NAME=subsample5_offset5 bash scripts/run_streaming_subsample5_local.sh all`
-- mirror the same for movie slices
+- for movie: `DATASET=rvs_movie SUBSAMPLE_NAME=subsample5_movie bash scripts/run_streaming_subsample5_local.sh all`
 
 4. Review judged JSONs, plots, and qualitative bundle.
 
@@ -310,9 +304,6 @@ Current recommended full-eval commands:
 - default / paper-style `topk=64`:
   - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk64_memavg REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 bash scripts/run_streaming_full_eval_local.sh all`
   - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk64_memavg REKV_TOPK=64 AB_TOPK=64 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 bash scripts/run_streaming_full_eval_local.sh all`
-- matched `topk=32`:
-  - `DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-ego/full_eval_topk32_memavg REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 bash scripts/run_streaming_full_eval_local.sh all`
-  - `DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf USE_FEATURE_CACHE=1 OUTPUT_ROOT=outputs/evaluations_streaming/rvs-movie/full_eval_topk32_memavg REKV_TOPK=32 AB_TOPK=32 REKV_N_LOCAL=15000 AB_N_LOCAL=15000 AB_SPARSITY=0.75 AB_DEPLOY_SINK_SIZE=256 AB_DEPLOY_RECENT_SIZE=512 bash scripts/run_streaming_full_eval_local.sh all`
 
 Validated smoke run
 -------------------
