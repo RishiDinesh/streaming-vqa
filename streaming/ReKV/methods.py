@@ -196,14 +196,25 @@ def _project_pixel_values_videos(
 ) -> torch.Tensor:
     lm_device = next(model.language_model.parameters()).device
     lm_dtype = next(model.language_model.parameters()).dtype
+    vision_feature_layer = model.config.vision_feature_layer
+    vision_feature_select_strategy = model.config.vision_feature_select_strategy
+
+    if hasattr(model, "get_video_features"):
+        vision_device = next(model.vision_tower.parameters()).device
+        vision_dtype = next(model.vision_tower.parameters()).dtype
+        pixel_values_videos = pixel_values_videos.to(device=vision_device, dtype=vision_dtype)
+        video_features = model.get_video_features(
+            pixel_values_videos,
+            vision_feature_layer=vision_feature_layer,
+            vision_feature_select_strategy=vision_feature_select_strategy,
+        )
+        return video_features.to(device=lm_device, dtype=lm_dtype)
+
     vision_device = next(model.vision_tower.parameters()).device
     vision_dtype = next(model.vision_tower.parameters()).dtype
-
     pixel_values_videos = pixel_values_videos.to(device=vision_device, dtype=vision_dtype)
     batch_size, frames, channels, height, width = pixel_values_videos.shape
     pixel_values_videos = pixel_values_videos.view(batch_size * frames, channels, height, width)
-    vision_feature_layer = model.config.vision_feature_layer
-    vision_feature_select_strategy = model.config.vision_feature_select_strategy
 
     if vision_feature_layer == -1:
         video_outputs = model.vision_tower(
@@ -290,6 +301,7 @@ def _empty_retrieval_stats() -> dict[str, Any]:
 def greedy_decode_with_cache(
     *,
     language_model,
+    output_projection=None,
     tokenizer,
     prompt_text: str,
     past_key_values,
@@ -311,6 +323,15 @@ def greedy_decode_with_cache(
 
     output_ids: list[int] = []
     stop_reason = "max_new_tokens"
+
+    def _extract_logits(output) -> torch.Tensor:
+        if getattr(output, "logits", None) is not None:
+            return output.logits
+        if output_projection is None:
+            raise AttributeError("Language model output does not expose logits and no output projection was provided.")
+        hidden_states = output.last_hidden_state
+        return output_projection(hidden_states)
+
     with torch.inference_mode():
         out = language_model(
             inputs_embeds=prompt_embeds,
@@ -318,7 +339,7 @@ def greedy_decode_with_cache(
             past_key_values=past_key_values,
         )
         working_cache = out.past_key_values
-        logits = out.logits
+        logits = _extract_logits(out)
         next_token = int(torch.argmax(logits[0, -1, :]).item())
         output_ids.append(next_token)
         ttft_sec = time.perf_counter() - decode_start
@@ -333,7 +354,7 @@ def greedy_decode_with_cache(
                 use_cache=True,
                 past_key_values=working_cache,
             )
-            logits = out.logits
+            logits = _extract_logits(out)
             working_cache = out.past_key_values
             next_token = int(torch.argmax(logits[0, -1, :]).item())
             output_ids.append(next_token)
@@ -503,6 +524,7 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         prompt_text = build_question_prompt(question)
         prediction, decode_stats = greedy_decode_with_cache(
             language_model=self.model.language_model,
+            output_projection=self.model.get_output_embeddings(),
             tokenizer=self.tokenizer,
             prompt_text=prompt_text,
             past_key_values=self._prepare_answer_cache(question, metadata),

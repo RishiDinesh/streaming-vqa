@@ -149,6 +149,7 @@ class LocalLlmJudge:
         prompt = build_judge_prompt(self.tokenizer, question, reference_answer, prediction)
         output_text, decode_stats = greedy_decode_with_cache(
             language_model=self.model.language_model,
+            output_projection=self.model.get_output_embeddings(),
             tokenizer=self.tokenizer,
             prompt_text=prompt,
             past_key_values=None,

@@ -22,12 +22,15 @@
   - safe single-GPU speed knobs are implemented for the local MI300X path
   - sink token mismatch fixed (n_init raised from 13 to 601 for duo_plus_rekv)
   - tuple KV cache patching removed from duo_plus_rekv init
+  - local `duo` Conda env is installed at `/root/miniforge3/envs/duo`
+  - direct local ROCm execution is validated in this environment
+  - `rekv` smoke eval + judge + plots now run end to end on the 0.5B model
   - previous subsample results used the unfixed n_init=13 and should be rerun
   - full-dataset runs are ready but have not been executed end to end yet
 
 ## Current Direction Update
 
-As of `2026-04-09`, the active ReKV lane should reflect the following project decisions:
+As of `2026-04-10`, the active ReKV lane should reflect the following project decisions:
 
 - We care about **both** streaming datasets:
   - `RVS-Ego`
@@ -145,8 +148,72 @@ Practical compatibility fallbacks now present in the repo:
 
 Current environment note:
 
-- if `rocminfo` reports `Unable to open /dev/kfd read-write: Operation not permitted` and `torch.cuda.is_available()` is `False`, the issue is the current shell/container session, not the streaming runner logic
+- in this session, the local ROCm path is healthy:
+  - `rocminfo` succeeds
+  - `rocm-smi` sees one GPU
+  - `torch.cuda.is_available()` is `True`
+  - Torch allocation on `cuda:0` succeeds
+- `sinfo` / SLURM are not available in this environment, so this lane should use
+  the direct local ROCm path here
+- the `duo` env is installed at `/root/miniforge3/envs/duo`
+- if a future shell instead reports `Unable to open /dev/kfd read-write: Operation not permitted` and `torch.cuda.is_available()` is `False`, the issue is the current shell/container session, not the streaming runner logic
 - use [check_mi300x_access.sh](/workspace/streaming-vqa/scripts/check_mi300x_access.sh) before launching long runs
+
+## Session-Validated Compatibility Fixes
+
+During the `2026-04-10` smoke pass on `llava-hf/llava-onevision-qwen2-0.5b-ov-hf`,
+several compatibility fixes were required and are now in the repo:
+
+1. ReKV patching for the current `Qwen2Model` layout
+- File: [patch.py](/workspace/streaming-vqa/streaming/ReKV/rekv_core/patch.py)
+- `patch_hf` now supports:
+  - bare `Qwen2Model` language-model cores without a `.model` wrapper
+  - newer Qwen2 attention modules that do not expose legacy `num_heads` and
+    `num_key_value_heads` attributes directly
+  - newer decoder-layer forward conventions used by the current `transformers`
+    stack
+
+2. OneVision video feature extraction compatibility
+- File: [methods.py](/workspace/streaming-vqa/streaming/ReKV/methods.py)
+- The streaming feature extractor now uses `get_video_features(...)` when the
+  model exposes it, instead of assuming the outer model has a direct
+  `apply_pooling(...)` helper.
+
+3. Greedy decoding compatibility for bare language-model outputs
+- File: [methods.py](/workspace/streaming-vqa/streaming/ReKV/methods.py)
+- The current OneVision stack returns `last_hidden_state` from
+  `model.language_model` rather than full `logits`.
+- Greedy decoding now projects through the outer model's LM head when needed.
+
+4. Judge path compatibility
+- File: [judge_results.py](/workspace/streaming-vqa/streaming/ReKV/judge_results.py)
+- The judge now uses the same LM-head projection fallback as the main runner.
+
+5. Safer batched video decode fallback
+- File: [datasets.py](/workspace/streaming-vqa/streaming/ReKV/datasets.py)
+- If batched `decord` reads fail for a particular mp4, the sampler now falls
+  back to single-frame fetches without changing the sampled-frame schedule.
+
+## Session Smoke Validation
+
+A local ROCm smoke run for streaming `rekv` on the 0.5B model completed
+successfully in this session:
+
+- command shape:
+  - `MAX_VIDEOS=1 MAX_CONVERSATIONS=1 VIDEO_DECODE_THREADS=1 bash scripts/run_streaming_subsample5_local.sh rekv`
+- outputs:
+  - JSON: [rekv_topk64_nlocal15000.json](/workspace/streaming-vqa/outputs/evaluations_streaming_smoke/rvs-ego/subsample5_1x1/rekv/rekv_topk64_nlocal15000.json)
+  - plots: [plots](/workspace/streaming-vqa/outputs/evaluations_streaming_smoke/rvs-ego/subsample5_1x1/plots)
+- smoke metrics:
+  - `completed_videos = 1/1`
+  - `total_frames_ingested = 150`
+  - `avg_answer_latency_sec = 0.4832`
+  - `peak_memory_bytes = 2929964032`
+  - `avg_judge_score = 0.8`
+- progress reporting was visibly confirmed:
+  - outer `videos` bar
+  - inner per-video `frames` bar
+  - ETA / rate displayed by `tqdm`
 
 ## Long-Run Safety
 

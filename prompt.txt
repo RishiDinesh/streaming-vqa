@@ -12,6 +12,8 @@ Active scope
   - one AMD `MI300X`
   - optimize for a single-GPU, benchmark-correct workflow
 - Use the Conda environment named `duo` for Python commands.
+- `duo` is installed locally at `/root/miniforge3/envs/duo`.
+- This environment uses the direct local ROCm GPU path; `sinfo` / SLURM are not available here.
 - Do not push to GitHub. Only the user will push.
 
 Paper story and experiment strategy
@@ -137,6 +139,27 @@ Important fixes already made
 - `scripts/check_mi300x_access.sh` prints a clean ROCm/Torch visibility diagnosis
 - `scripts/run_streaming_subsample_matrix_local.sh` runs all subsample slices step-by-step and keeps a `status.txt` file updated
 
+9. 0.5B OneVision compatibility fixes validated in this session
+- File: `streaming/ReKV/rekv_core/patch.py`
+- ReKV patching now supports the current `Qwen2Model` layout used by
+  `llava-hf/llava-onevision-qwen2-0.5b-ov-hf`, including:
+  - bare `Qwen2Model` cores with no `.model` wrapper
+  - newer Qwen2 attention modules that do not expose legacy
+    `num_heads` / `num_key_value_heads` fields directly
+  - newer Qwen2 decoder-layer forward conventions
+- File: `streaming/ReKV/methods.py`
+- Video feature extraction now uses the current OneVision
+  `get_video_features(...)` path when available, instead of assuming a direct
+  top-level `apply_pooling(...)` helper.
+- Answer-time greedy decoding now supports language-model outputs that expose
+  `last_hidden_state` without `logits`, by projecting through the outer model's
+  LM head.
+- File: `streaming/ReKV/judge_results.py`
+- Judge decoding uses the same LM-head projection fallback as the main runner.
+- File: `streaming/ReKV/datasets.py`
+- `SampledVideo.get_frame(s)` now falls back to single-frame reads if a batched
+  `decord` fetch fails on a given mp4.
+
 Monitoring and resume behavior
 ------------------------------
 Progress bars are implemented for the long-running steps:
@@ -163,12 +186,16 @@ Resume behavior:
   - `outputs/evaluations_streaming/subsample_runner/status.txt`
   - per-step logs under `outputs/evaluations_streaming/subsample_runner/logs/`
 
-Current environment warning
----------------------------
-- In this session, the AMD GPUs are visible in `/sys/class/drm`, but `/dev/kfd` access fails with `EPERM`.
-- `rocminfo` reports `Unable to open /dev/kfd read-write: Operation not permitted`.
-- `torch.cuda.is_available()` is `False` and device count is `0`.
-- That means this specific shell/container does not currently have usable ROCm device access, even though the host appears to have MI300X hardware.
+Current environment status
+--------------------------
+- In this session, the local ROCm GPU path is usable:
+  - `rocminfo` succeeds
+  - `rocm-smi` reports one GPU
+  - `torch.cuda.is_available()` is `True`
+  - a real Torch allocation on `cuda:0` succeeds
+- `sinfo` / SLURM are not available here, so runs in this environment should use
+  the direct local ROCm path instead of `sbatch`.
+- The `duo` environment is installed at `/root/miniforge3/envs/duo`.
 - Before launching real runs, verify with:
   - `bash scripts/check_mi300x_access.sh`
 
@@ -181,25 +208,49 @@ Official subsample slices
 
 Current workflow
 ----------------
-1. Precompute shared visual features once when preparing larger runs:
+1. Keep using the `duo` environment for Python / launcher commands.
+
+2. Precompute shared visual features once when preparing larger runs:
 - `DATASET=rvs_ego bash scripts/run_streaming_full_eval_local.sh precompute`
 - `DATASET=rvs_movie bash scripts/run_streaming_full_eval_local.sh precompute`
 
-2. Run subsample sweeps first:
+3. Run subsample sweeps first:
 - `bash scripts/run_streaming_subsample5_local.sh all`
 - `VIDEO_OFFSET=5 SUBSAMPLE_NAME=subsample5_offset5 bash scripts/run_streaming_subsample5_local.sh all`
 - mirror the same for movie slices
 
-3. Review judged JSONs, plots, and qualitative bundle.
+4. Review judged JSONs, plots, and qualitative bundle.
 
-4. Choose one `AB_SPARSITY` from:
+5. Choose one `AB_SPARSITY` from:
 - `0.375`
 - `0.5`
 - `0.75`
 
-5. Run the promoted full package only once per dataset:
+6. Run the promoted full package only once per dataset:
 - `DATASET=rvs_ego AB_SPARSITY=<chosen> bash scripts/run_streaming_full_eval_local.sh all`
 - `DATASET=rvs_movie AB_SPARSITY=<chosen> bash scripts/run_streaming_full_eval_local.sh all`
+
+Validated smoke run
+-------------------
+- A direct local ROCm smoke run for streaming `rekv` on
+  `llava-hf/llava-onevision-qwen2-0.5b-ov-hf` completed successfully with:
+  - `MAX_VIDEOS=1`
+  - `MAX_CONVERSATIONS=1`
+  - `VIDEO_DECODE_THREADS=1`
+- Output JSON:
+  - `outputs/evaluations_streaming_smoke/rvs-ego/subsample5_1x1/rekv/rekv_topk64_nlocal15000.json`
+- Output plots:
+  - `outputs/evaluations_streaming_smoke/rvs-ego/subsample5_1x1/plots/`
+- Smoke aggregate metrics:
+  - `completed_videos = 1/1`
+  - `total_frames_ingested = 150`
+  - `avg_answer_latency_sec = 0.4832`
+  - `peak_memory_bytes = 2929964032`
+  - `avg_judge_score = 0.8`
+- Visible progress was confirmed:
+  - outer `videos` bar
+  - inner per-video `frames` bar
+  - ETA / rate from `tqdm`
 
 Recommended knobs for single-GPU runs
 -------------------------------------
@@ -223,6 +274,12 @@ Current status
 - optimized full-eval workflow is implemented
 - long-run checkpoint/resume support is implemented
 - progress bars are implemented for eval, precompute, profiling, and judging
+- local `duo` Conda env is installed and launcher activation works
+- direct ROCm / MI300X local execution has been validated in this session
+- 0.5B OneVision ReKV smoke flow has been validated end to end for:
+  - eval
+  - judging
+  - plot generation
 - full-dataset eval has not been run end to end yet
 
 User preferences to preserve

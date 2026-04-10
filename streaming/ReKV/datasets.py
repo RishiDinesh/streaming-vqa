@@ -45,9 +45,22 @@ class SampledVideo:
                 frame_batch = self._reader.get_batch([frame_index]).asnumpy()
                 return frame_batch[0]
             except Exception:
-                pass
+                try:
+                    from decord import VideoReader, cpu
+                    reader_st = VideoReader(self.video_path, ctx=cpu(0), num_threads=1)
+                    return reader_st.get_batch([frame_index]).asnumpy()[0]
+                except Exception:
+                    pass
         if hasattr(self._reader, "get_data"):
             return np.asarray(self._reader.get_data(frame_index))
+        try:
+            import imageio.v2 as imageio
+            reader_io = imageio.get_reader(self.video_path)
+            frame = np.asarray(reader_io.get_data(frame_index))
+            reader_io.close()
+            return frame
+        except Exception:
+            pass
         return np.asarray(self._reader[frame_index])
 
     def get_frames(self, sampled_indices: list[int]) -> np.ndarray:
@@ -59,11 +72,27 @@ class SampledVideo:
                 return self._reader.get_batch(frame_indices).asnumpy()
             except Exception:
                 # Some decord/FFmpeg builds fail on batched reads for specific mp4s
-                # even though single-frame access is fine. Fall back without
-                # changing the sampled-frame schedule.
-                pass
+                # (threaded decoder crash). Try one-at-a-time with a fresh
+                # single-threaded reader, then fall back to imageio.
+                try:
+                    from decord import VideoReader, cpu
+                    reader_st = VideoReader(self.video_path, ctx=cpu(0), num_threads=1)
+                    return np.stack(
+                        [reader_st.get_batch([fi]).asnumpy()[0] for fi in frame_indices], axis=0
+                    )
+                except Exception:
+                    pass
         if hasattr(self._reader, "get_data"):
             return np.stack([np.asarray(self._reader.get_data(frame_index)) for frame_index in frame_indices], axis=0)
+        # Last resort: imageio sequential decode
+        try:
+            import imageio.v2 as imageio
+            reader_io = imageio.get_reader(self.video_path)
+            frames = [np.asarray(reader_io.get_data(fi)) for fi in frame_indices]
+            reader_io.close()
+            return np.stack(frames, axis=0)
+        except Exception:
+            pass
         return np.stack([np.asarray(self._reader[frame_index]) for frame_index in frame_indices], axis=0)
 
 
