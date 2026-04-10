@@ -244,15 +244,24 @@ def extract_frame_features_batch(
             "Expected frames with shape [num_frames, height, width, channels], "
             f"got {tuple(frame_batch.shape)}"
         )
+    video_features = extract_video_features(model, processor, frame_batch)
+    if video_features.ndim != 3 or video_features.shape[0] != 1:
+        raise ValueError(
+            "Batched frame feature extraction expects a single packed video batch, "
+            f"got {tuple(video_features.shape)}"
+        )
 
-    feature_list: list[torch.Tensor] = []
-    for frame in frame_batch:
-        feature_list.append(extract_video_features(model, processor, frame)[0])
+    num_frames = int(frame_batch.shape[0])
+    total_tokens = int(video_features.shape[1])
+    if total_tokens % num_frames != 0:
+        raise ValueError(
+            "Packed video features could not be split into per-frame chunks: "
+            f"num_frames={num_frames}, total_tokens={total_tokens}"
+        )
 
-    if not feature_list:
-        raise ValueError("extract_frame_features_batch requires at least one frame.")
-
-    return torch.stack(feature_list, dim=0)
+    tokens_per_frame = total_tokens // num_frames
+    hidden_size = int(video_features.shape[2])
+    return video_features.reshape(num_frames, tokens_per_frame, hidden_size)
 
 
 def extract_single_frame_features(

@@ -2,7 +2,7 @@
 
 ## TL;DR
 - Goal: evaluate streaming `DuoAttention`, `ReKV`, and `DuoAttention + ReKV` for streaming VideoQA on `LLaVA-OneVision 0.5B`.
-- Hardware assumption: one local AMD `MI300X`, no SLURM for this lane.
+- Hardware assumption: NVIDIA CUDA GPUs with the upstream DuoAttention CUDA stack available.
 - Streaming semantics used throughout:
   - causal frame ingest
   - one sampled frame per forward pass
@@ -223,13 +223,7 @@ Key idea:
 
 ## Important Fixes
 
-### 1. DuoAttention ROCm correctness fix
-- File: [attn_compat.py](/workspace/streaming-vqa/duo_attn/patch/attn_compat.py)
-- Issue: cached incremental attention used the wrong causal alignment on MI300X.
-- Fix: correct bottom-right causal mask for `q_len < k_len`.
-- Result: streaming Duo behavior stopped degenerating.
-
-### 2. Streaming causality fix
+### 1. Streaming causality fix
 - File: [run_eval.py](/workspace/streaming-vqa/streaming/ReKV/run_eval.py)
 - Issue: one extra sampled frame was being ingested at question time.
 - Intermediate fix: upstream-style exclusive cutoff using `int(end_time * sample_fps)`.
@@ -238,22 +232,17 @@ Key idea:
 - Reason: `int(end_time * sample_fps)` can still under-ingest by one frame when the
   sampled schedule starts at `t=0` and `end_time` falls between sample-grid points.
 
-### 3. ReKV + Duo integration fix
+### 2. ReKV + Duo integration fix
 - File: [rekv_attention.py](/workspace/streaming-vqa/streaming/ReKV/rekv_core/attention/rekv_attention.py)
 - Fixes:
-  - manual KV-head expansion for ROCm GQA compatibility
+  - CUDA-native grouped-query attention in the full-attention path
   - Duo disabled during ReKV retrieval selection
   - Duo only applied after retrieval
 
-### 4. Feature-cache safety fix
-- Initial idea: batch frames through the vision tower during precompute.
-- Problem: on this ROCm stack, batched vision forwarding changed the features enough to alter predictions.
-- Final safe design:
-  - extract features exactly as raw single-frame ingest would
-  - stack and save those features on disk
-  - reuse them across methods
-
-This is slower than the unsafe shortcut, but it preserves comparability.
+### 3. Feature-cache implementation
+- CUDA precompute batches sampled frames through the vision tower.
+- The saved cache still stores per-frame feature tensors on disk.
+- All methods reuse the same cached features, so downstream method comparisons stay aligned.
 
 ## Datasets and Official Protocol
 

@@ -22,16 +22,14 @@ def _full_causal_attention(
     key: torch.Tensor,
     value: torch.Tensor,
 ) -> torch.Tensor:
+    enable_gqa = False
     if query.shape[1] != key.shape[1]:
         if query.shape[1] % key.shape[1] != 0:
             raise ValueError(
                 "Grouped-query attention requires query heads to be divisible by key/value heads: "
                 f"q_heads={query.shape[1]} kv_heads={key.shape[1]}"
             )
-        repeat_factor = query.shape[1] // key.shape[1]
-        # Torch 2.4 ROCm SDPA does not expose enable_gqa, so expand KV heads manually.
-        key = key.repeat_interleave(repeat_factor, dim=1)
-        value = value.repeat_interleave(repeat_factor, dim=1)
+        enable_gqa = True
 
     len_q = query.shape[-2]
     len_k = key.shape[-2]
@@ -41,6 +39,7 @@ def _full_causal_attention(
             key,
             value,
             is_causal=True,
+            enable_gqa=enable_gqa,
         )
 
     causal_mask = _bottom_right_causal_mask(len_q, len_k, query.device).view(1, 1, len_q, len_k)
@@ -50,6 +49,7 @@ def _full_causal_attention(
         value,
         attn_mask=causal_mask,
         is_causal=False,
+        enable_gqa=enable_gqa,
     )
 
 
