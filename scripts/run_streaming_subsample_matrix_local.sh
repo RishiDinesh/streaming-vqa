@@ -61,9 +61,9 @@ Usage:
   scripts/run_streaming_subsample_matrix_local.sh <mode>
 
 Modes:
-  ego     Run both RVS-Ego subsample slices
-  movie   Run both RVS-Movie subsample slices
-  all     Run all four subsample slices
+  ego     Run the standard RVS-Ego subsample slice
+  movie   Run the standard RVS-Movie subsample slice
+  all     Run the standard subsample slice for both datasets
   status  Print the current status file
 
 Environment overrides:
@@ -142,17 +142,13 @@ declare -a SLICES=()
 case "${MODE}" in
   ego)
     SLICES+=("rvs_ego|subsample5|0")
-    SLICES+=("rvs_ego|subsample5_offset5|5")
     ;;
   movie)
     SLICES+=("rvs_movie|subsample5_movie|0")
-    SLICES+=("rvs_movie|subsample5_movie_offset5|5")
     ;;
   all)
     SLICES+=("rvs_ego|subsample5|0")
-    SLICES+=("rvs_ego|subsample5_offset5|5")
     SLICES+=("rvs_movie|subsample5_movie|0")
-    SLICES+=("rvs_movie|subsample5_movie_offset5|5")
     ;;
   *)
     usage >&2
@@ -380,40 +376,6 @@ checkpoint: ${output_path:-none}
 exit_code: 0"
 }
 
-run_compare_bundle() {
-  local dataset=$1
-  local slice_a=$2
-  local slice_b=$3
-  local output_dir=$4
-  local dataset_dash=${dataset//_/-}
-  local root_a
-  local root_b
-  local files=()
-  root_a=$(slice_output_root "${dataset_dash}" "${slice_a}")
-  root_b=$(slice_output_root "${dataset_dash}" "${slice_b}")
-  local root
-  local method_dir
-  for root in "${root_a}" "${root_b}"; do
-    for method_dir in full_streaming duo_streaming rekv duo_plus_rekv; do
-      if [[ -d "${root}/${method_dir}" ]]; then
-        while IFS= read -r path; do
-          files+=("${path}")
-        done < <(find "${root}/${method_dir}" -maxdepth 1 -type f -name '*.json' | sort)
-      fi
-    done
-  done
-  python -m streaming.ReKV.compare_subsamples "${files[@]}" --output-dir "${output_dir}"
-}
-
-comparison_output_dir() {
-  local base_dir=$1
-  if [[ -n "${OUTPUT_SUFFIX}" ]]; then
-    printf '%s_%s' "${base_dir}" "${OUTPUT_SUFFIX}"
-  else
-    printf '%s' "${base_dir}"
-  fi
-}
-
 for entry in "${SLICES[@]}"; do
   IFS='|' read -r dataset slice offset <<< "${entry}"
   for step in "${STEPS[@]}"; do
@@ -421,22 +383,6 @@ for entry in "${SLICES[@]}"; do
     run_step "${dataset}" "${slice}" "${offset}" "${mode}" "${output_template}"
   done
 done
-
-if [[ "${MODE}" == "ego" || "${MODE}" == "all" ]]; then
-  run_compare_bundle \
-    "rvs_ego" \
-    "subsample5" \
-    "subsample5_offset5" \
-    "$(comparison_output_dir "outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5")"
-fi
-
-if [[ "${MODE}" == "movie" || "${MODE}" == "all" ]]; then
-  run_compare_bundle \
-    "rvs_movie" \
-    "subsample5_movie" \
-    "subsample5_movie_offset5" \
-    "$(comparison_output_dir "outputs/evaluations_streaming/rvs-movie/subsample_comparison_offset0_vs_offset5")"
-fi
 
 write_status "phase: complete
 step: ${CURRENT_STEP}/${TOTAL_STEPS}

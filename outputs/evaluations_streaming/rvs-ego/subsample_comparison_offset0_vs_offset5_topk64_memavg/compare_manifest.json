@@ -1,7 +1,0 @@
-{
-  "summary_csv": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5_topk64_memavg/summary.csv",
-  "summary_md": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5_topk64_memavg/summary.md",
-  "stability_report": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5_topk64_memavg/stability_report.json",
-  "slice_stability_plot": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5_topk64_memavg/slice_stability.png",
-  "delta_stability_plot": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5_topk64_memavg/delta_stability.png"
-}
