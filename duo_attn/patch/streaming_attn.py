@@ -12,10 +12,6 @@ except ImportError:
     block_streaming_attn_func = None
 
 
-def is_blocksparse_available():
-    return block_streaming_attn_func is not None
-
-
 @torch.no_grad()
 def generate_streaming_mask(seq_len, sink_size, recent_size, device):
     # round seq_len to the nearest multiple of 8
@@ -105,10 +101,6 @@ def generate_streaming_info_blocksparse_flash_attn(
 def streaming_attn_blocksparse_flash_attn(
     query_states, key_states, value_states, streaming_info
 ):
-    if block_streaming_attn_func is None:
-        raise RuntimeError(
-            "block_sparse_attn is not installed, but blocksparse attention was requested."
-        )
     bts, seqlen, query_heads, head_dim = query_states.size()
     key_value_heads = key_states.size(2)
     query_unpad = query_states.view(bts * seqlen, query_heads, head_dim)

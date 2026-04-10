@@ -22,7 +22,6 @@ from .streaming_attn import (
     streaming_attn_sdpa,
     generate_streaming_info_blocksparse_flash_attn,
     streaming_attn_blocksparse_flash_attn,
-    is_blocksparse_available,
 )
 from .tuple_kv_cache import (
     enable_tuple_kv_cache_for_qwen2,
@@ -38,7 +37,7 @@ from .static_kv_cache import (
 from .flashinfer_utils import enable_flashinfer_rmsnorm
 
 from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
-from .attn_compat import flash_attn_func
+from flash_attn import flash_attn_func
 from duo_attn.ulysses import UlyssesAttention
 
 
@@ -461,17 +460,7 @@ def _enable_qwen2_layers_duo_attention_training(
     device = first_module.q_proj.weight.device
     dtype = first_module.q_proj.weight.dtype
 
-    effective_streaming_impl = streaming_attn_implementation
-    if (
-        effective_streaming_impl == "blocksparse"
-        and not is_blocksparse_available()
-    ):
-        print(
-            "block_sparse_attn is unavailable; falling back to sdpa streaming attention."
-        )
-        effective_streaming_impl = "sdpa"
-
-    if effective_streaming_impl == "blocksparse":
+    if streaming_attn_implementation == "blocksparse":
         num_sink_blocks = (sink_size + 127) // 128
         num_recent_blocks = (recent_size + 127) // 128
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -487,7 +476,7 @@ def _enable_qwen2_layers_duo_attention_training(
             device,
         )
         streaming_attn_func = streaming_attn_blocksparse_flash_attn
-    elif effective_streaming_impl == "sdpa":
+    elif streaming_attn_implementation == "sdpa":
         streaming_mask = generate_streaming_mask(
             max_length,
             sink_size,
@@ -497,7 +486,7 @@ def _enable_qwen2_layers_duo_attention_training(
         streaming_attn_func = streaming_attn_sdpa
     else:
         raise ValueError(
-            f"Unsupported streaming attention implementation: {effective_streaming_impl}"
+            f"Unsupported streaming attention implementation: {streaming_attn_implementation}"
         )
 
     for layer in layers:

@@ -21,13 +21,8 @@ from transformers.models.llava_onevision.modeling_llava_onevision import (
 )
 import types
 
-from .attn_compat import (
-    flash_attn_func,
-    flash_attn_varlen_func,
-    index_first_axis,
-    pad_input,
-    unpad_input,
-)
+from flash_attn import flash_attn_func, flash_attn_varlen_func
+from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
 
 
 def _get_unpad_data(padding_mask):
