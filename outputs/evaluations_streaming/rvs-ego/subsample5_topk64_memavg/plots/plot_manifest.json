@@ -1,0 +1,35 @@
+{
+  "aggregate_comparison": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/aggregate_comparison.png",
+  "peak_memory_comparison": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/peak_memory_comparison.png",
+  "quality_latency_tradeoff": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/quality_latency_tradeoff.png",
+  "quality_memory_tradeoff": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/quality_memory_tradeoff.png",
+  "per_conversation_metrics": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/per_conversation_metrics.png",
+  "efficiency_vs_context": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/efficiency_vs_context.png",
+  "quality_vs_context": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/quality_vs_context.png",
+  "question_timeline": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/question_timeline.png",
+  "avg_memory_comparison": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/avg_memory_comparison.png",
+  "quality_avg_memory_tradeoff": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/quality_avg_memory_tradeoff.png",
+  "delta_to_baseline": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/delta_to_baseline.png",
+  "peak_cpu_offload_comparison": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/peak_cpu_offload_comparison.png",
+  "avg_cpu_offload_comparison": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/avg_cpu_offload_comparison.png",
+  "pareto_tradeoffs_with_arrows": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/pareto_tradeoffs_with_arrows.png",
+  "rekv_retrieval_diagnostics": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/rekv_retrieval_diagnostics.png",
+  "retrieval_timeline": "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/retrieval_timeline.png",
+  "sweep_curves": [
+    "outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/plots/sparsity_sweep_curves.png"
+  ],
+  "series_labels": [
+    "full_streaming",
+    "duo_streaming (s=0.5)",
+    "rekv (topk=64,n_local=15000)",
+    "duo_plus_rekv (topk=64,s=0.5)",
+    "duo_plus_rekv (topk=64,s=0.75)"
+  ],
+  "series_sources": {
+    "full_streaming": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/full_streaming/full_streaming.json",
+    "duo_streaming (s=0.5)": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/duo_streaming/duo_streaming_s05.json",
+    "rekv (topk=64,n_local=15000)": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/rekv/rekv_topk64_nlocal15000.json",
+    "duo_plus_rekv (topk=64,s=0.5)": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/duo_plus_rekv/duo_plus_rekv_s05_sink256_recent512_topk64_nlocal15000.json",
+    "duo_plus_rekv (topk=64,s=0.75)": "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk64_memavg/duo_plus_rekv/duo_plus_rekv_s075_sink256_recent512_topk64_nlocal15000.json"
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "groups": [
+    {
+      "dataset": "rvs_ego",
+      "display_label": "duo_plus_rekv (topk=32,s=0.5)",
+      "slice_names": [
+        "subsample5",
+        "subsample5_offset5"
+      ],
+      "quality_range": 0.01333333333333342,
+      "latency_range_sec": 0.17682159546675402,
+      "peak_memory_range_bytes": 1764864,
+      "peak_cpu_offload_range_bytes": 0,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk32_memavg/duo_plus_rekv/duo_plus_rekv_s05_sink256_recent512_topk32_nlocal15000.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_offset5_topk32_memavg/duo_plus_rekv/duo_plus_rekv_s05_sink256_recent512_topk32_nlocal15000.json"
+      ]
+    },
+    {
+      "dataset": "rvs_ego",
+      "display_label": "duo_plus_rekv (topk=32,s=0.75)",
+      "slice_names": [
+        "subsample5",
+        "subsample5_offset5"
+      ],
+      "quality_range": 0.013333333333333308,
+      "latency_range_sec": 0.11799246466665259,
+      "peak_memory_range_bytes": 1762816,
+      "peak_cpu_offload_range_bytes": 0,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk32_memavg/duo_plus_rekv/duo_plus_rekv_s075_sink256_recent512_topk32_nlocal15000.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_offset5_topk32_memavg/duo_plus_rekv/duo_plus_rekv_s075_sink256_recent512_topk32_nlocal15000.json"
+      ]
+    },
+    {
+      "dataset": "rvs_ego",
+      "display_label": "duo_streaming (s=0.5)",
+      "slice_names": [
+        "subsample5",
+        "subsample5_offset5"
+      ],
+      "quality_range": 0.01333333333333353,
+      "latency_range_sec": 0.2868012357330978,
+      "peak_memory_range_bytes": 1280512,
+      "peak_cpu_offload_range_bytes": 0,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk32_memavg/duo_streaming/duo_streaming_s05.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_offset5_topk32_memavg/duo_streaming/duo_streaming_s05.json"
+      ]
+    },
+    {
+      "dataset": "rvs_ego",
+      "display_label": "full_streaming",
+      "slice_names": [
+        "subsample5",
+        "subsample5_offset5"
+      ],
+      "quality_range": 0.04000000000000015,
+      "latency_range_sec": 0.16905133219964535,
+      "peak_memory_range_bytes": 47895040,
+      "peak_cpu_offload_range_bytes": 0,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk32_memavg/full_streaming/full_streaming.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_offset5_topk32_memavg/full_streaming/full_streaming.json"
+      ]
+    },
+    {
+      "dataset": "rvs_ego",
+      "display_label": "rekv (topk=32,n_local=15000)",
+      "slice_names": [
+        "subsample5",
+        "subsample5_offset5"
+      ],
+      "quality_range": 0.01333333333333342,
+      "latency_range_sec": 0.20404048959923482,
+      "peak_memory_range_bytes": 2228736,
+      "peak_cpu_offload_range_bytes": 0,
+      "source_paths": [
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_topk32_memavg/rekv/rekv_topk32_nlocal15000.json",
+        "/workspace/streaming-vqa/outputs/evaluations_streaming/rvs-ego/subsample5_offset5_topk32_memavg/rekv/rekv_topk32_nlocal15000.json"
+      ]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 dataset/
 datasets/
 outputs/*/*step*
-outputs/evaluations_streaming/
+outputs/evaluations_streaming/feature_cache/
 untracked/
 logs/
 *.json.tmp
