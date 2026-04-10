@@ -64,7 +64,7 @@ Modes:
   precompute      Build the shared visual feature cache only
   full            Run full_streaming
   duo             Run duo_streaming with sparsity=0.5
-  rekv            Run rekv with retrieve_size=64 and n_local=15000
+  rekv            Run rekv with configurable retrieve_size and n_local
   ab              Run duo_plus_rekv with the selected hybrid sparsity
   judge           Judge any existing promoted full-eval JSONs in place
   plots           Render plots for any existing promoted full-eval JSONs
@@ -85,6 +85,12 @@ Environment overrides:
   FLUSH_EVERY_CONVERSATIONS
   ATTN_DIR
   AB_SPARSITY
+  REKV_TOPK
+  REKV_N_LOCAL
+  AB_TOPK
+  AB_N_LOCAL
+  AB_DEPLOY_SINK_SIZE
+  AB_DEPLOY_RECENT_SIZE
   VIDEO_DECODE_THREADS
   CLEAR_CUDA_CACHE_ON_RESET
   FEATURE_CACHE_ROOT
@@ -126,7 +132,13 @@ VIDEO_OFFSET=${VIDEO_OFFSET:-0}
 FLUSH_EVERY_VIDEOS=${FLUSH_EVERY_VIDEOS:-1}
 FLUSH_EVERY_CONVERSATIONS=${FLUSH_EVERY_CONVERSATIONS:-1}
 ATTN_DIR=${ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632}
-AB_SPARSITY=${AB_SPARSITY:-0.375}
+AB_SPARSITY=${AB_SPARSITY:-0.5}
+REKV_TOPK=${REKV_TOPK:-64}
+REKV_N_LOCAL=${REKV_N_LOCAL:-15000}
+AB_TOPK=${AB_TOPK:-${REKV_TOPK}}
+AB_N_LOCAL=${AB_N_LOCAL:-${REKV_N_LOCAL}}
+AB_DEPLOY_SINK_SIZE=${AB_DEPLOY_SINK_SIZE:-}
+AB_DEPLOY_RECENT_SIZE=${AB_DEPLOY_RECENT_SIZE:-}
 VIDEO_DECODE_THREADS=${VIDEO_DECODE_THREADS:-4}
 CLEAR_CUDA_CACHE_ON_RESET=${CLEAR_CUDA_CACHE_ON_RESET:-0}
 RESUME=${RESUME:-1}
@@ -173,6 +185,35 @@ ensure_feature_cache_requested() {
     exit 1
   fi
 }
+
+format_sparsity_tag() {
+  local value=$1
+  printf 's%s' "${value//./}"
+}
+
+build_rekv_tag() {
+  printf 'rekv_topk%s_nlocal%s' "${REKV_TOPK}" "${REKV_N_LOCAL}"
+}
+
+build_ab_tag() {
+  local tag="duo_plus_rekv_selected_$(format_sparsity_tag "${AB_SPARSITY}")"
+  if [[ -n "${AB_DEPLOY_SINK_SIZE}" ]]; then
+    tag+="_sink${AB_DEPLOY_SINK_SIZE}"
+  fi
+  if [[ -n "${AB_DEPLOY_RECENT_SIZE}" ]]; then
+    tag+="_recent${AB_DEPLOY_RECENT_SIZE}"
+  fi
+  tag+="_topk${AB_TOPK}_nlocal${AB_N_LOCAL}"
+  printf '%s' "${tag}"
+}
+
+declare -a AB_DEPLOY_ARGS=()
+if [[ -n "${AB_DEPLOY_SINK_SIZE}" ]]; then
+  AB_DEPLOY_ARGS+=(--deploy-sink-size "${AB_DEPLOY_SINK_SIZE}")
+fi
+if [[ -n "${AB_DEPLOY_RECENT_SIZE}" ]]; then
+  AB_DEPLOY_ARGS+=(--deploy-recent-size "${AB_DEPLOY_RECENT_SIZE}")
+fi
 
 run_one() {
   local method=$1
@@ -221,16 +262,12 @@ run_precompute() {
 
 judge_all() {
   local files=()
-  local maybe_files=(
-    "${OUTPUT_ROOT}/full_streaming/full_streaming.json"
-    "${OUTPUT_ROOT}/duo_streaming/duo_streaming_s05.json"
-    "${OUTPUT_ROOT}/rekv/rekv_topk64_nlocal15000.json"
-    "${OUTPUT_ROOT}/duo_plus_rekv/duo_plus_rekv_selected_topk64_nlocal15000.json"
-  )
-  local path
-  for path in "${maybe_files[@]}"; do
-    if [[ -f "${path}" ]]; then
-      files+=("${path}")
+  local method_dir
+  for method_dir in full_streaming duo_streaming rekv duo_plus_rekv; do
+    if [[ -d "${OUTPUT_ROOT}/${method_dir}" ]]; then
+      while IFS= read -r path; do
+        files+=("${path}")
+      done < <(find "${OUTPUT_ROOT}/${method_dir}" -maxdepth 1 -type f -name '*.json' | sort)
     fi
   done
   if [[ ${#files[@]} -eq 0 ]]; then
@@ -242,16 +279,12 @@ judge_all() {
 
 plot_all() {
   local files=()
-  local maybe_files=(
-    "${OUTPUT_ROOT}/full_streaming/full_streaming.json"
-    "${OUTPUT_ROOT}/duo_streaming/duo_streaming_s05.json"
-    "${OUTPUT_ROOT}/rekv/rekv_topk64_nlocal15000.json"
-    "${OUTPUT_ROOT}/duo_plus_rekv/duo_plus_rekv_selected_topk64_nlocal15000.json"
-  )
-  local path
-  for path in "${maybe_files[@]}"; do
-    if [[ -f "${path}" ]]; then
-      files+=("${path}")
+  local method_dir
+  for method_dir in full_streaming duo_streaming rekv duo_plus_rekv; do
+    if [[ -d "${OUTPUT_ROOT}/${method_dir}" ]]; then
+      while IFS= read -r path; do
+        files+=("${path}")
+      done < <(find "${OUTPUT_ROOT}/${method_dir}" -maxdepth 1 -type f -name '*.json' | sort)
     fi
   done
   if [[ ${#files[@]} -eq 0 ]]; then
@@ -263,16 +296,12 @@ plot_all() {
 
 qualitative_all() {
   local files=()
-  local maybe_files=(
-    "${OUTPUT_ROOT}/full_streaming/full_streaming.json"
-    "${OUTPUT_ROOT}/duo_streaming/duo_streaming_s05.json"
-    "${OUTPUT_ROOT}/rekv/rekv_topk64_nlocal15000.json"
-    "${OUTPUT_ROOT}/duo_plus_rekv/duo_plus_rekv_selected_topk64_nlocal15000.json"
-  )
-  local path
-  for path in "${maybe_files[@]}"; do
-    if [[ -f "${path}" ]]; then
-      files+=("${path}")
+  local method_dir
+  for method_dir in full_streaming duo_streaming rekv duo_plus_rekv; do
+    if [[ -d "${OUTPUT_ROOT}/${method_dir}" ]]; then
+      while IFS= read -r path; do
+        files+=("${path}")
+      done < <(find "${OUTPUT_ROOT}/${method_dir}" -maxdepth 1 -type f -name '*.json' | sort)
     fi
   done
   if [[ ${#files[@]} -eq 0 ]]; then
@@ -298,15 +327,16 @@ case "${MODE}" in
     ;;
   rekv)
     ensure_feature_cache_requested
-    run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
+    run_one rekv "$(build_rekv_tag)" --retrieve-size "${REKV_TOPK}" --n-local "${REKV_N_LOCAL}"
     ;;
   ab)
     ensure_feature_cache_requested
-    run_one duo_plus_rekv duo_plus_rekv_selected_topk64_nlocal15000 \
+    run_one duo_plus_rekv "$(build_ab_tag)" \
       --attn-dir "${ATTN_DIR}" \
       --sparsity "${AB_SPARSITY}" \
-      --retrieve-size 64 \
-      --n-local 15000
+      --retrieve-size "${AB_TOPK}" \
+      --n-local "${AB_N_LOCAL}" \
+      "${AB_DEPLOY_ARGS[@]}"
     ;;
   judge)
     judge_all
@@ -321,12 +351,13 @@ case "${MODE}" in
     ensure_feature_cache_requested
     run_one full_streaming full_streaming
     run_one duo_streaming duo_streaming_s05 --attn-dir "${ATTN_DIR}" --sparsity 0.5
-    run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
-    run_one duo_plus_rekv duo_plus_rekv_selected_topk64_nlocal15000 \
+    run_one rekv "$(build_rekv_tag)" --retrieve-size "${REKV_TOPK}" --n-local "${REKV_N_LOCAL}"
+    run_one duo_plus_rekv "$(build_ab_tag)" \
       --attn-dir "${ATTN_DIR}" \
       --sparsity "${AB_SPARSITY}" \
-      --retrieve-size 64 \
-      --n-local 15000
+      --retrieve-size "${AB_TOPK}" \
+      --n-local "${AB_N_LOCAL}" \
+      "${AB_DEPLOY_ARGS[@]}"
     judge_all
     plot_all
     qualitative_all

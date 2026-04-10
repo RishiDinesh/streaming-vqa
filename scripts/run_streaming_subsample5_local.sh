@@ -63,9 +63,7 @@ Usage:
 Modes:
   full            Run full_streaming on the standard subsample5 slice
   duo             Run duo_streaming with sparsity=0.5
-  rekv            Run rekv with retrieve_size=64 and n_local=15000
-  rekv_no_offload Run the short-memory ReKV ablation without long-range offload
-  ab_s0375        Run duo_plus_rekv with sparsity=0.375
+  rekv            Run rekv with configurable retrieve_size and n_local
   ab_s05          Run duo_plus_rekv with sparsity=0.5
   ab_s075         Run duo_plus_rekv with sparsity=0.75
   judge           Judge any existing method JSONs in place
@@ -78,6 +76,8 @@ Environment overrides:
   MODEL
   HF_REPO_ID
   SUBSAMPLE_NAME
+  FEATURE_CACHE_ROOT
+  USE_FEATURE_CACHE
   MAX_VIDEOS
   MAX_CONVERSATIONS
   SAMPLE_FPS
@@ -88,6 +88,12 @@ Environment overrides:
   OUTPUT_ROOT
   VIDEO_DECODE_THREADS
   CLEAR_CUDA_CACHE_ON_RESET
+  REKV_TOPK
+  REKV_N_LOCAL
+  AB_TOPK
+  AB_N_LOCAL
+  AB_DEPLOY_SINK_SIZE
+  AB_DEPLOY_RECENT_SIZE
   EXTRA_ARGS
 
 Examples:
@@ -107,6 +113,11 @@ DATASET=${DATASET:-rvs_ego}
 MODEL=${MODEL:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}
 HF_REPO_ID=${HF_REPO_ID:-Becomebright/RVS}
 SUBSAMPLE_NAME=${SUBSAMPLE_NAME:-subsample5}
+MODEL_SLUG=${MODEL//\//__}
+FPS_SLUG=${SAMPLE_FPS:-0.5}
+FPS_SLUG=${FPS_SLUG//./p}
+FEATURE_CACHE_ROOT=${FEATURE_CACHE_ROOT:-outputs/evaluations_streaming/feature_cache/${DATASET//_/-}/${MODEL_SLUG}/fps_${FPS_SLUG}}
+USE_FEATURE_CACHE=${USE_FEATURE_CACHE:-0}
 MAX_VIDEOS=${MAX_VIDEOS:-5}
 MAX_CONVERSATIONS=${MAX_CONVERSATIONS:-3}
 SAMPLE_FPS=${SAMPLE_FPS:-0.5}
@@ -116,6 +127,12 @@ FLUSH_EVERY_CONVERSATIONS=${FLUSH_EVERY_CONVERSATIONS:-1}
 ATTN_DIR=${ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632}
 VIDEO_DECODE_THREADS=${VIDEO_DECODE_THREADS:-4}
 CLEAR_CUDA_CACHE_ON_RESET=${CLEAR_CUDA_CACHE_ON_RESET:-0}
+REKV_TOPK=${REKV_TOPK:-64}
+REKV_N_LOCAL=${REKV_N_LOCAL:-15000}
+AB_TOPK=${AB_TOPK:-${REKV_TOPK}}
+AB_N_LOCAL=${AB_N_LOCAL:-${REKV_N_LOCAL}}
+AB_DEPLOY_SINK_SIZE=${AB_DEPLOY_SINK_SIZE:-}
+AB_DEPLOY_RECENT_SIZE=${AB_DEPLOY_RECENT_SIZE:-}
 EXTRA_ARGS=${EXTRA_ARGS:-}
 
 activate_duo_env
@@ -140,12 +157,52 @@ COMMON_ARGS=(
   --overwrite-output
 )
 
+if [[ "${USE_FEATURE_CACHE}" == "1" ]]; then
+  if [[ ! -f "${FEATURE_CACHE_ROOT}/manifest.json" ]]; then
+    echo "Feature cache manifest not found under ${FEATURE_CACHE_ROOT}" >&2
+    echo "Build it first, for example:" >&2
+    echo "  DATASET=${DATASET} MODEL=${MODEL} bash scripts/run_streaming_full_eval_local.sh precompute" >&2
+    exit 1
+  fi
+  COMMON_ARGS+=(--feature-cache-root "${FEATURE_CACHE_ROOT}")
+fi
+
 if [[ "${CLEAR_CUDA_CACHE_ON_RESET}" == "1" ]]; then
   COMMON_ARGS+=(--clear-cuda-cache-on-reset)
 fi
 
 OUT_ROOT="outputs/evaluations_streaming/${DATASET//_/-}/${SUBSAMPLE_NAME}"
 OUT_ROOT=${OUTPUT_ROOT:-${OUT_ROOT}}
+
+format_sparsity_tag() {
+  local value=$1
+  printf 's%s' "${value//./}"
+}
+
+build_rekv_tag() {
+  printf 'rekv_topk%s_nlocal%s' "${REKV_TOPK}" "${REKV_N_LOCAL}"
+}
+
+build_ab_tag() {
+  local sparsity=$1
+  local tag="duo_plus_rekv_$(format_sparsity_tag "${sparsity}")"
+  if [[ -n "${AB_DEPLOY_SINK_SIZE}" ]]; then
+    tag+="_sink${AB_DEPLOY_SINK_SIZE}"
+  fi
+  if [[ -n "${AB_DEPLOY_RECENT_SIZE}" ]]; then
+    tag+="_recent${AB_DEPLOY_RECENT_SIZE}"
+  fi
+  tag+="_topk${AB_TOPK}_nlocal${AB_N_LOCAL}"
+  printf '%s' "${tag}"
+}
+
+declare -a AB_DEPLOY_ARGS=()
+if [[ -n "${AB_DEPLOY_SINK_SIZE}" ]]; then
+  AB_DEPLOY_ARGS+=(--deploy-sink-size "${AB_DEPLOY_SINK_SIZE}")
+fi
+if [[ -n "${AB_DEPLOY_RECENT_SIZE}" ]]; then
+  AB_DEPLOY_ARGS+=(--deploy-recent-size "${AB_DEPLOY_RECENT_SIZE}")
+fi
 
 run_one() {
   local method=$1
@@ -162,19 +219,12 @@ run_one() {
 
 collect_existing_files() {
   local files=()
-  local candidates=(
-    "${OUT_ROOT}/full_streaming/full_streaming.json"
-    "${OUT_ROOT}/duo_streaming/duo_streaming_s05.json"
-    "${OUT_ROOT}/rekv/rekv_topk64_nlocal15000.json"
-    "${OUT_ROOT}/rekv_no_offload/rekv_no_offload_nlocal15000.json"
-    "${OUT_ROOT}/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json"
-    "${OUT_ROOT}/duo_plus_rekv/duo_plus_rekv_s05_topk64_nlocal15000.json"
-    "${OUT_ROOT}/duo_plus_rekv/duo_plus_rekv_s075_topk64_nlocal15000.json"
-  )
-  local path
-  for path in "${candidates[@]}"; do
-    if [[ -f "${path}" ]]; then
-      files+=("${path}")
+  local method_dir
+  for method_dir in full_streaming duo_streaming rekv duo_plus_rekv; do
+    if [[ -d "${OUT_ROOT}/${method_dir}" ]]; then
+      while IFS= read -r path; do
+        files+=("${path}")
+      done < <(find "${OUT_ROOT}/${method_dir}" -maxdepth 1 -type f -name '*.json' | sort)
     fi
   done
   if [[ ${#files[@]} -eq 0 ]]; then
@@ -209,31 +259,23 @@ case "${MODE}" in
     run_one duo_streaming duo_streaming_s05 --attn-dir "${ATTN_DIR}" --sparsity 0.5
     ;;
   rekv)
-    run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
-    ;;
-  rekv_no_offload)
-    run_one rekv_no_offload rekv_no_offload_nlocal15000 --n-local 15000
-    ;;
-  ab_s0375)
-    run_one duo_plus_rekv duo_plus_rekv_s0375_topk64_nlocal15000 \
-      --attn-dir "${ATTN_DIR}" \
-      --sparsity 0.375 \
-      --retrieve-size 64 \
-      --n-local 15000
+    run_one rekv "$(build_rekv_tag)" --retrieve-size "${REKV_TOPK}" --n-local "${REKV_N_LOCAL}"
     ;;
   ab_s05)
-    run_one duo_plus_rekv duo_plus_rekv_s05_topk64_nlocal15000 \
+    run_one duo_plus_rekv "$(build_ab_tag 0.5)" \
       --attn-dir "${ATTN_DIR}" \
       --sparsity 0.5 \
-      --retrieve-size 64 \
-      --n-local 15000
+      --retrieve-size "${AB_TOPK}" \
+      --n-local "${AB_N_LOCAL}" \
+      "${AB_DEPLOY_ARGS[@]}"
     ;;
   ab_s075)
-    run_one duo_plus_rekv duo_plus_rekv_s075_topk64_nlocal15000 \
+    run_one duo_plus_rekv "$(build_ab_tag 0.75)" \
       --attn-dir "${ATTN_DIR}" \
       --sparsity 0.75 \
-      --retrieve-size 64 \
-      --n-local 15000
+      --retrieve-size "${AB_TOPK}" \
+      --n-local "${AB_N_LOCAL}" \
+      "${AB_DEPLOY_ARGS[@]}"
     ;;
   judge)
     judge_all
@@ -247,23 +289,19 @@ case "${MODE}" in
   all)
     run_one full_streaming full_streaming
     run_one duo_streaming duo_streaming_s05 --attn-dir "${ATTN_DIR}" --sparsity 0.5
-    run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
-    run_one rekv_no_offload rekv_no_offload_nlocal15000 --n-local 15000
-    run_one duo_plus_rekv duo_plus_rekv_s0375_topk64_nlocal15000 \
-      --attn-dir "${ATTN_DIR}" \
-      --sparsity 0.375 \
-      --retrieve-size 64 \
-      --n-local 15000
-    run_one duo_plus_rekv duo_plus_rekv_s05_topk64_nlocal15000 \
+    run_one rekv "$(build_rekv_tag)" --retrieve-size "${REKV_TOPK}" --n-local "${REKV_N_LOCAL}"
+    run_one duo_plus_rekv "$(build_ab_tag 0.5)" \
       --attn-dir "${ATTN_DIR}" \
       --sparsity 0.5 \
-      --retrieve-size 64 \
-      --n-local 15000
-    run_one duo_plus_rekv duo_plus_rekv_s075_topk64_nlocal15000 \
+      --retrieve-size "${AB_TOPK}" \
+      --n-local "${AB_N_LOCAL}" \
+      "${AB_DEPLOY_ARGS[@]}"
+    run_one duo_plus_rekv "$(build_ab_tag 0.75)" \
       --attn-dir "${ATTN_DIR}" \
       --sparsity 0.75 \
-      --retrieve-size 64 \
-      --n-local 15000
+      --retrieve-size "${AB_TOPK}" \
+      --n-local "${AB_N_LOCAL}" \
+      "${AB_DEPLOY_ARGS[@]}"
     judge_all
     plot_all
     qualitative_all

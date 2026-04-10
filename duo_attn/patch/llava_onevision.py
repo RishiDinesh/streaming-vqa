@@ -46,6 +46,25 @@ from .attn_compat import flash_attn_func
 from duo_attn.ulysses import UlyssesAttention
 
 
+def _ensure_qwen2_attention_metadata(module):
+    if not hasattr(module, "head_dim"):
+        module.head_dim = module.q_proj.weight.shape[0] // module.q_proj.weight.shape[1]
+
+    if not hasattr(module, "num_key_value_heads"):
+        module.num_key_value_heads = module.k_proj.weight.shape[0] // module.head_dim
+
+    if not hasattr(module, "num_key_value_groups"):
+        module.num_key_value_groups = module.q_proj.weight.shape[0] // (
+            module.num_key_value_heads * module.head_dim
+        )
+
+    if not hasattr(module, "num_heads"):
+        module.num_heads = module.num_key_value_heads * module.num_key_value_groups
+
+    if not hasattr(module, "hidden_size"):
+        module.hidden_size = module.num_heads * module.head_dim
+
+
 def qwen2_duo_attention_forward_two_way(
     self,
     hidden_states: torch.Tensor,
@@ -59,6 +78,7 @@ def qwen2_duo_attention_forward_two_way(
     **kwargs,
 ):
     bsz_x_2, q_len, _ = hidden_states.size()
+    _ensure_qwen2_attention_metadata(self)
 
     if bsz_x_2 % 2 != 0:
         raise ValueError(
@@ -173,6 +193,7 @@ def qwen2_duo_attention_forward_one_way_reordered(
     **kwargs,
 ):
     bsz, q_len, _ = hidden_states.size()
+    _ensure_qwen2_attention_metadata(self)
 
     query_states = self.q_proj(hidden_states)
     key_states = self.k_proj(hidden_states)
@@ -466,6 +487,7 @@ def _enable_qwen2_layers_duo_attention_training(
     streaming_attn_implementation="blocksparse",
 ):
     first_module = layers[0].self_attn
+    _ensure_qwen2_attention_metadata(first_module)
     device = first_module.q_proj.weight.device
     dtype = first_module.q_proj.weight.dtype
 
@@ -510,6 +532,7 @@ def _enable_qwen2_layers_duo_attention_training(
 
     for layer in layers:
         module = layer.self_attn
+        _ensure_qwen2_attention_metadata(module)
         module.forward = types.MethodType(qwen2_duo_attention_forward_two_way, module)
         module.sink_size = sink_size
         module.recent_size = recent_size
@@ -541,11 +564,13 @@ def _enable_qwen2_layers_duo_attention_eval(
     recent_size,
 ):
     first_module = layers[0].self_attn
+    _ensure_qwen2_attention_metadata(first_module)
     device = first_module.q_proj.weight.device
     dtype = first_module.q_proj.weight.dtype
 
     for idx, layer in enumerate(layers):
         module = layer.self_attn
+        _ensure_qwen2_attention_metadata(module)
         layer_full_attention_heads = torch.tensor(
             full_attention_heads[idx], device=device, dtype=dtype
         )
@@ -594,11 +619,13 @@ def _enable_qwen2_layers_duo_attention_static_kv_cache_eval(
     full_attention_heads,
 ):
     first_module = layers[0].self_attn
+    _ensure_qwen2_attention_metadata(first_module)
     device = first_module.q_proj.weight.device
     dtype = first_module.q_proj.weight.dtype
 
     for idx, layer in enumerate(layers):
         module = layer.self_attn
+        _ensure_qwen2_attention_metadata(module)
         layer_full_attention_heads = torch.tensor(
             full_attention_heads[idx], device=device, dtype=dtype
         )

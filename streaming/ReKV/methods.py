@@ -286,6 +286,12 @@ def read_peak_memory_bytes(device: torch.device) -> int | None:
     return int(torch.cuda.max_memory_allocated(device))
 
 
+def read_current_memory_bytes(device: torch.device) -> int | None:
+    if device.type != "cuda":
+        return None
+    return int(torch.cuda.memory_allocated(device))
+
+
 def _empty_retrieval_stats() -> dict[str, Any]:
     return {
         "retrieval_latency_sec": None,
@@ -532,9 +538,12 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
             max_new_tokens=self.max_new_tokens,
             device=self.device,
         )
+        current_memory_bytes = read_current_memory_bytes(self.device)
+        peak_memory_bytes = read_peak_memory_bytes(self.device)
         method_stats = self._build_answer_stats(question, metadata)
         method_stats.update(decode_stats)
-        method_stats["peak_memory_bytes"] = read_peak_memory_bytes(self.device)
+        method_stats["current_memory_bytes"] = current_memory_bytes
+        method_stats["peak_memory_bytes"] = peak_memory_bytes
         method_stats["frames_ingested_so_far"] = self.frames_ingested
         return MethodAnswer(prediction=prediction, stats=method_stats)
 

@@ -11,8 +11,10 @@
   - no LongBench-style tail replay
 - Current promoted hybrid:
   - `duo_plus_rekv`
-  - `sparsity = 0.375`
-  - `retrieve_size = 64`
+  - `sparsity = 0.75`
+  - `deploy_sink_size = 256`
+  - `deploy_recent_size = 512`
+  - `retrieve_size = 32`
   - `n_local = 15000`
 - Current strongest overall standalone method on the validated subsamples: `rekv`
 - `duo_n_init = 601` (block-aligned sink token count: system prompt + 3 frames)
@@ -25,8 +27,9 @@
   - local `duo` Conda env is installed at `/root/miniforge3/envs/duo`
   - direct local ROCm execution is validated in this environment
   - `rekv` smoke eval + judge + plots now run end to end on the 0.5B model
-  - previous subsample results used the unfixed n_init=13 and should be rerun
-  - full-dataset runs are ready but have not been executed end to end yet
+  - matched-topk subset tuning now supports both peak and average memory metrics
+  - current active reruns are subset-only, cached, and do not rerun precompute
+  - full-dataset runs were paused until subset + memory-instrumentation checks finish
 
 ## Current Direction Update
 
@@ -43,8 +46,9 @@ As of `2026-04-10`, the active ReKV lane should reflect the following project de
   - `duo_plus_rekv` with `sparsity = 0.75`
 - We do **not** plan to spend compute on a `duo_streaming (s=0.0)` control unless a later review shows it is necessary.
 - These subsample sweeps are mainly for checking whether higher Duo sparsity on top of ReKV gives:
-  - additional peak-memory savings
   - acceptable accuracy retention relative to native `rekv`
+  - lower latency at matched quality
+  - better peak and/or average memory behavior
 
 ## External Paper Notes
 
@@ -101,11 +105,19 @@ Practical interpretation for this codebase:
 
 ## Immediate Next Experimental Priorities
 
-1. Run promoted full-eval comparisons on both `RVS-Ego` and `RVS-Movie`.
-2. Run subsample checks for `duo_plus_rekv` at `sparsity = 0.50` and `0.75`.
-3. Confirm whether those higher-sparsity hybrids reduce peak memory while staying close to native `rekv`.
-4. Run the `rekv_no_offload` short-memory ablation on the same subsamples as a StreamMem-style control.
-5. Only after the subsample figures and diagnostics look correct, launch the narrow promoted full runs.
+1. Finish cached subset reruns for both `RVS-Ego` and `RVS-Movie` at:
+   - matched `topk=32`
+   - default `topk=64`
+2. Use the new plots to compare:
+   - peak GPU memory
+   - average GPU memory
+   - peak CPU/offloaded KV
+   - average CPU/offloaded KV
+   - latency / quality tradeoffs
+3. Decide whether the paper story is:
+   - default-configuration reproduction (`topk=64`)
+   - or matched-budget Duo-vs-ReKV (`topk=32`)
+4. Only after the updated subset figures look convincing, relaunch any full-dataset runs.
 
 ## Single-MI300X Speed Notes
 
@@ -125,6 +137,9 @@ Implemented safe speed knobs:
   - reuse them across all methods
 - Result logging for ReKV-based methods is derived from already-computed state.
   - No extra benchmark-time forward passes were added for the new plots/figures.
+- Memory instrumentation now records both peak and average-style aggregates:
+  - GPU: `peak_memory_bytes`, `avg_gpu_memory_bytes_current`
+  - CPU/offload: `peak_cpu_offload_bytes`, `avg_cpu_offload_bytes_current`
 
 What we should still avoid for correctness:
 
@@ -138,6 +153,35 @@ Recommended local settings for preview and full runs:
 - keep `USE_FEATURE_CACHE=1`
 - leave `CLEAR_CUDA_CACHE_ON_RESET=0` unless fragmentation becomes a real issue
 - try `VIDEO_DECODE_THREADS=4` first, then increase if CPU decode is clearly the bottleneck
+
+## Current Matched-TopK Findings
+
+### `RVS-Ego / subsample5`
+
+Matched `topk=64`:
+
+- `rekv topk=64`: score `0.7733`, latency `0.7978s`, GPU `2.668 GB`, CPU `0.942 GB`
+- `duo_plus_rekv topk=64`: score `0.7600`, latency `0.9185s`, GPU `2.671 GB`, CPU `0.938 GB`
+
+Interpretation:
+
+- At the default ReKV setting, `duo_plus_rekv` does **not** currently help on this subset.
+
+Matched `topk=32`:
+
+- `rekv topk=32`: score `0.7733`, latency `0.6350s`, GPU `2.437 GB`, CPU `0.942 GB`
+- `duo_plus_rekv topk=32`: score `0.7733`, latency `0.5686s`, GPU `2.444 GB`, CPU `0.938 GB`
+
+Interpretation:
+
+- At a matched tuned retrieval budget, `duo_plus_rekv` improves latency while preserving quality.
+- This is currently a latency-at-matched-quality story, not a peak-GPU-memory win story.
+
+### Consequence for current reporting
+
+- If staying closest to the original ReKV paper defaults, keep `topk=64` and treat `rekv` as the stronger default baseline.
+- If the goal is a fair Duo-vs-ReKV comparison, use matched settings, especially `topk=32`.
+- Because peak-only memory can hide different steady-state behavior, the pipeline now emits average-memory plots as well.
 - keep `FLUSH_EVERY_CONVERSATIONS=1` so interrupted long runs can resume from inside a video
 - only change `FLUSH_EVERY_VIDEOS` if we want a small I/O reduction and are comfortable with less frequent checkpointing
 

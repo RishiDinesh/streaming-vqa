@@ -24,12 +24,12 @@ Paper story and experiment strategy
   - `RVS-Movie`
 - Main intended claim:
   - `DuoAttention` alone is not expected to beat streaming SOTA.
-  - The useful claim is that `DuoAttention` can be added on top of `ReKV` to reduce memory while preserving most of `ReKV`'s accuracy.
+  - The useful claim is that `DuoAttention` can be added on top of `ReKV` to improve the efficiency / quality tradeoff.
 - Because compute is limited, the plan is:
   1. run subsamples first
-  2. compare `duo_plus_rekv` at `s=0.375`, `s=0.5`, and `s=0.75`
-  3. choose exactly one hybrid sparsity for full eval
-  4. run the full datasets only once with the promoted set
+  2. compare matched `rekv` vs `duo_plus_rekv` operating points
+  3. inspect both peak and average memory metrics
+  4. only then decide whether any full eval is worth the compute
 - We do not plan to spend compute on `duo_streaming (s=0.0)` unless later analysis shows it is necessary.
 
 Core streaming semantics
@@ -47,14 +47,13 @@ Methods in play
 Main full-eval set:
 - `full_streaming`
 - `duo_streaming` with `sparsity = 0.5`
-- `rekv` with `retrieve_size = 64`, `n_local = 15000`
-- one chosen `duo_plus_rekv` sparsity via `AB_SPARSITY`
+- `rekv` with configurable `retrieve_size` and `n_local`
+- `duo_plus_rekv` with configurable sparsity / deploy window / retrieval budget
 
 Subsample-only / ablation set:
-- `duo_plus_rekv` with `s=0.375`
 - `duo_plus_rekv` with `s=0.5`
 - `duo_plus_rekv` with `s=0.75`
-- `rekv_no_offload`
+- matched `rekv` / `duo_plus_rekv` sweeps at `topk=32` and `topk=64`
 
 Important implementation state
 ------------------------------
@@ -69,6 +68,7 @@ Important implementation state
 - Plotting/reporting support is implemented for:
   - benchmark tables
   - quality vs memory / latency
+  - quality vs average GPU memory
   - sparsity sweeps
   - CPU offload comparisons
   - retrieval timeline plots
@@ -175,6 +175,42 @@ Important fixes already made
 - File: `streaming/ReKV/datasets.py`
 - `SampledVideo.get_frame(s)` now falls back to single-frame reads if a batched
   `decord` fetch fails on a given mp4.
+
+10. Average-memory instrumentation and matched-topk evaluation support
+- Files:
+  - `streaming/ReKV/methods.py`
+  - `streaming/ReKV/run_eval.py`
+  - `streaming/ReKV/plot_results.py`
+  - `scripts/run_streaming_subsample5_local.sh`
+  - `scripts/run_streaming_subsample_matrix_local.sh`
+  - `scripts/run_streaming_full_eval_local.sh`
+- GPU memory logging now records both:
+  - `current_memory_bytes` per answered conversation
+  - `peak_memory_bytes`
+- Aggregates now include:
+  - `avg_gpu_memory_bytes_current`
+  - `peak_memory_bytes`
+  - `avg_cpu_offload_bytes_current`
+  - `peak_cpu_offload_bytes`
+- Plotting now emits:
+  - `avg_memory_comparison.png`
+  - `avg_cpu_offload_comparison.png`
+  - `quality_avg_memory_tradeoff.png`
+- Subsample / full launchers now accept configurable:
+  - `REKV_TOPK`, `REKV_N_LOCAL`
+  - `AB_TOPK`, `AB_N_LOCAL`
+  - `AB_DEPLOY_SINK_SIZE`, `AB_DEPLOY_RECENT_SIZE`
+- Output roots can now be suffixed so `topk=32` and `topk=64` runs coexist cleanly.
+
+11. Current matched-topk findings on `RVS-Ego/subsample5`
+- At the default ReKV setting (`topk=64`), `duo_plus_rekv` did not help:
+  - worse or neutral on quality / latency / GPU memory
+- At matched `topk=32`, `duo_plus_rekv` did help on latency while matching quality:
+  - `rekv topk=32`: score `0.7733`, latency `0.6350s`, GPU `2.437 GB`
+  - `duo_plus_rekv topk=32`: score `0.7733`, latency `0.5686s`, GPU `2.444 GB`
+- Current defensible claim is therefore:
+  - `duo_plus_rekv` may improve answer latency at matched quality under a tuned retrieval budget
+  - this is not currently a default-`topk=64` win story
 
 Monitoring and resume behavior
 ------------------------------

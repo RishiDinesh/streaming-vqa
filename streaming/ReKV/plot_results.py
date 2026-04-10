@@ -217,6 +217,26 @@ def plot_memory_comparison(results: list[dict], output_dir: Path) -> Path:
     return out_path
 
 
+def plot_avg_memory_comparison(results: list[dict], output_dir: Path) -> Path | None:
+    results = ordered_results(results)
+    values = [maybe_gb(item["aggregate_metrics"].get("avg_gpu_memory_bytes_current")) for item in results]
+    if not any(value is not None for value in values):
+        return None
+
+    labels = [display_label(item) for item in results]
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.bar(labels, [value if value is not None else 0.0 for value in values], color=[color_for_payload(item) for item in results])
+    ax.set_title("Avg GPU Memory")
+    ax.set_ylabel("GB")
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.tick_params(axis="x", rotation=15)
+    fig.tight_layout()
+    out_path = output_dir / "avg_memory_comparison.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
 def plot_cpu_offload_comparison(results: list[dict], output_dir: Path) -> Path | None:
     results = ordered_results(results)
     values = [maybe_gb(item["aggregate_metrics"].get("peak_cpu_offload_bytes")) for item in results]
@@ -232,6 +252,26 @@ def plot_cpu_offload_comparison(results: list[dict], output_dir: Path) -> Path |
     ax.tick_params(axis="x", rotation=15)
     fig.tight_layout()
     out_path = output_dir / "peak_cpu_offload_comparison.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def plot_avg_cpu_offload_comparison(results: list[dict], output_dir: Path) -> Path | None:
+    results = ordered_results(results)
+    values = [maybe_gb(item["aggregate_metrics"].get("avg_cpu_offload_bytes_current")) for item in results]
+    if not any(value is not None for value in values):
+        return None
+
+    labels = [display_label(item) for item in results]
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.bar(labels, [value if value is not None else 0.0 for value in values], color=[color_for_payload(item) for item in results])
+    ax.set_title("Avg CPU / Offloaded KV")
+    ax.set_ylabel("GB")
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.tick_params(axis="x", rotation=15)
+    fig.tight_layout()
+    out_path = output_dir / "avg_cpu_offload_comparison.png"
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     return out_path
@@ -296,6 +336,44 @@ def plot_quality_memory_tradeoff(results: list[dict], output_dir: Path) -> Path:
     ax.grid(True, linestyle="--", alpha=0.3)
     fig.tight_layout()
     out_path = output_dir / "quality_memory_tradeoff.png"
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def plot_quality_avg_memory_tradeoff(results: list[dict], output_dir: Path) -> Path | None:
+    results = ordered_results(results)
+    fig, ax = plt.subplots(figsize=(7, 5))
+    any_points = False
+    for payload in results:
+        label = display_label(payload)
+        aggregate_metrics = payload["aggregate_metrics"]
+        quality_key = aggregate_quality_key(payload)
+        x = maybe_gb(aggregate_metrics.get("avg_gpu_memory_bytes_current"))
+        y = aggregate_metrics.get(quality_key)
+        if x is None or y is None:
+            continue
+        any_points = True
+        ax.scatter(
+            [x],
+            [y],
+            s=110,
+            color=color_for_payload(payload),
+            marker=marker_for_payload(payload),
+            label=label,
+        )
+        ax.annotate(label, (x, y), xytext=(5, 5), textcoords="offset points")
+
+    if not any_points:
+        plt.close(fig)
+        return None
+
+    ax.set_title("Quality vs Avg GPU Memory")
+    ax.set_xlabel("Avg GPU Memory (GB)")
+    ax.set_ylabel(aggregate_quality_label(results[0]) if results else "Quality")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    out_path = output_dir / "quality_avg_memory_tradeoff.png"
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     return out_path
@@ -447,6 +525,7 @@ def flatten_conversations(payload: dict) -> list[dict]:
                     "question": conversation["question"],
                     "end_time": float(conversation["end_time"]),
                     "frames_ingested": int(conversation["num_frames_ingested_before_answer"]),
+                    "current_memory_bytes": conversation["method_stats"].get("current_memory_bytes"),
                     "peak_memory_bytes": conversation["method_stats"].get("peak_memory_bytes"),
                     "cpu_offload_bytes_current": conversation["method_stats"].get("cpu_offload_bytes_current"),
                     "cpu_offload_bytes_peak": conversation["method_stats"].get("cpu_offload_bytes_peak"),
@@ -795,12 +874,21 @@ def main() -> int:
         "quality_vs_context": str(plot_quality_vs_context(results, output_dir)),
         "question_timeline": str(plot_question_timeline(results, output_dir)),
     }
+    avg_memory_plot = plot_avg_memory_comparison(results, output_dir)
+    if avg_memory_plot is not None:
+        generated["avg_memory_comparison"] = str(avg_memory_plot)
+    avg_memory_tradeoff_plot = plot_quality_avg_memory_tradeoff(results, output_dir)
+    if avg_memory_tradeoff_plot is not None:
+        generated["quality_avg_memory_tradeoff"] = str(avg_memory_tradeoff_plot)
     delta_plot = plot_delta_to_baseline(results, output_dir)
     if delta_plot is not None:
         generated["delta_to_baseline"] = str(delta_plot)
     cpu_offload_plot = plot_cpu_offload_comparison(results, output_dir)
     if cpu_offload_plot is not None:
         generated["peak_cpu_offload_comparison"] = str(cpu_offload_plot)
+    avg_cpu_offload_plot = plot_avg_cpu_offload_comparison(results, output_dir)
+    if avg_cpu_offload_plot is not None:
+        generated["avg_cpu_offload_comparison"] = str(avg_cpu_offload_plot)
     pareto_plot = plot_pareto_with_arrows(results, output_dir)
     if pareto_plot is not None:
         generated["pareto_tradeoffs_with_arrows"] = str(pareto_plot)

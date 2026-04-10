@@ -177,6 +177,7 @@ def summarize_aggregate_metrics(video_results: list[dict[str, Any]]) -> dict[str
     ttfts: list[float] = []
     answer_latencies: list[float] = []
     frame_ingest_latencies: list[float] = []
+    gpu_memory_currents: list[int] = []
     peak_memories: list[int] = []
     cpu_offload_currents: list[int] = []
     cpu_offload_peaks: list[int] = []
@@ -201,6 +202,8 @@ def summarize_aggregate_metrics(video_results: list[dict[str, Any]]) -> dict[str
                 ttfts.append(float(method_stats["ttft_sec"]))
             if method_stats.get("answer_latency_sec") is not None:
                 answer_latencies.append(float(method_stats["answer_latency_sec"]))
+            if method_stats.get("current_memory_bytes") is not None:
+                gpu_memory_currents.append(int(method_stats["current_memory_bytes"]))
             if method_stats.get("peak_memory_bytes") is not None:
                 peak_memories.append(int(method_stats["peak_memory_bytes"]))
             if method_stats.get("cpu_offload_bytes_current") is not None:
@@ -228,6 +231,11 @@ def summarize_aggregate_metrics(video_results: list[dict[str, Any]]) -> dict[str
         "avg_retrieved_block_count": (
             float(sum(retrieved_block_counts) / len(retrieved_block_counts))
             if retrieved_block_counts
+            else None
+        ),
+        "avg_gpu_memory_bytes_current": (
+            float(sum(gpu_memory_currents) / len(gpu_memory_currents))
+            if gpu_memory_currents
             else None
         ),
         "peak_memory_bytes": max(peak_memories) if peak_memories else None,

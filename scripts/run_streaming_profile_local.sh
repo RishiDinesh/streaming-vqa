@@ -63,8 +63,6 @@ Usage:
 Modes:
   full            Profile full_streaming on one representative video
   rekv            Profile rekv
-  rekv_no_offload Profile the short-memory ReKV ablation
-  ab_s0375        Profile duo_plus_rekv with sparsity=0.375
   ab_s05          Profile duo_plus_rekv with sparsity=0.5
   ab_s075         Profile duo_plus_rekv with sparsity=0.75
   all             Run the recommended profiling set
@@ -180,16 +178,6 @@ case "${MODE}" in
   rekv)
     run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
     ;;
-  rekv_no_offload)
-    run_one rekv_no_offload rekv_no_offload_nlocal15000 --n-local 15000
-    ;;
-  ab_s0375)
-    run_one duo_plus_rekv duo_plus_rekv_s0375_topk64_nlocal15000 \
-      --attn-dir "${ATTN_DIR}" \
-      --sparsity 0.375 \
-      --retrieve-size 64 \
-      --n-local 15000
-    ;;
   ab_s05)
     run_one duo_plus_rekv duo_plus_rekv_s05_topk64_nlocal15000 \
       --attn-dir "${ATTN_DIR}" \
@@ -206,12 +194,6 @@ case "${MODE}" in
     ;;
   all)
     run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
-    run_one rekv_no_offload rekv_no_offload_nlocal15000 --n-local 15000
-    run_one duo_plus_rekv duo_plus_rekv_s0375_topk64_nlocal15000 \
-      --attn-dir "${ATTN_DIR}" \
-      --sparsity 0.375 \
-      --retrieve-size 64 \
-      --n-local 15000
     run_one duo_plus_rekv duo_plus_rekv_s05_topk64_nlocal15000 \
       --attn-dir "${ATTN_DIR}" \
       --sparsity 0.5 \

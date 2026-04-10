@@ -71,6 +71,8 @@ Environment overrides:
   STATUS_FILE
   LOG_ROOT
   MONITOR_INTERVAL_SEC
+  FEATURE_CACHE_ROOT
+  USE_FEATURE_CACHE
   MAX_VIDEOS
   MAX_CONVERSATIONS
   SAMPLE_FPS
@@ -79,6 +81,13 @@ Environment overrides:
   CLEAR_CUDA_CACHE_ON_RESET
   FLUSH_EVERY_CONVERSATIONS
   ATTN_DIR
+  OUTPUT_SUFFIX
+  REKV_TOPK
+  REKV_N_LOCAL
+  AB_TOPK
+  AB_N_LOCAL
+  AB_DEPLOY_SINK_SIZE
+  AB_DEPLOY_RECENT_SIZE
   EXTRA_ARGS
 EOF
 }
@@ -98,10 +107,19 @@ MAX_VIDEOS=${MAX_VIDEOS:-5}
 MAX_CONVERSATIONS=${MAX_CONVERSATIONS:-3}
 SAMPLE_FPS=${SAMPLE_FPS:-0.5}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-64}
+FEATURE_CACHE_ROOT=${FEATURE_CACHE_ROOT:-}
+USE_FEATURE_CACHE=${USE_FEATURE_CACHE:-0}
 VIDEO_DECODE_THREADS=${VIDEO_DECODE_THREADS:-4}
 CLEAR_CUDA_CACHE_ON_RESET=${CLEAR_CUDA_CACHE_ON_RESET:-0}
 FLUSH_EVERY_CONVERSATIONS=${FLUSH_EVERY_CONVERSATIONS:-1}
 ATTN_DIR=${ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632}
+OUTPUT_SUFFIX=${OUTPUT_SUFFIX:-}
+REKV_TOPK=${REKV_TOPK:-64}
+REKV_N_LOCAL=${REKV_N_LOCAL:-15000}
+AB_TOPK=${AB_TOPK:-${REKV_TOPK}}
+AB_N_LOCAL=${AB_N_LOCAL:-${REKV_N_LOCAL}}
+AB_DEPLOY_SINK_SIZE=${AB_DEPLOY_SINK_SIZE:-}
+AB_DEPLOY_RECENT_SIZE=${AB_DEPLOY_RECENT_SIZE:-}
 EXTRA_ARGS=${EXTRA_ARGS:-}
 
 activate_duo_env
@@ -142,14 +160,44 @@ case "${MODE}" in
     ;;
 esac
 
+format_sparsity_tag() {
+  local value=$1
+  printf 's%s' "${value//./}"
+}
+
+build_rekv_tag() {
+  printf 'rekv_topk%s_nlocal%s' "${REKV_TOPK}" "${REKV_N_LOCAL}"
+}
+
+build_ab_tag() {
+  local sparsity=$1
+  local tag="duo_plus_rekv_$(format_sparsity_tag "${sparsity}")"
+  if [[ -n "${AB_DEPLOY_SINK_SIZE}" ]]; then
+    tag+="_sink${AB_DEPLOY_SINK_SIZE}"
+  fi
+  if [[ -n "${AB_DEPLOY_RECENT_SIZE}" ]]; then
+    tag+="_recent${AB_DEPLOY_RECENT_SIZE}"
+  fi
+  tag+="_topk${AB_TOPK}_nlocal${AB_N_LOCAL}"
+  printf '%s' "${tag}"
+}
+
+slice_output_root() {
+  local dataset_dash=$1
+  local slice=$2
+  local root="outputs/evaluations_streaming/${dataset_dash}/${slice}"
+  if [[ -n "${OUTPUT_SUFFIX}" ]]; then
+    root+="_${OUTPUT_SUFFIX}"
+  fi
+  printf '%s' "${root}"
+}
+
 declare -a STEPS=(
-  "full|outputs/evaluations_streaming/{dataset_dash}/{slice}/full_streaming/full_streaming.json"
-  "duo|outputs/evaluations_streaming/{dataset_dash}/{slice}/duo_streaming/duo_streaming_s05.json"
-  "rekv|outputs/evaluations_streaming/{dataset_dash}/{slice}/rekv/rekv_topk64_nlocal15000.json"
-  "rekv_no_offload|outputs/evaluations_streaming/{dataset_dash}/{slice}/rekv_no_offload/rekv_no_offload_nlocal15000.json"
-  "ab_s0375|outputs/evaluations_streaming/{dataset_dash}/{slice}/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json"
-  "ab_s05|outputs/evaluations_streaming/{dataset_dash}/{slice}/duo_plus_rekv/duo_plus_rekv_s05_topk64_nlocal15000.json"
-  "ab_s075|outputs/evaluations_streaming/{dataset_dash}/{slice}/duo_plus_rekv/duo_plus_rekv_s075_topk64_nlocal15000.json"
+  "full|full_streaming/full_streaming.json"
+  "duo|duo_streaming/duo_streaming_s05.json"
+  "rekv|rekv/$(build_rekv_tag).json"
+  "ab_s05|duo_plus_rekv/$(build_ab_tag 0.5).json"
+  "ab_s075|duo_plus_rekv/$(build_ab_tag 0.75).json"
   "judge|"
   "plots|"
   "qualitative|"
@@ -167,11 +215,11 @@ EOF
 }
 
 render_output_path() {
-  local template=$1
+  local relative_path=$1
   local dataset=$2
   local slice=$3
   local dataset_dash=${dataset//_/-}
-  printf '%s' "${template//\{dataset_dash\}/${dataset_dash}}" | sed "s|{slice}|${slice}|g"
+  printf '%s/%s' "$(slice_output_root "${dataset_dash}" "${slice}")" "${relative_path}"
 }
 
 monitor_checkpoint() {
@@ -241,17 +289,19 @@ run_step() {
   local log_path="${LOG_ROOT}/${dataset_dash}_${slice}_${mode}.log"
   local output_path=""
   local monitor_pid=""
+  local current_output_root
 
   CURRENT_STEP=$((CURRENT_STEP + 1))
 
   if [[ -n "${output_template}" ]]; then
     output_path=$(render_output_path "${output_template}" "${dataset}" "${slice}")
   fi
+  current_output_root=$(slice_output_root "${dataset_dash}" "${slice}")
 
   if [[ "${mode}" == "plots" ]]; then
-    rm -rf "outputs/evaluations_streaming/${dataset_dash}/${slice}/plots"
+    rm -rf "${current_output_root}/plots"
   elif [[ "${mode}" == "qualitative" ]]; then
-    rm -rf "outputs/evaluations_streaming/${dataset_dash}/${slice}/qualitative"
+    rm -rf "${current_output_root}/qualitative"
   fi
 
   write_status "phase: launching
@@ -277,11 +327,19 @@ checkpoint: ${output_path:-none}"
       MAX_CONVERSATIONS="${MAX_CONVERSATIONS}" \
       SAMPLE_FPS="${SAMPLE_FPS}" \
       MAX_NEW_TOKENS="${MAX_NEW_TOKENS}" \
+      FEATURE_CACHE_ROOT="${FEATURE_CACHE_ROOT}" \
+      USE_FEATURE_CACHE="${USE_FEATURE_CACHE}" \
       VIDEO_DECODE_THREADS="${VIDEO_DECODE_THREADS}" \
       CLEAR_CUDA_CACHE_ON_RESET="${CLEAR_CUDA_CACHE_ON_RESET}" \
       FLUSH_EVERY_CONVERSATIONS="${FLUSH_EVERY_CONVERSATIONS}" \
       ATTN_DIR="${ATTN_DIR}" \
-      OUTPUT_ROOT="outputs/evaluations_streaming/${dataset_dash}/${slice}" \
+      OUTPUT_ROOT="${current_output_root}" \
+      REKV_TOPK="${REKV_TOPK}" \
+      REKV_N_LOCAL="${REKV_N_LOCAL}" \
+      AB_TOPK="${AB_TOPK}" \
+      AB_N_LOCAL="${AB_N_LOCAL}" \
+      AB_DEPLOY_SINK_SIZE="${AB_DEPLOY_SINK_SIZE}" \
+      AB_DEPLOY_RECENT_SIZE="${AB_DEPLOY_RECENT_SIZE}" \
       bash scripts/run_streaming_subsample5_local.sh "${mode}" ${EXTRA_ARGS} \
       2>&1 | tee "${log_path}"
   ) &
@@ -328,23 +386,32 @@ run_compare_bundle() {
   local slice_b=$3
   local output_dir=$4
   local dataset_dash=${dataset//_/-}
-  local files=(
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_a}/full_streaming/full_streaming.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_a}/duo_streaming/duo_streaming_s05.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_a}/rekv/rekv_topk64_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_a}/rekv_no_offload/rekv_no_offload_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_a}/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_a}/duo_plus_rekv/duo_plus_rekv_s05_topk64_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_a}/duo_plus_rekv/duo_plus_rekv_s075_topk64_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_b}/full_streaming/full_streaming.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_b}/duo_streaming/duo_streaming_s05.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_b}/rekv/rekv_topk64_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_b}/rekv_no_offload/rekv_no_offload_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_b}/duo_plus_rekv/duo_plus_rekv_s0375_topk64_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_b}/duo_plus_rekv/duo_plus_rekv_s05_topk64_nlocal15000.json"
-    "outputs/evaluations_streaming/${dataset_dash}/${slice_b}/duo_plus_rekv/duo_plus_rekv_s075_topk64_nlocal15000.json"
-  )
+  local root_a
+  local root_b
+  local files=()
+  root_a=$(slice_output_root "${dataset_dash}" "${slice_a}")
+  root_b=$(slice_output_root "${dataset_dash}" "${slice_b}")
+  local root
+  local method_dir
+  for root in "${root_a}" "${root_b}"; do
+    for method_dir in full_streaming duo_streaming rekv duo_plus_rekv; do
+      if [[ -d "${root}/${method_dir}" ]]; then
+        while IFS= read -r path; do
+          files+=("${path}")
+        done < <(find "${root}/${method_dir}" -maxdepth 1 -type f -name '*.json' | sort)
+      fi
+    done
+  done
   python -m streaming.ReKV.compare_subsamples "${files[@]}" --output-dir "${output_dir}"
+}
+
+comparison_output_dir() {
+  local base_dir=$1
+  if [[ -n "${OUTPUT_SUFFIX}" ]]; then
+    printf '%s_%s' "${base_dir}" "${OUTPUT_SUFFIX}"
+  else
+    printf '%s' "${base_dir}"
+  fi
 }
 
 for entry in "${SLICES[@]}"; do
@@ -360,7 +427,7 @@ if [[ "${MODE}" == "ego" || "${MODE}" == "all" ]]; then
     "rvs_ego" \
     "subsample5" \
     "subsample5_offset5" \
-    "outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5"
+    "$(comparison_output_dir "outputs/evaluations_streaming/rvs-ego/subsample_comparison_offset0_vs_offset5")"
 fi
 
 if [[ "${MODE}" == "movie" || "${MODE}" == "all" ]]; then
@@ -368,7 +435,7 @@ if [[ "${MODE}" == "movie" || "${MODE}" == "all" ]]; then
     "rvs_movie" \
     "subsample5_movie" \
     "subsample5_movie_offset5" \
-    "outputs/evaluations_streaming/rvs-movie/subsample_comparison_offset0_vs_offset5"
+    "$(comparison_output_dir "outputs/evaluations_streaming/rvs-movie/subsample_comparison_offset0_vs_offset5")"
 fi
 
 write_status "phase: complete
