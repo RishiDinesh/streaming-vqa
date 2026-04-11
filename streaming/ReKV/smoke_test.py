@@ -209,6 +209,11 @@ def main() -> int:
         assert build_dataset_from_args(dataset_args).dataset_name == "rvs_movie"
 
         run_config = {"dataset": "rvs_ego", "method": "recording"}
+        evaluation_manifest = {
+            "comparison_contract_version": "v1",
+            "comparison_scope": "streaming_vqa_cross_method",
+            "method_manifest": {"method_name": "recording"},
+        }
         left = RecordingMethod("recording_left")
         right = RecordingMethod("recording_right")
         left_result = evaluate_samples(
@@ -216,12 +221,14 @@ def main() -> int:
             method=left,
             sample_fps=2.0,
             run_config=run_config,
+            evaluation_manifest=evaluation_manifest,
         )
         right_result = evaluate_samples(
             samples=samples[:1],
             method=right,
             sample_fps=2.0,
             run_config=run_config,
+            evaluation_manifest=evaluation_manifest,
             show_progress_bar=False,
         )
         resumed = RecordingMethod("recording_resumed")
@@ -230,6 +237,7 @@ def main() -> int:
             method=resumed,
             sample_fps=2.0,
             run_config=run_config,
+            evaluation_manifest=evaluation_manifest,
             existing_videos=left_result["videos"],
             total_requested_videos=len(samples),
             started_at_utc="2026-04-04T00:00:00+00:00",
@@ -242,6 +250,7 @@ def main() -> int:
         assert left_result["videos"][0]["conversations"][1]["new_frame_timestamps_sec"] == [0.5, 1.0]
         assert left_result["aggregate_metrics"]["primary_quality_metric"] == "avg_rouge_l_f1"
         assert left_result["aggregate_metrics"]["primary_quality_score"] is not None
+        assert left_result["evaluation_manifest"] == evaluation_manifest
         assert "scores" in left_result["videos"][0]["conversations"][0]
         assert "rouge_l_f1" in left_result["videos"][0]["conversations"][0]["scores"]
         assert left_result["videos"][0]["extra_metadata"] == {"scene_type": "ego_outdoor"}
@@ -296,6 +305,7 @@ def main() -> int:
             method=partial_resumed,
             sample_fps=2.0,
             run_config=run_config,
+            evaluation_manifest=evaluation_manifest,
             total_requested_videos=1,
             started_at_utc="2026-04-04T00:00:00+00:00",
             show_progress_bar=False,

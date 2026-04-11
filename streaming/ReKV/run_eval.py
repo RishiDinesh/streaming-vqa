@@ -164,6 +164,95 @@ def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def validate_comparison_run_config(run_config: dict[str, Any]) -> None:
+    if float(run_config["sample_fps"]) <= 0:
+        raise ValueError("sample_fps must be > 0 for comparable streaming evaluation.")
+    if int(run_config["max_new_tokens"]) <= 0:
+        raise ValueError("max_new_tokens must be > 0 for comparable streaming evaluation.")
+    if int(run_config["video_decode_threads"]) <= 0:
+        raise ValueError("video_decode_threads must be > 0.")
+    if run_config["method"] in {"duo_streaming", "duo_plus_rekv"}:
+        deploy_sink_size = run_config.get("deploy_sink_size")
+        deploy_recent_size = run_config.get("deploy_recent_size")
+        if deploy_sink_size is not None and int(deploy_sink_size) <= 0:
+            raise ValueError("deploy_sink_size must be > 0 when provided.")
+        if deploy_recent_size is not None and int(deploy_recent_size) <= 0:
+            raise ValueError("deploy_recent_size must be > 0 when provided.")
+        sparsity = run_config.get("sparsity")
+        if sparsity is not None and not (0.0 <= float(sparsity) <= 1.0):
+            raise ValueError("sparsity must be in [0, 1].")
+    if run_config["method"] in {"rekv", "rekv_no_offload", "duo_plus_rekv"}:
+        if int(run_config["n_local"]) <= 0:
+            raise ValueError("n_local must be > 0 for ReKV-based methods.")
+        if int(run_config["retrieve_size"]) <= 0:
+            raise ValueError("retrieve_size must be > 0 for ReKV-based methods.")
+        if int(run_config["retrieve_chunk_size"]) <= 0:
+            raise ValueError("retrieve_chunk_size must be > 0 for ReKV-based methods.")
+        if int(run_config["n_frame_tokens"]) <= 0:
+            raise ValueError("n_frame_tokens must be > 0 for ReKV-based methods.")
+
+
+def normalize_feature_cache_manifest(cache_manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "cache_version": cache_manifest.get("cache_version"),
+        "dataset": cache_manifest.get("dataset"),
+        "model": cache_manifest.get("model"),
+        "sample_fps": cache_manifest.get("sample_fps"),
+        "feature_token_count": cache_manifest.get("feature_token_count"),
+        "num_videos": cache_manifest.get("num_videos"),
+        "created_at_utc": cache_manifest.get("created_at_utc"),
+    }
+
+
+def build_evaluation_manifest(
+    *,
+    run_config: dict[str, Any],
+    method_manifest: dict[str, Any],
+    feature_cache_manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "comparison_contract_version": "v1",
+        "comparison_scope": "streaming_vqa_cross_method",
+        "shared_run_settings": {
+            "dataset": run_config.get("dataset"),
+            "model": run_config.get("model"),
+            "sample_fps": run_config.get("sample_fps"),
+            "max_new_tokens": run_config.get("max_new_tokens"),
+            "seed": run_config.get("seed"),
+            "dtype_request": run_config.get("dtype"),
+            "device_request": run_config.get("device"),
+            "video_decode_threads": run_config.get("video_decode_threads"),
+            "feature_cache_root": run_config.get("feature_cache_root"),
+            "ingest_source": run_config.get("ingest_source"),
+            "annotation_path": run_config.get("annotation_path"),
+            "video_root": run_config.get("video_root"),
+            "hf_repo_id": run_config.get("hf_repo_id"),
+            "allow_hf_video_download": run_config.get("allow_hf_video_download"),
+            "max_videos": run_config.get("max_videos"),
+            "video_offset": run_config.get("video_offset"),
+            "video_index": run_config.get("video_index"),
+            "video_id": run_config.get("video_id"),
+            "subsample_name": run_config.get("subsample_name"),
+            "max_conversations_per_video": run_config.get("max_conversations_per_video"),
+        },
+        "streaming_protocol": {
+            "causal_cutoff_policy": "sampled_timestamps_strictly_before_end_time",
+            "frame_ingest_policy": "one_sampled_frame_per_forward_pass",
+            "question_ordering": "dataset_loader_sorted_by_start_time_then_end_time",
+            "shared_state_across_questions": True,
+            "offline_full_video_prefill": False,
+            "resume_requires_run_config_match": True,
+            "feature_cache_requires_schedule_equivalence": True,
+        },
+        "method_manifest": method_manifest,
+        "feature_cache_manifest": (
+            normalize_feature_cache_manifest(feature_cache_manifest)
+            if feature_cache_manifest is not None
+            else None
+        ),
+    }
+
+
 def write_json_atomic(payload: dict[str, Any], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_suffix(f"{output_path.suffix}.tmp")
@@ -258,6 +347,7 @@ def summarize_aggregate_metrics(video_results: list[dict[str, Any]]) -> dict[str
 def build_result_payload(
     *,
     run_config: dict[str, Any],
+    evaluation_manifest: dict[str, Any],
     video_results: list[dict[str, Any]],
     started_at_utc: str,
     total_requested_videos: int,
@@ -266,6 +356,7 @@ def build_result_payload(
 ) -> dict[str, Any]:
     return {
         "run_config": run_config,
+        "evaluation_manifest": evaluation_manifest,
         "run_state": {
             "status": status,
             "started_at_utc": started_at_utc,
@@ -380,7 +471,11 @@ def _replay_frames(
     return end_frame_count - 1
 
 
-def validate_resume_payload(existing_payload: dict[str, Any], run_config: dict[str, Any]) -> None:
+def validate_resume_payload(
+    existing_payload: dict[str, Any],
+    run_config: dict[str, Any],
+    evaluation_manifest: dict[str, Any] | None = None,
+) -> None:
     existing_run_config = existing_payload.get("run_config", {})
     mismatches: list[str] = []
     for key, current_value in run_config.items():
@@ -394,6 +489,13 @@ def validate_resume_payload(existing_payload: dict[str, Any], run_config: dict[s
             "Existing output file does not match the current run configuration.\n"
             f"{mismatch_text}"
         )
+    if evaluation_manifest is not None:
+        existing_manifest = existing_payload.get("evaluation_manifest")
+        if existing_manifest != evaluation_manifest:
+            raise ValueError(
+                "Existing output file does not match the current evaluation manifest. "
+                "Resume is only supported when comparison-critical settings are identical."
+            )
 
 
 def evaluate_samples(
@@ -402,6 +504,7 @@ def evaluate_samples(
     method,
     sample_fps: float,
     run_config: dict[str, Any],
+    evaluation_manifest: dict[str, Any],
     existing_videos: list[dict[str, Any]] | None = None,
     total_requested_videos: int | None = None,
     started_at_utc: str | None = None,
@@ -648,6 +751,7 @@ def evaluate_samples(
                 )
                 checkpoint_payload = build_result_payload(
                     run_config=run_config,
+                    evaluation_manifest=evaluation_manifest,
                     video_results=video_results,
                     started_at_utc=started_at_utc,
                     total_requested_videos=total_requested_videos,
@@ -704,6 +808,7 @@ def evaluate_samples(
         if checkpoint_path is not None and flush_every_videos > 0 and newly_completed % flush_every_videos == 0:
             checkpoint_payload = build_result_payload(
                 run_config=run_config,
+                evaluation_manifest=evaluation_manifest,
                 video_results=video_results,
                 started_at_utc=started_at_utc,
                 total_requested_videos=total_requested_videos,
@@ -723,6 +828,7 @@ def evaluate_samples(
         progress.close()
     return build_result_payload(
         run_config=run_config,
+        evaluation_manifest=evaluation_manifest,
         video_results=video_results,
         started_at_utc=started_at_utc,
         total_requested_videos=total_requested_videos,
@@ -735,7 +841,9 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     from .methods import build_method_from_args
 
     run_config = build_run_config(args)
+    validate_comparison_run_config(run_config)
     feature_cache_root = Path(args.feature_cache_root) if args.feature_cache_root else None
+    cache_manifest: dict[str, Any] | None = None
     if feature_cache_root is not None:
         cache_manifest = load_feature_cache_manifest(feature_cache_root)
         cache_dataset = str(cache_manifest.get("dataset"))
@@ -787,42 +895,48 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     started_at_utc = utc_now_iso()
     checkpoint_path = Path(args.output_path) if args.output_path else default_output_path(args)
 
-    if checkpoint_path.exists():
-        if args.resume:
-            with open(checkpoint_path, "r", encoding="utf-8") as handle:
-                existing_payload = json.load(handle)
-            validate_resume_payload(existing_payload, run_config)
-            existing_videos = existing_payload.get("videos", [])
-            existing_in_progress_video = existing_payload.get("in_progress_video")
-            started_at_utc = (
-                existing_payload.get("run_state", {}).get("started_at_utc") or started_at_utc
-            )
-            completed_sample_ids = {video["sample_id"] for video in existing_videos}
-            if len(completed_sample_ids) == len(samples) and existing_in_progress_video is None:
-                print(f"All requested videos already completed in {checkpoint_path}")
-                return existing_payload
-            print(
-                f"Resuming {run_config['method']} from {checkpoint_path}: "
-                f"{len(existing_videos)}/{len(samples)} videos already completed"
-                + (
-                    f", partial video={existing_in_progress_video.get('video_id')}"
-                    if existing_in_progress_video is not None
-                    else "."
-                )
-            )
-        elif not args.overwrite_output:
+    if checkpoint_path.exists() and not args.resume and not args.overwrite_output:
             raise FileExistsError(
                 f"Output already exists: {checkpoint_path}. "
                 "Use --resume to continue it or --overwrite-output to replace it."
             )
 
     method = build_method_from_args(args)
+    evaluation_manifest = build_evaluation_manifest(
+        run_config=run_config,
+        method_manifest=method.get_evaluation_manifest(),
+        feature_cache_manifest=cache_manifest,
+    )
+
+    if checkpoint_path.exists() and args.resume:
+        with open(checkpoint_path, "r", encoding="utf-8") as handle:
+            existing_payload = json.load(handle)
+        validate_resume_payload(existing_payload, run_config, evaluation_manifest)
+        existing_videos = existing_payload.get("videos", [])
+        existing_in_progress_video = existing_payload.get("in_progress_video")
+        started_at_utc = (
+            existing_payload.get("run_state", {}).get("started_at_utc") or started_at_utc
+        )
+        completed_sample_ids = {video["sample_id"] for video in existing_videos}
+        if len(completed_sample_ids) == len(samples) and existing_in_progress_video is None:
+            print(f"All requested videos already completed in {checkpoint_path}")
+            return existing_payload
+        print(
+            f"Resuming {run_config['method']} from {checkpoint_path}: "
+            f"{len(existing_videos)}/{len(samples)} videos already completed"
+            + (
+                f", partial video={existing_in_progress_video.get('video_id')}"
+                if existing_in_progress_video is not None
+                else "."
+            )
+        )
 
     return evaluate_samples(
         samples=samples,
         method=method,
         sample_fps=args.sample_fps,
         run_config=run_config,
+        evaluation_manifest=evaluation_manifest,
         existing_videos=existing_videos,
         total_requested_videos=len(samples),
         started_at_utc=started_at_utc,

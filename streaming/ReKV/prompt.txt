@@ -1,0 +1,170 @@
+Streaming ReKV handoff
+======================
+
+Use this file as the starting context for the streaming `ReKV` lane.
+
+Active scope
+------------
+- Work only on the streaming `ReKV` portion of this repo.
+- Treat `duo_attn/` as supporting comparison code, not the primary lane.
+- Active datasets:
+  - `RVS-Ego`
+  - `RVS-Movie`
+- Kept full-eval result trees:
+  - `outputs/evaluations_streaming/rvs-ego/full_eval_topk64_memavg`
+  - `outputs/evaluations_streaming/rvs-movie/full_eval_topk64_memavg`
+- Fresh audited subset result trees:
+  - `outputs/evaluations_streaming/rvs-ego/audit_firstq5`
+  - `outputs/evaluations_streaming/rvs-movie/audit_firstq5`
+
+Current environment
+-------------------
+- Main hardware assumption: one local AMD `MI300X`
+- Working Python environment in this shell: `/opt/venv`
+- `conda`, `sinfo`, and `sbatch` were not available during the latest audit run
+- Runtime backend confirmed in this environment:
+  - `flash_attn` load path available
+  - no CUDA `block_sparse_attn`
+  - no `flashinfer`
+- `rocm-smi` confirmed real GPU usage during live runs
+
+Streaming semantics
+-------------------
+- causal frame ingest only
+- one sampled frame per forward pass
+- shared state across questions from the same video
+- no offline whole-video prefill
+- question-time visibility uses sampled timestamps strictly earlier than each conversation `end_time`
+- all comparison methods must use the same sampled-frame schedule and same cutoff policy
+
+Main code you will touch
+------------------------
+- `streaming/ReKV/run_eval.py`
+- `streaming/ReKV/methods.py`
+- `streaming/ReKV/profile_streaming.py`
+- `streaming/ReKV/plot_results.py`
+- `streaming/ReKV/plot_profile.py`
+- `streaming/ReKV/judge_results.py`
+- `streaming/ReKV/rekv_core/attention/kv_cache_manager.py`
+- `streaming/ReKV/rekv_core/attention/rekv_attention.py`
+
+Main scripts
+------------
+- `scripts/run_streaming_full_eval_local.sh`
+- `scripts/run_streaming_subsample5_local.sh`
+- `scripts/run_streaming_subsample_matrix_local.sh`
+- `scripts/run_streaming_profile_local.sh`
+
+Current corrected comparison setup
+----------------------------------
+- The four active comparison methods are:
+  - `full_streaming`
+  - `duo_streaming`
+  - `rekv`
+  - `duo_plus_rekv`
+- `run_eval.py` now writes a shared `evaluation_manifest` so runs expose:
+  - shared streaming protocol
+  - method family
+  - runtime backend path
+  - Duo deploy settings
+  - retrieval/offload semantics
+- resume now fails if comparison-critical config drifts
+
+Important implementation facts
+------------------------------
+- All methods now share the same prompt-prefill / answer flow in `methods.py`.
+- ReKV methods no longer double-apply the question prompt.
+- ReKV answer-time assembly now force-includes the true local recent window.
+- `duo_plus_rekv` is explicitly an approximate hybrid:
+  - ReKV retrieval stays native
+  - Duo is applied over the assembled ReKV answer context
+  - the hybrid is not the official standalone Duo tuple-cache algorithm
+- ReKV and hybrid result JSONs now report:
+  - retrieved block counts
+  - retrieval latency
+  - forced-local-window diagnostics
+  - assembled context layout stats
+- On MI300X, the ROCm-specific ReKV decode path needed a fix:
+  - clone `last_hidden_state` before LM-head projection
+
+Current Duo deployment note
+---------------------------
+- The audited streaming Duo runs used training-aligned deploy settings:
+  - `sink=512`
+  - `recent=1024`
+- This replaced the older reduced `sink=256` / `recent=512` assumption for fairness checks.
+- The offline-only `256/512` setting may still be useful for separate experiments, but it is not the default truth for streaming comparisons.
+
+Workflow
+--------
+1. Validate or build the shared feature cache if needed.
+2. Run evals through `python -m streaming.ReKV.run_eval` or the launcher scripts.
+3. Judge with `python -m streaming.ReKV.judge_results --in-place`.
+4. Plot with `python -m streaming.ReKV.plot_results`.
+5. Profile representative videos with `python -m streaming.ReKV.profile_streaming`.
+
+Latest audit status
+-------------------
+- `python -m streaming.ReKV.smoke_test` passes in the current tree.
+- Profile path works and now records the same evaluation manifest.
+- Plotting was refreshed and cleaned up for readability.
+- `run_streaming_profile_local.sh` now supports:
+  - `full`
+  - `duo`
+  - `rekv`
+  - `ab_s05`
+  - `all`
+- profile launching no longer blindly passes a missing feature-cache path.
+
+Latest audited subset results
+-----------------------------
+`RVS-Movie / audit_firstq5`
+- `full_streaming`
+  - judge `0.80`
+  - answer latency `0.9899s`
+  - peak GPU `2.7916 GB`
+- `duo_streaming`
+  - judge `0.76`
+  - answer latency `0.9314s`
+  - peak GPU `2.8436 GB`
+- `rekv`
+  - judge `0.80`
+  - answer latency `0.1398s`
+  - peak GPU `3.2408 GB`
+  - forced local window rate `1.0`
+- `duo_plus_rekv`
+  - judge `0.80`
+  - answer latency `0.1923s`
+  - peak GPU `3.2667 GB`
+  - forced local window rate `1.0`
+
+`RVS-Ego / audit_firstq5`
+- `full_streaming`
+  - judge `0.80`
+  - answer latency `0.7754s`
+  - peak GPU `3.1281 GB`
+- `duo_streaming`
+  - judge `0.76`
+  - answer latency `0.9886s`
+  - peak GPU `3.2209 GB`
+- `rekv`
+  - judge `0.76`
+  - answer latency `0.3432s`
+  - peak GPU `3.1280 GB`
+  - forced local window rate `1.0`
+- `duo_plus_rekv`
+  - judge `0.76`
+  - answer latency `0.3599s`
+  - peak GPU `3.1643 GB`
+  - forced local window rate `1.0`
+
+Current takeaway
+----------------
+- The flow is in a much better correctness state now than before the audit.
+- Current subset evidence says:
+  - `rekv` and `duo_plus_rekv` are now being compared fairly
+  - hybrid quality is still not clearly better than native `rekv`
+  - the negative result is more trustworthy now because the local-window and manifest issues were fixed
+- The kept full-eval `topk=64` trees still support the conservative story:
+  - native `rekv` is the main method to trust and extend
+  - `duo_plus_rekv` remains a comparison / tuning direction, not yet the default winner

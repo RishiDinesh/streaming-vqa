@@ -3,12 +3,33 @@ from __future__ import annotations
 
 import argparse
 import json
+from textwrap import fill
 from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+plt.style.use("seaborn-v0_8-whitegrid")
+matplotlib.rcParams.update(
+    {
+        "figure.facecolor": "#f7f5ef",
+        "axes.facecolor": "#fffdf8",
+        "axes.edgecolor": "#d8d0c2",
+        "axes.titleweight": "semibold",
+        "axes.labelcolor": "#2a2724",
+        "xtick.color": "#3b352f",
+        "ytick.color": "#3b352f",
+        "grid.color": "#d8d0c2",
+        "grid.alpha": 0.45,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "legend.frameon": True,
+        "legend.facecolor": "#fffdf8",
+        "legend.edgecolor": "#ddd3c4",
+    }
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +57,14 @@ def method_family(payload: dict) -> str:
     return str(payload.get("run_config", {}).get("method", "unknown"))
 
 
+def _method_manifest(payload: dict) -> dict:
+    return dict(payload.get("evaluation_manifest", {}).get("method_manifest", {}) or {})
+
+
+def duo_deploy_config(payload: dict) -> dict:
+    return dict(_method_manifest(payload).get("duo_deploy_config", {}) or {})
+
+
 def _format_display_value(value: int | float | None) -> str | None:
     if value is None:
         return None
@@ -53,7 +82,19 @@ def display_label(payload: dict) -> str:
         if sparsity is None:
             sparsity = duo_display_sparsity(payload)
         formatted = _format_display_value(sparsity)
-        return f"duo_streaming (s={formatted})" if formatted is not None else "duo_streaming"
+        config = duo_deploy_config(payload)
+        window_class = config.get("deploy_window_class")
+        deploy_parts: list[str] = []
+        if window_class and window_class != "training_aligned":
+            sink = _format_display_value(config.get("deploy_sink_size"))
+            recent = _format_display_value(config.get("deploy_recent_size"))
+            if sink is not None:
+                deploy_parts.append(f"sink={sink}")
+            if recent is not None:
+                deploy_parts.append(f"recent={recent}")
+        parts = [f"s={formatted}"] if formatted is not None else []
+        parts.extend(deploy_parts)
+        return f"duo_streaming ({','.join(parts)})" if parts else "duo_streaming"
     if method == "rekv":
         topk = _format_display_value(run_config.get("retrieve_size"))
         n_local = _format_display_value(run_config.get("n_local"))
@@ -69,11 +110,20 @@ def display_label(payload: dict) -> str:
     if method == "duo_plus_rekv":
         topk = _format_display_value(run_config.get("retrieve_size"))
         sparsity = _format_display_value(run_config.get("sparsity"))
+        config = duo_deploy_config(payload)
+        window_class = config.get("deploy_window_class")
         parts: list[str] = []
         if topk is not None:
             parts.append(f"topk={topk}")
         if sparsity is not None:
             parts.append(f"s={sparsity}")
+        if window_class and window_class != "training_aligned":
+            sink = _format_display_value(config.get("deploy_sink_size"))
+            recent = _format_display_value(config.get("deploy_recent_size"))
+            if sink is not None:
+                parts.append(f"sink={sink}")
+            if recent is not None:
+                parts.append(f"recent={recent}")
         return f"duo_plus_rekv ({','.join(parts)})" if parts else "duo_plus_rekv"
     return method
 
@@ -149,6 +199,72 @@ def ordered_results(results: list[dict]) -> list[dict]:
     return sorted(results, key=sort_key)
 
 
+def wrapped_display_label(payload: dict, width: int = 18) -> str:
+    label = display_label(payload).replace(" (", "\n(")
+    return fill(label, width=width, break_long_words=False, break_on_hyphens=False)
+
+
+def _style_axis(axis, *, grid_axis: str = "y") -> None:
+    axis.grid(True, axis=grid_axis, linestyle="--", linewidth=0.8, alpha=0.45)
+    axis.set_axisbelow(True)
+    for spine_name in ("left", "bottom"):
+        spine = axis.spines.get(spine_name)
+        if spine is not None:
+            spine.set_color("#d8d0c2")
+
+
+def _annotate_bars(axis, bars, values: list[float | None]) -> None:
+    finite_values = [float(value) for value in values if value is not None]
+    if not finite_values:
+        return
+    offset = max(max(abs(value) for value in finite_values) * 0.02, 0.01)
+    for bar, value in zip(bars, values):
+        if value is None:
+            continue
+        axis.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            float(value) + offset,
+            f"{float(value):.3g}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#3b352f",
+        )
+
+
+def _scatter_with_label(axis, x: float, y: float, payload: dict, label: str) -> None:
+    axis.scatter(
+        [x],
+        [y],
+        s=135,
+        color=color_for_payload(payload),
+        marker=marker_for_payload(payload),
+        edgecolors="#fffdf8",
+        linewidths=1.2,
+        zorder=3,
+        label=label,
+    )
+    axis.annotate(
+        label,
+        (x, y),
+        xytext=(8, 6),
+        textcoords="offset points",
+        fontsize=8.5,
+        color="#2a2724",
+        bbox={"boxstyle": "round,pad=0.18", "fc": "#fffdf8", "ec": "#e1d8cb", "alpha": 0.9},
+    )
+
+
+def _line_kwargs(payload: dict) -> dict:
+    return {
+        "marker": marker_for_payload(payload),
+        "markersize": 6.5,
+        "linewidth": 2.0,
+        "color": color_for_payload(payload),
+        "label": display_label(payload),
+    }
+
+
 def aggregate_quality_key(payload: dict) -> str:
     aggregate_metrics = payload.get("aggregate_metrics", {})
     if aggregate_metrics.get("primary_quality_metric"):
@@ -173,7 +289,7 @@ def aggregate_quality_label(payload: dict) -> str:
 
 def plot_aggregate_comparison(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    labels = [display_label(item) for item in results]
+    labels = [wrapped_display_label(item) for item in results]
     primary_quality_key = aggregate_quality_key(results[0]) if results else "normalized_exact_match"
     primary_quality_title = aggregate_quality_label(results[0]) if results else "Primary Quality"
     metrics = [
@@ -183,15 +299,25 @@ def plot_aggregate_comparison(results: list[dict], output_dir: Path) -> Path:
         ("Avg Frame Ingest (s)", "avg_frame_ingest_latency_sec"),
     ]
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 7))
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8.5))
     axes = axes.flatten()
     for axis, (title, key) in zip(axes, metrics):
         values = [item["aggregate_metrics"].get(key) for item in results]
-        axis.bar(labels, values, color=[color_for_payload(item) for item in results])
+        plotted_values = [float(value) if value is not None else 0.0 for value in values]
+        bars = axis.bar(
+            labels,
+            plotted_values,
+            color=[color_for_payload(item) for item in results],
+            edgecolor="#fffdf8",
+            linewidth=1.2,
+            alpha=0.92,
+        )
         axis.set_title(title)
-        axis.grid(axis="y", linestyle="--", alpha=0.3)
-        axis.tick_params(axis="x", rotation=15)
+        _style_axis(axis, grid_axis="y")
+        axis.tick_params(axis="x", rotation=0, labelsize=9)
+        _annotate_bars(axis, bars, [float(value) if value is not None else None for value in values])
 
+    fig.suptitle("Streaming Evaluation Overview", fontsize=15, fontweight="semibold", y=1.01)
     fig.tight_layout()
     out_path = output_dir / "aggregate_comparison.png"
     fig.savefig(out_path, dpi=200)
@@ -201,15 +327,22 @@ def plot_aggregate_comparison(results: list[dict], output_dir: Path) -> Path:
 
 def plot_memory_comparison(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    labels = [display_label(item) for item in results]
+    labels = [wrapped_display_label(item) for item in results]
     values = [maybe_gb(item["aggregate_metrics"].get("peak_memory_bytes")) for item in results]
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(labels, values, color=[color_for_payload(item) for item in results])
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.bar(
+        labels,
+        [value if value is not None else 0.0 for value in values],
+        color=[color_for_payload(item) for item in results],
+        edgecolor="#fffdf8",
+        linewidth=1.2,
+    )
     ax.set_title("Peak GPU Memory")
     ax.set_ylabel("GB")
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-    ax.tick_params(axis="x", rotation=15)
+    _style_axis(ax, grid_axis="y")
+    ax.tick_params(axis="x", rotation=0, labelsize=9)
+    _annotate_bars(ax, bars, values)
     fig.tight_layout()
     out_path = output_dir / "peak_memory_comparison.png"
     fig.savefig(out_path, dpi=200)
@@ -224,12 +357,20 @@ def plot_avg_memory_comparison(results: list[dict], output_dir: Path) -> Path | 
         return None
 
     labels = [display_label(item) for item in results]
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(labels, [value if value is not None else 0.0 for value in values], color=[color_for_payload(item) for item in results])
+    wrapped_labels = [wrapped_display_label(item) for item in results]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.bar(
+        wrapped_labels,
+        [value if value is not None else 0.0 for value in values],
+        color=[color_for_payload(item) for item in results],
+        edgecolor="#fffdf8",
+        linewidth=1.2,
+    )
     ax.set_title("Avg GPU Memory")
     ax.set_ylabel("GB")
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-    ax.tick_params(axis="x", rotation=15)
+    _style_axis(ax, grid_axis="y")
+    ax.tick_params(axis="x", rotation=0, labelsize=9)
+    _annotate_bars(ax, bars, values)
     fig.tight_layout()
     out_path = output_dir / "avg_memory_comparison.png"
     fig.savefig(out_path, dpi=200)
@@ -243,13 +384,20 @@ def plot_cpu_offload_comparison(results: list[dict], output_dir: Path) -> Path |
     if not any(value is not None for value in values):
         return None
 
-    labels = [display_label(item) for item in results]
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(labels, [value if value is not None else 0.0 for value in values], color=[color_for_payload(item) for item in results])
+    wrapped_labels = [wrapped_display_label(item) for item in results]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.bar(
+        wrapped_labels,
+        [value if value is not None else 0.0 for value in values],
+        color=[color_for_payload(item) for item in results],
+        edgecolor="#fffdf8",
+        linewidth=1.2,
+    )
     ax.set_title("Peak CPU / Offloaded KV")
     ax.set_ylabel("GB")
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-    ax.tick_params(axis="x", rotation=15)
+    _style_axis(ax, grid_axis="y")
+    ax.tick_params(axis="x", rotation=0, labelsize=9)
+    _annotate_bars(ax, bars, values)
     fig.tight_layout()
     out_path = output_dir / "peak_cpu_offload_comparison.png"
     fig.savefig(out_path, dpi=200)
@@ -263,13 +411,20 @@ def plot_avg_cpu_offload_comparison(results: list[dict], output_dir: Path) -> Pa
     if not any(value is not None for value in values):
         return None
 
-    labels = [display_label(item) for item in results]
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(labels, [value if value is not None else 0.0 for value in values], color=[color_for_payload(item) for item in results])
+    wrapped_labels = [wrapped_display_label(item) for item in results]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.bar(
+        wrapped_labels,
+        [value if value is not None else 0.0 for value in values],
+        color=[color_for_payload(item) for item in results],
+        edgecolor="#fffdf8",
+        linewidth=1.2,
+    )
     ax.set_title("Avg CPU / Offloaded KV")
     ax.set_ylabel("GB")
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-    ax.tick_params(axis="x", rotation=15)
+    _style_axis(ax, grid_axis="y")
+    ax.tick_params(axis="x", rotation=0, labelsize=9)
+    _annotate_bars(ax, bars, values)
     fig.tight_layout()
     out_path = output_dir / "avg_cpu_offload_comparison.png"
     fig.savefig(out_path, dpi=200)
@@ -279,7 +434,7 @@ def plot_avg_cpu_offload_comparison(results: list[dict], output_dir: Path) -> Pa
 
 def plot_quality_latency_tradeoff(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    fig, ax = plt.subplots(figsize=(7, 5))
+    fig, ax = plt.subplots(figsize=(8.5, 5.8))
     for payload in results:
         label = display_label(payload)
         aggregate_metrics = payload["aggregate_metrics"]
@@ -288,20 +443,12 @@ def plot_quality_latency_tradeoff(results: list[dict], output_dir: Path) -> Path
         y = aggregate_metrics.get(quality_key)
         if x is None or y is None:
             continue
-        ax.scatter(
-            [x],
-            [y],
-            s=110,
-            color=color_for_payload(payload),
-            marker=marker_for_payload(payload),
-            label=label,
-        )
-        ax.annotate(label, (x, y), xytext=(5, 5), textcoords="offset points")
+        _scatter_with_label(ax, float(x), float(y), payload, label)
 
     ax.set_title("Quality vs Answer Latency")
     ax.set_xlabel("Avg Answer Latency (s)")
     ax.set_ylabel(aggregate_quality_label(results[0]) if results else "Quality")
-    ax.grid(True, linestyle="--", alpha=0.3)
+    _style_axis(ax, grid_axis="both")
     fig.tight_layout()
     out_path = output_dir / "quality_latency_tradeoff.png"
     fig.savefig(out_path, dpi=200)
@@ -311,7 +458,7 @@ def plot_quality_latency_tradeoff(results: list[dict], output_dir: Path) -> Path
 
 def plot_quality_memory_tradeoff(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    fig, ax = plt.subplots(figsize=(7, 5))
+    fig, ax = plt.subplots(figsize=(8.5, 5.8))
     for payload in results:
         label = display_label(payload)
         aggregate_metrics = payload["aggregate_metrics"]
@@ -320,20 +467,12 @@ def plot_quality_memory_tradeoff(results: list[dict], output_dir: Path) -> Path:
         y = aggregate_metrics.get(quality_key)
         if x is None or y is None:
             continue
-        ax.scatter(
-            [x],
-            [y],
-            s=110,
-            color=color_for_payload(payload),
-            marker=marker_for_payload(payload),
-            label=label,
-        )
-        ax.annotate(label, (x, y), xytext=(5, 5), textcoords="offset points")
+        _scatter_with_label(ax, float(x), float(y), payload, label)
 
     ax.set_title("Quality vs Peak GPU Memory")
     ax.set_xlabel("Peak GPU Memory (GB)")
     ax.set_ylabel(aggregate_quality_label(results[0]) if results else "Quality")
-    ax.grid(True, linestyle="--", alpha=0.3)
+    _style_axis(ax, grid_axis="both")
     fig.tight_layout()
     out_path = output_dir / "quality_memory_tradeoff.png"
     fig.savefig(out_path, dpi=200)
@@ -343,7 +482,7 @@ def plot_quality_memory_tradeoff(results: list[dict], output_dir: Path) -> Path:
 
 def plot_quality_avg_memory_tradeoff(results: list[dict], output_dir: Path) -> Path | None:
     results = ordered_results(results)
-    fig, ax = plt.subplots(figsize=(7, 5))
+    fig, ax = plt.subplots(figsize=(8.5, 5.8))
     any_points = False
     for payload in results:
         label = display_label(payload)
@@ -354,15 +493,7 @@ def plot_quality_avg_memory_tradeoff(results: list[dict], output_dir: Path) -> P
         if x is None or y is None:
             continue
         any_points = True
-        ax.scatter(
-            [x],
-            [y],
-            s=110,
-            color=color_for_payload(payload),
-            marker=marker_for_payload(payload),
-            label=label,
-        )
-        ax.annotate(label, (x, y), xytext=(5, 5), textcoords="offset points")
+        _scatter_with_label(ax, float(x), float(y), payload, label)
 
     if not any_points:
         plt.close(fig)
@@ -371,7 +502,7 @@ def plot_quality_avg_memory_tradeoff(results: list[dict], output_dir: Path) -> P
     ax.set_title("Quality vs Avg GPU Memory")
     ax.set_xlabel("Avg GPU Memory (GB)")
     ax.set_ylabel(aggregate_quality_label(results[0]) if results else "Quality")
-    ax.grid(True, linestyle="--", alpha=0.3)
+    _style_axis(ax, grid_axis="both")
     fig.tight_layout()
     out_path = output_dir / "quality_avg_memory_tradeoff.png"
     fig.savefig(out_path, dpi=200)
@@ -416,7 +547,7 @@ def plot_delta_to_baseline(results: list[dict], output_dir: Path) -> Path | None
         ("Peak Memory Delta (GB)", "peak_memory_bytes", 1024 ** 3),
     ]
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(11, 9.5), sharex=True)
     labels = [label for label, _, _ in comparisons]
     colors = [color_for_payload(payload) for _, payload, _ in comparisons]
     for axis, (title, metric_key, scale) in zip(axes, metric_specs):
@@ -430,10 +561,11 @@ def plot_delta_to_baseline(results: list[dict], output_dir: Path) -> Path | None
                 deltas.append((value - baseline_value) / scale)
 
         axis.axhline(0.0, color="#666666", linewidth=1.0)
-        axis.bar(labels, deltas, color=colors)
+        bars = axis.bar(labels, deltas, color=colors, edgecolor="#fffdf8", linewidth=1.2)
         axis.set_title(title)
-        axis.grid(axis="y", linestyle="--", alpha=0.3)
-        axis.tick_params(axis="x", rotation=15)
+        _style_axis(axis, grid_axis="y")
+        axis.tick_params(axis="x", rotation=0, labelsize=9)
+        _annotate_bars(axis, bars, deltas)
 
     fig.tight_layout()
     out_path = output_dir / "delta_to_baseline.png"
@@ -450,7 +582,7 @@ def plot_pareto_with_arrows(results: list[dict], output_dir: Path) -> Path | Non
     quality_key = aggregate_quality_key(results[0])
     full_payload = _find_baseline_payload(results, "full_streaming")
     rekv_payload = _find_baseline_payload(results, "rekv")
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.8))
     metric_specs = [
         ("avg_answer_latency_sec", "Avg Answer Latency (s)"),
         ("peak_memory_bytes", "Peak GPU Memory (GB)"),
@@ -464,15 +596,7 @@ def plot_pareto_with_arrows(results: list[dict], output_dir: Path) -> Path | Non
                 continue
             if metric_key == "peak_memory_bytes":
                 x_value /= 1024 ** 3
-            axis.scatter(
-                [x_value],
-                [y_value],
-                s=120,
-                color=color_for_payload(payload),
-                marker=marker_for_payload(payload),
-                label=display_label(payload),
-            )
-            axis.annotate(display_label(payload), (x_value, y_value), xytext=(5, 5), textcoords="offset points")
+            _scatter_with_label(axis, float(x_value), float(y_value), payload, display_label(payload))
 
         arrow_pairs: list[tuple[dict | None, dict | None]] = [
             (full_payload, next((payload for payload in results if method_family(payload) == "duo_streaming"), None)),
@@ -499,7 +623,7 @@ def plot_pareto_with_arrows(results: list[dict], output_dir: Path) -> Path | Non
 
         axis.set_xlabel(x_label)
         axis.set_ylabel(aggregate_quality_label(results[0]))
-        axis.grid(True, linestyle="--", alpha=0.3)
+        _style_axis(axis, grid_axis="both")
 
     axes[0].set_title("Pareto View: Quality vs Latency")
     axes[1].set_title("Pareto View: Quality vs Memory")
@@ -553,16 +677,16 @@ def flatten_conversations(payload: dict) -> list[dict]:
 
 def plot_per_conversation(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
     for payload in results:
         label = display_label(payload)
         rows = flatten_conversations(payload)
         xs = list(range(len(rows)))
         color = color_for_payload(payload)
         marker = marker_for_payload(payload)
-        axes[0].plot(xs, [row["frames_ingested"] for row in rows], marker=marker, label=label, color=color)
-        axes[1].plot(xs, [row["ttft_sec"] for row in rows], marker=marker, label=label, color=color)
-        axes[2].plot(xs, [row["answer_latency_sec"] for row in rows], marker=marker, label=label, color=color)
+        axes[0].plot(xs, [row["frames_ingested"] for row in rows], **_line_kwargs(payload))
+        axes[1].plot(xs, [row["ttft_sec"] for row in rows], **_line_kwargs(payload))
+        axes[2].plot(xs, [row["answer_latency_sec"] for row in rows], **_line_kwargs(payload))
 
     axes[0].set_ylabel("Frames Ingested")
     axes[0].set_title("Per-Conversation Streaming Progress")
@@ -570,7 +694,7 @@ def plot_per_conversation(results: list[dict], output_dir: Path) -> Path:
     axes[2].set_ylabel("Answer Latency (s)")
     axes[2].set_xlabel("Conversation Index")
     for axis in axes:
-        axis.grid(True, linestyle="--", alpha=0.3)
+        _style_axis(axis, grid_axis="both")
         axis.legend()
     fig.tight_layout()
     out_path = output_dir / "per_conversation_metrics.png"
@@ -581,27 +705,21 @@ def plot_per_conversation(results: list[dict], output_dir: Path) -> Path:
 
 def plot_efficiency_vs_context(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
     for payload in results:
         label = display_label(payload)
         rows = flatten_conversations(payload)
         xs = [row["frames_ingested"] for row in rows]
-        color = color_for_payload(payload)
-        marker = marker_for_payload(payload)
-        axes[0].plot(xs, [row["answer_latency_sec"] for row in rows], marker=marker, label=label, color=color)
+        axes[0].plot(xs, [row["answer_latency_sec"] for row in rows], **_line_kwargs(payload))
         axes[1].plot(
             xs,
             [maybe_gb(row["peak_memory_bytes"]) for row in rows],
-            marker=marker,
-            label=label,
-            color=color,
+            **_line_kwargs(payload),
         )
         axes[2].plot(
             xs,
             [maybe_gb(row["cpu_offload_bytes_current"]) for row in rows],
-            marker=marker,
-            label=label,
-            color=color,
+            **_line_kwargs(payload),
         )
 
     axes[0].set_title("Latency and Memory vs Processed Frames")
@@ -610,7 +728,7 @@ def plot_efficiency_vs_context(results: list[dict], output_dir: Path) -> Path:
     axes[2].set_ylabel("CPU / Offloaded KV (GB)")
     axes[2].set_xlabel("Frames Ingested Before Answer")
     for axis in axes:
-        axis.grid(True, linestyle="--", alpha=0.3)
+        _style_axis(axis, grid_axis="both")
         axis.legend()
     fig.tight_layout()
     out_path = output_dir / "efficiency_vs_context.png"
@@ -621,7 +739,7 @@ def plot_efficiency_vs_context(results: list[dict], output_dir: Path) -> Path:
 
 def plot_quality_vs_context(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(11, 5.5))
     for payload in results:
         label = display_label(payload)
         rows = flatten_conversations(payload)
@@ -633,18 +751,12 @@ def plot_quality_vs_context(results: list[dict], output_dir: Path) -> Path:
         else:
             quality_key = "normalized_exact_match"
         ys = [row[quality_key] for row in rows]
-        ax.plot(
-            xs,
-            ys,
-            marker=marker_for_payload(payload),
-            label=label,
-            color=color_for_payload(payload),
-        )
+        ax.plot(xs, ys, **_line_kwargs(payload))
 
     ax.set_title("Quality vs Processed Frames")
     ax.set_xlabel("Frames Ingested Before Answer")
     ax.set_ylabel("Quality")
-    ax.grid(True, linestyle="--", alpha=0.3)
+    _style_axis(ax, grid_axis="both")
     ax.legend()
     fig.tight_layout()
     out_path = output_dir / "quality_vs_context.png"
@@ -655,7 +767,7 @@ def plot_quality_vs_context(results: list[dict], output_dir: Path) -> Path:
 
 def plot_question_timeline(results: list[dict], output_dir: Path) -> Path:
     results = ordered_results(results)
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(11, 5.5))
     for payload in results:
         label = display_label(payload)
         rows = flatten_conversations(payload)
@@ -663,6 +775,8 @@ def plot_question_timeline(results: list[dict], output_dir: Path) -> Path:
             [row["end_time"] for row in rows],
             [row["frames_ingested"] for row in rows],
             where="post",
+            linewidth=2.0,
+            markersize=6.5,
             marker=marker_for_payload(payload),
             label=label,
             color=color_for_payload(payload),
@@ -671,7 +785,7 @@ def plot_question_timeline(results: list[dict], output_dir: Path) -> Path:
     ax.set_title("Frames Ingested by Question Time")
     ax.set_xlabel("Question End Time (s)")
     ax.set_ylabel("Frames Ingested So Far")
-    ax.grid(True, linestyle="--", alpha=0.3)
+    _style_axis(ax, grid_axis="both")
     ax.legend()
     fig.tight_layout()
     out_path = output_dir / "question_timeline.png"
@@ -688,7 +802,7 @@ def plot_rekv_retrieval(results: list[dict], output_dir: Path) -> Path | None:
     if not retrieval_payloads:
         return None
 
-    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(11, 7.5), sharex=True)
     any_rows = False
     for payload in retrieval_payloads:
         rows = flatten_conversations(payload)
@@ -697,20 +811,8 @@ def plot_rekv_retrieval(results: list[dict], output_dir: Path) -> Path | None:
         any_rows = True
         xs = list(range(len(rows)))
         label = display_label(payload)
-        axes[0].plot(
-            xs,
-            [row["retrieval_latency_sec"] for row in rows],
-            marker=marker_for_payload(payload),
-            color=color_for_payload(payload),
-            label=label,
-        )
-        axes[1].plot(
-            xs,
-            [row["avg_retrieved_block_count"] for row in rows],
-            marker=marker_for_payload(payload),
-            color=color_for_payload(payload),
-            label=label,
-        )
+        axes[0].plot(xs, [row["retrieval_latency_sec"] for row in rows], **_line_kwargs(payload))
+        axes[1].plot(xs, [row["avg_retrieved_block_count"] for row in rows], **_line_kwargs(payload))
     if not any_rows:
         plt.close(fig)
         return None
@@ -720,7 +822,7 @@ def plot_rekv_retrieval(results: list[dict], output_dir: Path) -> Path | None:
     axes[1].set_ylabel("Avg Retrieved Blocks")
     axes[1].set_xlabel("Conversation Index")
     for axis in axes:
-        axis.grid(True, linestyle="--", alpha=0.3)
+        _style_axis(axis, grid_axis="both")
         axis.legend()
     fig.tight_layout()
     out_path = output_dir / "rekv_retrieval_diagnostics.png"
@@ -737,7 +839,7 @@ def plot_retrieval_timeline(results: list[dict], output_dir: Path) -> Path | Non
     if not retrieval_payloads:
         return None
 
-    fig, axes = plt.subplots(len(retrieval_payloads), 1, figsize=(10, 4 * len(retrieval_payloads)))
+    fig, axes = plt.subplots(len(retrieval_payloads), 1, figsize=(11, 4.2 * len(retrieval_payloads)))
     if len(retrieval_payloads) == 1:
         axes = [axes]
 
@@ -753,7 +855,9 @@ def plot_retrieval_timeline(results: list[dict], output_dir: Path) -> Path | Non
                     [row_idx] * len(retrieved_timestamps),
                     s=26,
                     color=color_for_payload(payload),
-                    alpha=0.75,
+                    alpha=0.82,
+                    edgecolors="#fffdf8",
+                    linewidths=0.5,
                 )
             axis.scatter(
                 [row["end_time"]],
@@ -764,7 +868,7 @@ def plot_retrieval_timeline(results: list[dict], output_dir: Path) -> Path | Non
             )
         axis.set_title(f"Retrieved Context Timeline: {display_label(payload)}")
         axis.set_ylabel("Conversation Index")
-        axis.grid(True, linestyle="--", alpha=0.3)
+        _style_axis(axis, grid_axis="both")
 
     if not any_points:
         plt.close(fig)
@@ -811,7 +915,7 @@ def plot_auto_sweeps(results: list[dict], output_dir: Path) -> list[Path]:
         if not method_to_points:
             continue
 
-        fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+        fig, axes = plt.subplots(3, 1, figsize=(9, 10), sharex=True)
         for label, points in method_to_points.items():
             xs = [point[0] for point in points]
             quality_key = aggregate_quality_key(points[0][1])
@@ -820,6 +924,8 @@ def plot_auto_sweeps(results: list[dict], output_dir: Path) -> list[Path]:
                 xs,
                 [point[1]["aggregate_metrics"].get(quality_key) for point in points],
                 marker="o",
+                markersize=6,
+                linewidth=2.0,
                 label=label,
                 color=color,
             )
@@ -827,6 +933,8 @@ def plot_auto_sweeps(results: list[dict], output_dir: Path) -> list[Path]:
                 xs,
                 [point[1]["aggregate_metrics"].get("avg_answer_latency_sec") for point in points],
                 marker="o",
+                markersize=6,
+                linewidth=2.0,
                 label=label,
                 color=color,
             )
@@ -834,6 +942,8 @@ def plot_auto_sweeps(results: list[dict], output_dir: Path) -> list[Path]:
                 xs,
                 [maybe_gb(point[1]["aggregate_metrics"].get("peak_memory_bytes")) for point in points],
                 marker="o",
+                markersize=6,
+                linewidth=2.0,
                 label=label,
                 color=color,
             )
@@ -844,7 +954,7 @@ def plot_auto_sweeps(results: list[dict], output_dir: Path) -> list[Path]:
         axes[2].set_ylabel("Peak GPU Memory (GB)")
         axes[2].set_xlabel(title)
         for axis in axes:
-            axis.grid(True, linestyle="--", alpha=0.3)
+            _style_axis(axis, grid_axis="both")
             axis.legend()
         fig.tight_layout()
         out_path = output_dir / f"{key}_sweep_curves.png"

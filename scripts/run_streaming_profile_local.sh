@@ -62,6 +62,7 @@ Usage:
 
 Modes:
   full            Profile full_streaming on one representative video
+  duo             Profile duo_streaming with sparsity=0.5
   rekv            Profile rekv
   ab_s05          Profile duo_plus_rekv with sparsity=0.5
   ab_s075         Profile duo_plus_rekv with sparsity=0.75
@@ -79,6 +80,7 @@ Environment overrides:
   MAX_NEW_TOKENS
   ATTN_DIR
   FEATURE_CACHE_ROOT
+  USE_FEATURE_CACHE
   PROFILE_OUTPUT_ROOT
   PROFILE_NAME
   PROFILE_QUESTION
@@ -108,6 +110,7 @@ ATTN_DIR=${ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_
 MODEL_SLUG=${MODEL//\//__}
 FPS_SLUG=${SAMPLE_FPS//./p}
 FEATURE_CACHE_ROOT=${FEATURE_CACHE_ROOT:-outputs/evaluations_streaming/feature_cache/${DATASET//_/-}/${MODEL_SLUG}/fps_${FPS_SLUG}}
+USE_FEATURE_CACHE=${USE_FEATURE_CACHE:-0}
 PROFILE_OUTPUT_ROOT=${PROFILE_OUTPUT_ROOT:-outputs/evaluations_streaming/${DATASET//_/-}/profiles}
 PROFILE_NAME=${PROFILE_NAME:-profile_video${VIDEO_INDEX}}
 PROFILE_QUESTION="${PROFILE_QUESTION:-What is happening in the video so far?}"
@@ -131,9 +134,16 @@ COMMON_ARGS=(
   --max-new-tokens "${MAX_NEW_TOKENS}"
   --probe-frame-counts "${PROBE_FRAME_COUNTS}"
   --profiling-question "${PROFILE_QUESTION}"
-  --feature-cache-root "${FEATURE_CACHE_ROOT}"
   --video-decode-threads "${VIDEO_DECODE_THREADS}"
 )
+
+if [[ "${USE_FEATURE_CACHE}" == "1" ]]; then
+  if [[ ! -f "${FEATURE_CACHE_ROOT}/manifest.json" ]]; then
+    echo "Feature cache manifest not found under ${FEATURE_CACHE_ROOT}" >&2
+    exit 1
+  fi
+  COMMON_ARGS+=(--feature-cache-root "${FEATURE_CACHE_ROOT}")
+fi
 
 if [[ "${CLEAR_CUDA_CACHE_ON_RESET}" == "1" ]]; then
   COMMON_ARGS+=(--clear-cuda-cache-on-reset)
@@ -175,6 +185,9 @@ case "${MODE}" in
   full)
     run_one full_streaming full_streaming
     ;;
+  duo)
+    run_one duo_streaming duo_streaming_s05 --attn-dir "${ATTN_DIR}" --sparsity 0.5
+    ;;
   rekv)
     run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
     ;;
@@ -193,6 +206,8 @@ case "${MODE}" in
       --n-local 15000
     ;;
   all)
+    run_one full_streaming full_streaming
+    run_one duo_streaming duo_streaming_s05 --attn-dir "${ATTN_DIR}" --sparsity 0.5
     run_one rekv rekv_topk64_nlocal15000 --retrieve-size 64 --n-local 15000
     run_one duo_plus_rekv duo_plus_rekv_s05_topk64_nlocal15000 \
       --attn-dir "${ATTN_DIR}" \

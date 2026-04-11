@@ -10,7 +10,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from .plot_results import color_for_payload, display_label, marker_for_payload, maybe_gb
+from .plot_results import (
+    color_for_payload,
+    display_label,
+    marker_for_payload,
+    maybe_gb,
+    wrapped_display_label,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +45,7 @@ def main() -> int:
         output_dir = profile_paths[0].parent / "plots"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(5, 1, figsize=(10, 15), sharex=True)
+    fig, axes = plt.subplots(5, 1, figsize=(11, 15), sharex=True)
     metric_specs = [
         ("answer_latency_sec", "Answer Latency (s)"),
         ("ttft_sec", "TTFT (s)"),
@@ -62,18 +68,50 @@ def main() -> int:
                 xs,
                 ys,
                 marker=marker_for_payload(payload),
+                markersize=6.5,
+                linewidth=2.0,
                 color=color_for_payload(payload),
                 label=label,
             )
             axis.set_ylabel(y_label)
-            axis.grid(True, linestyle="--", alpha=0.3)
+            axis.grid(True, linestyle="--", linewidth=0.8, alpha=0.45)
+            axis.set_axisbelow(True)
 
     axes[0].set_title("Streaming Profiling Curves")
     axes[-1].set_xlabel("Frames Ingested")
     for axis in axes:
-        axis.legend()
+        axis.legend(title="Methods", fontsize=9, title_fontsize=9)
 
-    fig.tight_layout()
+    manifest_summaries = []
+    for payload in profiles:
+        method_manifest = payload.get("evaluation_manifest", {}).get("method_manifest", {})
+        backend = method_manifest.get("kernel_backend_path", {})
+        duo_backend = method_manifest.get("duo_attention_backend")
+        rekv_config = method_manifest.get("rekv_config", {})
+        manifest_summaries.append(
+            " | ".join(
+                part
+                for part in [
+                    wrapped_display_label(payload, width=24).replace("\n", " "),
+                    f"attn={backend.get('attention_module_load_path')}" if backend.get("attention_module_load_path") else None,
+                    f"duo={duo_backend}" if duo_backend else None,
+                    f"rekv_dot={rekv_config.get('dot_backend_actual')}" if rekv_config.get("dot_backend_actual") else None,
+                ]
+                if part
+            )
+        )
+    if manifest_summaries:
+        fig.text(
+            0.5,
+            0.005,
+            "\n".join(manifest_summaries),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#4a433d",
+        )
+
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
     profile_plot_path = output_dir / "profiling_curves.png"
     fig.savefig(profile_plot_path, dpi=200)
     plt.close(fig)

@@ -333,6 +333,7 @@ class ContextManager:
         self.similarity = None
         self.retrieved_block_indices = None
         self.to_retrieve = False
+        self.last_answer_context_stats = None
 
     def set_retrieved_block_indices(self, retrieved_block_indices):
         # retrieved_block_indices (list): batch_size x n_frames
@@ -340,7 +341,7 @@ class ContextManager:
             retrieved_block_indices = retrieved_block_indices.cpu().tolist()
         self.retrieved_block_indices = retrieved_block_indices
 
-    def get_retrieved_kv(self, query=None):
+    def get_retrieved_kv(self, query=None, include_local_window: bool = False):
         """retrieve context blocks with retrieved_block_indices
         query: (batch_size, num_heads, length, dim_head)
         return [init_k, retrieved_k] and the respective v
@@ -355,6 +356,7 @@ class ContextManager:
         global_h_k = self.global_buffer[0]
         global_h_v = self.global_buffer[1]
 
+        init_ed = 0
         with torch.cuda.stream(GLOBAL_STREAM):
             if self.init_exc:  # init KV were loaded in global_h_k, context KV were offloaded in global_blocks
                 # offload LRU blocks
@@ -414,7 +416,22 @@ class ContextManager:
         if self.async_global_stream:
             torch.cuda.current_stream().wait_stream(GLOBAL_STREAM)
 
-        assert global_h_k.size(-2) <= self.n_init + self.n_local
+        retrieved_context_tokens = int(global_h_k.size(-2))
+        forced_local_token_count = 0
+        if include_local_window and getattr(self, "local_k", None) is not None and self.local_k.size(-2) > 0:
+            global_h_k = torch.cat([global_h_k, self.local_k], dim=-2)
+            global_h_v = torch.cat([global_h_v, self.local_v], dim=-2)
+            forced_local_token_count = int(self.local_k.size(-2))
+
+        self.last_answer_context_stats = {
+            "init_token_count": int(init_ed),
+            "retrieved_old_token_count": int(max(retrieved_context_tokens - init_ed, 0)),
+            "forced_local_token_count": forced_local_token_count,
+            "assembled_context_token_count": int(global_h_k.size(-2)),
+            "local_window_forced": bool(forced_local_token_count > 0),
+        }
+
+        assert global_h_k.size(-2) <= self.n_init + self.topk * self.block_size + self.n_local
         return global_h_k, global_h_v 
 
     # Get the indices of the top-k vectors in self.block_k[u] that have the highest similarity with global_h_q[u].

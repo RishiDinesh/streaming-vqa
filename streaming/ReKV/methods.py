@@ -5,17 +5,24 @@ import math
 import random
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+import transformers
 from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 
 from duo_attn.patch import enable_duo_attention_eval, load_full_attention_heads
+from duo_attn.patch.attn_compat import FLASH_ATTN_AVAILABLE
+from duo_attn.patch.flashinfer_utils import flashinfer
+from duo_attn.patch.streaming_attn import is_blocksparse_available
 
 from .rekv_core.patch import patch_hf
+from .rekv_core.attention.dot_production_attention import (
+    get_multi_stage_dot_production_attention,
+)
 
 
 DEFAULT_DUO_ATTN_DIR = (
@@ -31,6 +38,16 @@ DEFAULT_INIT_PROMPT = (
 class MethodAnswer:
     prediction: str
     stats: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AnswerPrefillPlan:
+    past_key_values: Any
+    prompt_text: str
+    prefilled_logits: torch.Tensor | None = None
+    prompt_token_count: int | None = None
+    prompt_prefill_mode: str = "inputs_embeds"
+    extra_stats: dict[str, Any] = field(default_factory=dict)
 
 
 def resolve_device(device: str) -> torch.device:
@@ -146,6 +163,61 @@ def load_duo_attention_spec(
     config["learned_threshold"] = learned_threshold
     config["attn_dir"] = str(normalized_dir)
     return full_attention_heads, sink_size, recent_size, config
+
+
+def _classify_duo_deploy_window(
+    *,
+    trained_sink_size: int,
+    trained_recent_size: int,
+    deploy_sink_size: int,
+    deploy_recent_size: int,
+) -> str:
+    if (
+        deploy_sink_size == trained_sink_size
+        and deploy_recent_size == trained_recent_size
+    ):
+        return "training_aligned"
+    if (
+        deploy_sink_size <= trained_sink_size
+        and deploy_recent_size <= trained_recent_size
+    ):
+        return "reduced_deploy_window"
+    return "custom_deploy_window"
+
+
+def collect_runtime_backend_info(device: torch.device, dtype: torch.dtype) -> dict[str, Any]:
+    device_name = None
+    rocm_arch = None
+    if device.type == "cuda" and torch.cuda.is_available():
+        try:
+            device_name = torch.cuda.get_device_name(device)
+        except Exception:
+            device_name = None
+        try:
+            device_properties = torch.cuda.get_device_properties(device)
+            rocm_arch = getattr(device_properties, "gcnArchName", None)
+            if not device_name:
+                device_name = rocm_arch
+        except Exception:
+            device_properties = None
+
+    return {
+        "torch_version": torch.__version__,
+        "transformers_version": transformers.__version__,
+        "device_type": device.type,
+        "device": str(device),
+        "device_name": device_name,
+        "rocm_arch": rocm_arch,
+        "torch_dtype": str(dtype).replace("torch.", ""),
+        "rocm_version": getattr(torch.version, "hip", None),
+        "cuda_version": getattr(torch.version, "cuda", None),
+        "flash_attn_available": bool(FLASH_ATTN_AVAILABLE),
+        "block_sparse_attn_available": bool(is_blocksparse_available()),
+        "flashinfer_available": bool(flashinfer is not None),
+        "attention_module_load_path": (
+            "flash_attn" if FLASH_ATTN_AVAILABLE else "sdpa_fallback"
+        ),
+    }
 
 
 def get_stop_token_ids(model: LlavaOnevisionForConditionalGeneration, tokenizer) -> set[int]:
@@ -295,13 +367,36 @@ def read_current_memory_bytes(device: torch.device) -> int | None:
 def _empty_retrieval_stats() -> dict[str, Any]:
     return {
         "retrieval_latency_sec": None,
+        "retrieval_query_mode": None,
         "per_layer_retrieved_block_counts": [],
         "avg_retrieved_block_count": 0.0,
         "avg_global_block_count": 0.0,
+        "per_layer_forced_local_token_counts": [],
+        "avg_forced_local_token_count": 0.0,
+        "per_layer_assembled_context_token_counts": [],
+        "avg_assembled_context_token_count": 0.0,
+        "per_layer_init_token_counts": [],
+        "avg_init_token_count": 0.0,
+        "per_layer_retrieved_old_token_counts": [],
+        "avg_retrieved_old_token_count": 0.0,
+        "local_window_forced": False,
         "retrieved_block_indices_union": [],
         "retrieved_frame_indices_union": [],
         "retrieved_timestamps_sec_union": [],
     }
+
+
+def extract_logits_from_output(output, output_projection=None) -> torch.Tensor:
+    if getattr(output, "logits", None) is not None:
+        return output.logits
+    if output_projection is None:
+        raise AttributeError(
+            "Language model output does not expose logits and no output projection was provided."
+        )
+    # Some ROCm/compiled inference paths return inference tensors here; clone so
+    # the LM head can consume them without autograd bookkeeping errors.
+    hidden_states = output.last_hidden_state.clone()
+    return output_projection(hidden_states)
 
 
 def greedy_decode_with_cache(
@@ -314,38 +409,47 @@ def greedy_decode_with_cache(
     stop_token_ids: set[int],
     max_new_tokens: int,
     device: torch.device,
+    prefilled_logits: torch.Tensor | None = None,
+    prompt_token_count: int | None = None,
+    prompt_prefill_mode: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    prompt_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
-    prompt_embeds = language_model.get_input_embeddings()(prompt_ids)
     decode_start = time.perf_counter()
+    if prefilled_logits is not None and prompt_text:
+        raise ValueError("Provide either prompt_text or prefilled_logits, not both.")
+    if prefilled_logits is None and not prompt_text:
+        raise ValueError("greedy_decode_with_cache requires prompt_text or prefilled_logits.")
+
+    actual_prompt_token_count = int(prompt_token_count or 0)
     if max_new_tokens <= 0:
         return "", {
             "ttft_sec": 0.0,
             "answer_latency_sec": 0.0,
             "generated_token_count": 0,
-            "prompt_token_count": int(prompt_ids.shape[-1]),
-            "prompt_prefill_mode": "inputs_embeds",
+            "prompt_token_count": actual_prompt_token_count,
+            "prompt_prefill_mode": prompt_prefill_mode or "inputs_embeds",
         }
 
     output_ids: list[int] = []
     stop_reason = "max_new_tokens"
 
-    def _extract_logits(output) -> torch.Tensor:
-        if getattr(output, "logits", None) is not None:
-            return output.logits
-        if output_projection is None:
-            raise AttributeError("Language model output does not expose logits and no output projection was provided.")
-        hidden_states = output.last_hidden_state
-        return output_projection(hidden_states)
-
     with torch.inference_mode():
-        out = language_model(
-            inputs_embeds=prompt_embeds,
-            use_cache=True,
-            past_key_values=past_key_values,
-        )
-        working_cache = out.past_key_values
-        logits = _extract_logits(out)
+        if prefilled_logits is None:
+            prompt_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
+            prompt_embeds = language_model.get_input_embeddings()(prompt_ids)
+            out = language_model(
+                inputs_embeds=prompt_embeds,
+                use_cache=True,
+                past_key_values=past_key_values,
+            )
+            working_cache = out.past_key_values
+            logits = extract_logits_from_output(out, output_projection)
+            actual_prompt_token_count = int(prompt_ids.shape[-1])
+            actual_prompt_prefill_mode = prompt_prefill_mode or "inputs_embeds"
+        else:
+            working_cache = past_key_values
+            logits = prefilled_logits
+            actual_prompt_prefill_mode = prompt_prefill_mode or "external_prefill"
+
         next_token = int(torch.argmax(logits[0, -1, :]).item())
         output_ids.append(next_token)
         ttft_sec = time.perf_counter() - decode_start
@@ -360,7 +464,7 @@ def greedy_decode_with_cache(
                 use_cache=True,
                 past_key_values=working_cache,
             )
-            logits = _extract_logits(out)
+            logits = extract_logits_from_output(out, output_projection)
             working_cache = out.past_key_values
             next_token = int(torch.argmax(logits[0, -1, :]).item())
             output_ids.append(next_token)
@@ -377,8 +481,8 @@ def greedy_decode_with_cache(
         "ttft_sec": ttft_sec,
         "answer_latency_sec": time.perf_counter() - decode_start,
         "generated_token_count": len(output_ids),
-        "prompt_token_count": int(prompt_ids.shape[-1]),
-        "prompt_prefill_mode": "inputs_embeds",
+        "prompt_token_count": actual_prompt_token_count,
+        "prompt_prefill_mode": actual_prompt_prefill_mode,
         "first_generated_token_id": int(output_ids[0]) if output_ids else None,
         "first_generated_token_text": (
             tokenizer.decode(
@@ -419,6 +523,9 @@ class StreamingMethod(ABC):
     def get_runtime_stats(self) -> dict[str, Any]:
         raise NotImplementedError
 
+    def get_evaluation_manifest(self) -> dict[str, Any]:
+        return {}
+
 
 class _BaseLlavaStreamingMethod(StreamingMethod):
     def __init__(
@@ -453,6 +560,7 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         self.frames_ingested = 0
         self.ingested_timestamps_sec: list[float] = []
         self.ingest_latencies_sec: list[float] = []
+        self.runtime_backend_info = collect_runtime_backend_info(self.device, self.dtype)
 
     def _language_model_io_spec(self) -> tuple[torch.device, torch.dtype]:
         parameter = next(self.model.language_model.parameters())
@@ -528,19 +636,24 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         metadata = metadata or {}
         maybe_reset_peak_memory(self.device)
         prompt_text = build_question_prompt(question)
+        prefill_plan = self._prepare_answer_prefill(prompt_text, metadata)
         prediction, decode_stats = greedy_decode_with_cache(
             language_model=self.model.language_model,
             output_projection=self.model.get_output_embeddings(),
             tokenizer=self.tokenizer,
-            prompt_text=prompt_text,
-            past_key_values=self._prepare_answer_cache(question, metadata),
+            prompt_text=prefill_plan.prompt_text,
+            past_key_values=prefill_plan.past_key_values,
             stop_token_ids=self.stop_token_ids,
             max_new_tokens=self.max_new_tokens,
             device=self.device,
+            prefilled_logits=prefill_plan.prefilled_logits,
+            prompt_token_count=prefill_plan.prompt_token_count,
+            prompt_prefill_mode=prefill_plan.prompt_prefill_mode,
         )
         current_memory_bytes = read_current_memory_bytes(self.device)
         peak_memory_bytes = read_peak_memory_bytes(self.device)
         method_stats = self._build_answer_stats(question, metadata)
+        method_stats.update(prefill_plan.extra_stats)
         method_stats.update(decode_stats)
         method_stats["current_memory_bytes"] = current_memory_bytes
         method_stats["peak_memory_bytes"] = peak_memory_bytes
@@ -552,7 +665,7 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         raise NotImplementedError
 
     @abstractmethod
-    def _prepare_answer_cache(self, question: str, metadata: dict[str, Any]):
+    def _prepare_answer_prefill(self, prompt_text: str, metadata: dict[str, Any]) -> AnswerPrefillPlan:
         raise NotImplementedError
 
     def _build_answer_stats(self, question: str, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -570,6 +683,21 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
             "last_ingested_timestamp_sec": (
                 self.ingested_timestamps_sec[-1] if self.ingested_timestamps_sec else None
             ),
+        }
+
+    def get_evaluation_manifest(self) -> dict[str, Any]:
+        return {
+            "method_name": self.method_name,
+            "method_family": self.method_name,
+            "kernel_backend_path": dict(self.runtime_backend_info),
+            "prompt_prefill_policy": "single_prefill_per_question",
+            "streaming_protocol": {
+                "causal_cutoff_policy": "sampled_timestamps_strictly_before_end_time",
+                "frame_ingest_policy": "one_sampled_frame_per_forward_pass",
+                "shared_state_across_questions": True,
+                "offline_full_video_prefill": False,
+                "feature_cache_requires_schedule_equivalence": True,
+            },
         }
 
 
@@ -613,17 +741,28 @@ class DuoStreamingMethod(_BaseLlavaStreamingMethod):
         )
         enable_duo_attention_eval(self.model, full_attention_heads, sink_size, recent_size)
         self.attn_dir = attn_config["attn_dir"]
+        self.trained_sink_size = int(attn_config["sink_size"])
+        self.trained_recent_size = int(attn_config["recent_size"])
         self.sink_size = sink_size
         self.recent_size = recent_size
         self.actual_sparsity = float(attn_config["actual_sparsity"])
         self.learned_threshold = float(attn_config["learned_threshold"])
+        self.duo_deploy_window_class = _classify_duo_deploy_window(
+            trained_sink_size=self.trained_sink_size,
+            trained_recent_size=self.trained_recent_size,
+            deploy_sink_size=self.sink_size,
+            deploy_recent_size=self.recent_size,
+        )
 
     def _validate_video_features(self, video_features: torch.Tensor) -> None:
         if video_features.ndim != 3 or video_features.shape[0] != 1:
             raise ValueError(f"Unexpected video feature shape for DuoAttention: {tuple(video_features.shape)}")
 
-    def _prepare_answer_cache(self, question: str, metadata: dict[str, Any]):
-        return self.base_cache
+    def _prepare_answer_prefill(self, prompt_text: str, metadata: dict[str, Any]) -> AnswerPrefillPlan:
+        return AnswerPrefillPlan(
+            past_key_values=self.base_cache,
+            prompt_text=prompt_text,
+        )
 
     def _build_answer_stats(self, question: str, metadata: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -631,9 +770,35 @@ class DuoStreamingMethod(_BaseLlavaStreamingMethod):
             "attn_dir": self.attn_dir,
             "sink_size": self.sink_size,
             "recent_size": self.recent_size,
+            "effective_sink_window_tokens": self.sink_size,
+            "effective_recent_window_tokens": self.recent_size,
             "actual_sparsity": self.actual_sparsity,
             "learned_threshold": self.learned_threshold,
+            "trained_sink_size": self.trained_sink_size,
+            "trained_recent_size": self.trained_recent_size,
+            "duo_deploy_window_class": self.duo_deploy_window_class,
+            "duo_cache_semantics": "official_tuple_kv_compressed_streaming",
+            "duo_eval_attention_backend": self.runtime_backend_info["attention_module_load_path"],
         }
+
+    def get_evaluation_manifest(self) -> dict[str, Any]:
+        manifest = super().get_evaluation_manifest()
+        manifest.update(
+            {
+                "method_family": "duo_streaming",
+                "cache_semantics_label": "duo_tuple_kv_compressed_streaming",
+                "duo_attention_backend": self.runtime_backend_info["attention_module_load_path"],
+                "duo_deploy_config": {
+                    "trained_sink_size": self.trained_sink_size,
+                    "trained_recent_size": self.trained_recent_size,
+                    "deploy_sink_size": self.sink_size,
+                    "deploy_recent_size": self.recent_size,
+                    "deploy_window_class": self.duo_deploy_window_class,
+                    "actual_sparsity": self.actual_sparsity,
+                },
+            }
+        )
+        return manifest
 
 
 class FullStreamingMethod(_BaseLlavaStreamingMethod):
@@ -645,11 +810,25 @@ class FullStreamingMethod(_BaseLlavaStreamingMethod):
                 f"Unexpected video feature shape for full streaming: {tuple(video_features.shape)}"
             )
 
-    def _prepare_answer_cache(self, question: str, metadata: dict[str, Any]):
-        return self.base_cache
+    def _prepare_answer_prefill(self, prompt_text: str, metadata: dict[str, Any]) -> AnswerPrefillPlan:
+        return AnswerPrefillPlan(
+            past_key_values=self.base_cache,
+            prompt_text=prompt_text,
+        )
 
     def _build_answer_stats(self, question: str, metadata: dict[str, Any]) -> dict[str, Any]:
         return {"method_name": self.method_name}
+
+    def get_evaluation_manifest(self) -> dict[str, Any]:
+        manifest = super().get_evaluation_manifest()
+        manifest.update(
+            {
+                "method_family": "full_streaming",
+                "cache_semantics_label": "plain_full_streaming_cache",
+                "retrieval_offload_mode": "none",
+            }
+        )
+        return manifest
 
 
 class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
@@ -707,6 +886,11 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
         self.fattn = bool(fattn)
         self.short_memory_only = bool(short_memory_only)
         self.pin_memory = bool(pin_memory and self.device.type == "cuda")
+        _, actual_rekv_fattn = get_multi_stage_dot_production_attention(self.fattn)
+        self.rekv_dot_backend_requested = "triton_flash_attn" if self.fattn else "torch"
+        self.rekv_dot_backend_actual = (
+            "triton_flash_attn" if actual_rekv_fattn else "torch"
+        )
         effective_n_init = (
             int(n_init_override) if n_init_override is not None
             else int(self.init_prompt_ids.shape[-1])
@@ -765,27 +949,38 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
                 f"{self.n_frame_tokens} visual tokens, got {video_features.shape[1]}."
             )
 
-    def _prepare_answer_cache(self, question: str, metadata: dict[str, Any]):
+    def _prepare_answer_prefill(self, prompt_text: str, metadata: dict[str, Any]) -> AnswerPrefillPlan:
         if self.short_memory_only:
             self.last_retrieval_stats = _empty_retrieval_stats()
-            return self.base_cache
+            return AnswerPrefillPlan(
+                past_key_values=self.base_cache,
+                prompt_text=prompt_text,
+            )
 
-        question_ids = self.tokenizer(question, return_tensors="pt").input_ids.to(self.device)
+        prompt_ids = self.tokenizer(prompt_text, return_tensors="pt").input_ids.to(self.device)
         retrieval_start = time.perf_counter()
         for layer_kv in self.base_cache:
             layer_kv.set_retrieval()
 
         with torch.inference_mode():
             out = self.model.language_model(
-                input_ids=question_ids,
+                input_ids=prompt_ids,
                 use_cache=True,
                 past_key_values=self.base_cache,
             )
         retrieval_past = out.past_key_values
         retrieval_latency_sec = time.perf_counter() - retrieval_start
+        prefilled_logits = extract_logits_from_output(
+            out,
+            self.model.get_output_embeddings(),
+        )
 
         per_layer_retrieved_counts: list[int] = []
         per_layer_global_blocks: list[int] = []
+        per_layer_forced_local_token_counts: list[int] = []
+        per_layer_assembled_context_token_counts: list[int] = []
+        per_layer_init_token_counts: list[int] = []
+        per_layer_retrieved_old_token_counts: list[int] = []
         retrieved_block_indices_union: set[int] = set()
         for layer_kv in self.base_cache:
             retrieved_indices = layer_kv.retrieved_block_indices or []
@@ -803,11 +998,25 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
             else:
                 per_layer_retrieved_counts.append(0)
             per_layer_global_blocks.append(int(getattr(layer_kv, "num_global_block", 0)))
+            answer_context_stats = dict(getattr(layer_kv, "last_answer_context_stats", {}) or {})
+            per_layer_forced_local_token_counts.append(
+                int(answer_context_stats.get("forced_local_token_count", 0))
+            )
+            per_layer_assembled_context_token_counts.append(
+                int(answer_context_stats.get("assembled_context_token_count", 0))
+            )
+            per_layer_init_token_counts.append(
+                int(answer_context_stats.get("init_token_count", 0))
+            )
+            per_layer_retrieved_old_token_counts.append(
+                int(answer_context_stats.get("retrieved_old_token_count", 0))
+            )
             layer_kv.reset_retrieval()
 
         retrieved_block_indices_sorted = sorted(retrieved_block_indices_union)
         self.last_retrieval_stats = {
             "retrieval_latency_sec": retrieval_latency_sec,
+            "retrieval_query_mode": "full_prompt_prefill",
             "per_layer_retrieved_block_counts": per_layer_retrieved_counts,
             "avg_retrieved_block_count": (
                 float(sum(per_layer_retrieved_counts) / len(per_layer_retrieved_counts))
@@ -819,13 +1028,44 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
                 if per_layer_global_blocks
                 else 0.0
             ),
+            "per_layer_forced_local_token_counts": per_layer_forced_local_token_counts,
+            "avg_forced_local_token_count": (
+                float(sum(per_layer_forced_local_token_counts) / len(per_layer_forced_local_token_counts))
+                if per_layer_forced_local_token_counts
+                else 0.0
+            ),
+            "per_layer_assembled_context_token_counts": per_layer_assembled_context_token_counts,
+            "avg_assembled_context_token_count": (
+                float(sum(per_layer_assembled_context_token_counts) / len(per_layer_assembled_context_token_counts))
+                if per_layer_assembled_context_token_counts
+                else 0.0
+            ),
+            "per_layer_init_token_counts": per_layer_init_token_counts,
+            "avg_init_token_count": (
+                float(sum(per_layer_init_token_counts) / len(per_layer_init_token_counts))
+                if per_layer_init_token_counts
+                else 0.0
+            ),
+            "per_layer_retrieved_old_token_counts": per_layer_retrieved_old_token_counts,
+            "avg_retrieved_old_token_count": (
+                float(sum(per_layer_retrieved_old_token_counts) / len(per_layer_retrieved_old_token_counts))
+                if per_layer_retrieved_old_token_counts
+                else 0.0
+            ),
+            "local_window_forced": any(count > 0 for count in per_layer_forced_local_token_counts),
             "retrieved_block_indices_union": retrieved_block_indices_sorted,
             "retrieved_frame_indices_union": list(retrieved_block_indices_sorted),
             "retrieved_timestamps_sec_union": self._retrieved_timestamps(
                 retrieved_block_indices_sorted
             ),
         }
-        return retrieval_past
+        return AnswerPrefillPlan(
+            past_key_values=retrieval_past,
+            prompt_text="",
+            prefilled_logits=prefilled_logits,
+            prompt_token_count=int(prompt_ids.shape[-1]),
+            prompt_prefill_mode="retrieval_prefill",
+        )
 
     def _build_answer_stats(self, question: str, metadata: dict[str, Any]) -> dict[str, Any]:
         current_offload_bytes = self._update_cpu_offload_peak()
@@ -843,6 +1083,9 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
             "retrieve_chunk_size": self.retrieve_chunk_size,
             "n_frame_tokens": self.n_frame_tokens,
             "fattn": self.fattn,
+            "rekv_dot_backend_requested": self.rekv_dot_backend_requested,
+            "rekv_dot_backend_actual": self.rekv_dot_backend_actual,
+            "retrieval_context_layout": "init_plus_retrieved_old_plus_forced_local",
             **self.last_retrieval_stats,
         }
 
@@ -857,6 +1100,34 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
             }
         )
         return runtime_stats
+
+    def get_evaluation_manifest(self) -> dict[str, Any]:
+        manifest = super().get_evaluation_manifest()
+        manifest.update(
+            {
+                "method_family": self.method_name,
+                "cache_semantics_label": (
+                    "short_memory_only_discard_old_context"
+                    if self.short_memory_only
+                    else "rekv_init_retrieved_old_forced_local"
+                ),
+                "retrieval_offload_mode": (
+                    "disabled_short_memory_only"
+                    if self.short_memory_only
+                    else "rekv_context_manager_with_cpu_offload"
+                ),
+                "rekv_config": {
+                    "n_local": self.n_local,
+                    "retrieve_size": self.retrieve_size,
+                    "retrieve_chunk_size": self.retrieve_chunk_size,
+                    "n_frame_tokens": self.n_frame_tokens,
+                    "fattn_requested": self.fattn,
+                    "dot_backend_requested": self.rekv_dot_backend_requested,
+                    "dot_backend_actual": self.rekv_dot_backend_actual,
+                },
+            }
+        )
+        return manifest
 
 
 class ReKVNoOffloadStreamingMethod(ReKVStreamingMethod):
@@ -930,10 +1201,18 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
             layer.self_attn.rekv_duo_enabled = True
 
         self.attn_dir = attn_config["attn_dir"]
+        self.trained_sink_size = int(attn_config["sink_size"])
+        self.trained_recent_size = int(attn_config["recent_size"])
         self.sink_size = sink_size
         self.recent_size = recent_size
         self.actual_sparsity = float(attn_config["actual_sparsity"])
         self.learned_threshold = float(attn_config["learned_threshold"])
+        self.duo_deploy_window_class = _classify_duo_deploy_window(
+            trained_sink_size=self.trained_sink_size,
+            trained_recent_size=self.trained_recent_size,
+            deploy_sink_size=self.sink_size,
+            deploy_recent_size=self.recent_size,
+        )
 
         self.n_local = int(n_local)
         # Compute n_init for the ReKV context manager that preserves enough
@@ -976,13 +1255,44 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
             "recent_size": self.recent_size,
             "actual_sparsity": self.actual_sparsity,
             "learned_threshold": self.learned_threshold,
+            "trained_sink_size": self.trained_sink_size,
+            "trained_recent_size": self.trained_recent_size,
+            "duo_deploy_window_class": self.duo_deploy_window_class,
+            "duo_cache_semantics": "hybrid_rekv_context_plus_duo_head_routing",
+            "duo_eval_attention_backend": self.runtime_backend_info["attention_module_load_path"],
+            "effective_duo_recent_window_tokens": min(self.n_local, self.recent_size),
             "n_local": self.n_local,
             "retrieve_size": self.retrieve_size,
             "retrieve_chunk_size": self.retrieve_chunk_size,
             "n_frame_tokens": self.n_frame_tokens,
             "fattn": self.fattn,
+            "rekv_dot_backend_requested": self.rekv_dot_backend_requested,
+            "rekv_dot_backend_actual": self.rekv_dot_backend_actual,
+            "retrieval_context_layout": "init_plus_retrieved_old_plus_forced_local",
             **self.last_retrieval_stats,
         }
+
+    def get_evaluation_manifest(self) -> dict[str, Any]:
+        manifest = super().get_evaluation_manifest()
+        manifest.update(
+            {
+                "method_family": "duo_plus_rekv",
+                "cache_semantics_label": "hybrid_rekv_context_plus_duo_head_routing",
+                "retrieval_offload_mode": "rekv_context_manager_with_cpu_offload",
+                "hybrid_mode_label": "approximate_duo_over_rekv_context",
+                "duo_attention_backend": self.runtime_backend_info["attention_module_load_path"],
+                "duo_deploy_config": {
+                    "trained_sink_size": self.trained_sink_size,
+                    "trained_recent_size": self.trained_recent_size,
+                    "deploy_sink_size": self.sink_size,
+                    "deploy_recent_size": self.recent_size,
+                    "deploy_window_class": self.duo_deploy_window_class,
+                    "actual_sparsity": self.actual_sparsity,
+                    "effective_recent_window_tokens": min(self.n_local, self.recent_size),
+                },
+            }
+        )
+        return manifest
 
 
 def build_method_from_args(args) -> StreamingMethod:

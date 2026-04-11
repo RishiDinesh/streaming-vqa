@@ -14,7 +14,12 @@ from .feature_cache import (
     load_feature_cache_manifest,
 )
 from .methods import DEFAULT_DUO_ATTN_DIR, build_method_from_args
-from .run_eval import seed_everything, write_json_atomic
+from .run_eval import (
+    build_evaluation_manifest,
+    seed_everything,
+    validate_comparison_run_config,
+    write_json_atomic,
+)
 
 try:
     from tqdm.auto import tqdm
@@ -137,9 +142,9 @@ def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def validate_feature_cache(args: argparse.Namespace) -> Path | None:
+def validate_feature_cache(args: argparse.Namespace) -> tuple[Path | None, dict[str, Any] | None]:
     if args.feature_cache_root is None:
-        return None
+        return None, None
 
     cache_root = Path(args.feature_cache_root).expanduser().resolve(strict=False)
     manifest = load_feature_cache_manifest(cache_root)
@@ -160,14 +165,15 @@ def validate_feature_cache(args: argparse.Namespace) -> Path | None:
         raise ValueError(
             f"Feature cache sample_fps mismatch: expected {args.sample_fps}, got {manifest.get('sample_fps')}"
         )
-    return cache_root
+    return cache_root, manifest
 
 
 def main() -> int:
     args = parse_args()
     seed_everything(args.seed)
-    cache_root = validate_feature_cache(args)
     run_config = build_run_config(args)
+    validate_comparison_run_config(run_config)
+    cache_root, cache_manifest = validate_feature_cache(args)
     probe_frame_counts = parse_probe_frame_counts(args.probe_frame_counts)
 
     dataset = build_dataset_from_args(args)
@@ -225,6 +231,11 @@ def main() -> int:
         raise ValueError("No valid probe frame counts remain after clipping to the sampled video length.")
 
     method = build_method_from_args(args)
+    evaluation_manifest = build_evaluation_manifest(
+        run_config=run_config,
+        method_manifest=method.get_evaluation_manifest(),
+        feature_cache_manifest=cache_manifest,
+    )
     method.reset(
         {
             "sample_id": sample.sample_id,
@@ -314,6 +325,7 @@ def main() -> int:
 
     payload = {
         "run_config": run_config,
+        "evaluation_manifest": evaluation_manifest,
         "profile_config": {
             "profiling_question": args.profiling_question,
             "probe_frame_counts": clipped_probe_counts,
