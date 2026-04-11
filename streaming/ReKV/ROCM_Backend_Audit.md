@@ -2,12 +2,13 @@
 
 This note tracks what is currently wrong, what is acceptable for AMD validation, and what still needs deeper work.
 
-## What We Are Doing Wrong Right Now
+## What Was Wrong Before (Now Fixed)
 
 - Treating AMD Duo fallback results as if they were equivalent to NVIDIA `block_sparse_attn` results.
 - Looking only at library availability instead of recording the actual backend selected at runtime.
 - Leaving `/opt/venv` versus `duo` ambiguous on MI300X even though the maintained launchers prefer `/opt/venv`.
 - Running Duo-sensitive experiments without a strict mode that can fail fast when the streaming path falls back to SDPA.
+- Mislabeling CUDA SDPA-fallback runs as `"rocm_baseline_duo"` — now fixed to `"sdpa_fallback_duo"` (hardware-neutral label).
 
 ## What Is Acceptable In Phase 1
 

@@ -41,7 +41,6 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
     dtype = resolve_dtype(args.dtype, device)
     runtime_backend = collect_runtime_backend_info(device, dtype)
     duo_backend = resolve_duo_backend_stack(streaming_attn_backend_requested="blocksparse")
-    backend_name = runtime_backend.get("accelerator_backend")
 
     payload = {
         "python": {
@@ -51,7 +50,6 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         },
         "torch_runtime": {
             "torch_version": torch.__version__,
-            "hip_version": getattr(torch.version, "hip", None),
             "cuda_version": getattr(torch.version, "cuda", None),
             "cuda_available": torch.cuda.is_available(),
             "device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
@@ -103,16 +101,12 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     if duo_backend.get("streaming_attn_backend_actual") == "sdpa":
-        if backend_name == "rocm":
-            payload["warnings"].append(
-                "Duo streaming attention resolves to SDPA fallback in this ROCm environment. "
-                "Treat Duo results here as ROCm baseline results, not NVIDIA sparse-kernel equivalents."
-            )
-        else:
-            payload["warnings"].append(
-                "Duo streaming attention resolves to SDPA fallback in this environment. "
-                "This is a valid baseline, but not a native sparse-kernel Duo run."
-            )
+        payload["warnings"].append(
+            "Duo streaming attention resolves to SDPA fallback. "
+            "block_sparse_attn is not installed or not detected. "
+            "Install block_sparse_attn (see README) for paper-faithful native sparse Duo streaming on NVIDIA. "
+            "Results labeled 'sdpa_fallback_duo' are a valid baseline but not equivalent to the DuoAttention paper kernel."
+        )
     if not runtime_backend.get("flashinfer_available"):
         payload["warnings"].append(
             "flashinfer is unavailable; standard transformer RMSNorm/RoPE paths will be used."

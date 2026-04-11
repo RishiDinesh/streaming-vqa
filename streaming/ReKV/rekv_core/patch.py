@@ -35,13 +35,13 @@ def huggingface_forward(forward):
 
 def patch_hf(
     model,
-    attn_kwargs: dict = {},
-    base = None, 
+    attn_kwargs: dict | None = None,
+    base = None,
     distance_scale = None,
     **kwargs
 ):
+    attn_kwargs = dict(attn_kwargs) if attn_kwargs else {}
     attn_kwargs.update(kwargs)
-    # This approach lacks scalability and will be refactored.
     from transformers import LlamaForCausalLM, MistralForCausalLM, Qwen2ForCausalLM, Qwen2Model
     from transformers.models.llama.modeling_llama import LlamaAttention, LlamaModel, BaseModelOutputWithPast
 

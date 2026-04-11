@@ -8,23 +8,25 @@ We adapt the idea of DuoAttention to the multi-modal setting, specifically for v
 ## Flowchart
 ![image](images/duo_atten_crop.png)
 
-## Environment Setup (AMD/ROCm, tested on MI300X VF)
+## Environment Setup (NVIDIA / CUDA — Primary Target)
 
-This setup was validated in this repo on:
-- Ubuntu 24.04.2
-- ROCm runtime with `gfx942` (AMD Instinct MI300X VF)
+The active branch `exp/nv-gpu-inference` targets NVIDIA SLURM clusters with CUDA. This matches the original ReKV and DuoAttention papers, both of which were developed and evaluated on NVIDIA hardware (H800/A100 with CUDA 12.x).
+
+This setup is validated on:
+- Ubuntu 22.04+
+- CUDA 12.x
 - Conda env: `duo`
 
 ```bash
 conda create -yn duo python=3.10
 conda activate duo
 
-# PyTorch ROCm build (ROCm 6.1 wheel line)
+# PyTorch CUDA build
 pip install \
   torch==2.4.1 \
   torchvision==0.19.1 \
   torchaudio==2.4.1 \
-  --index-url https://download.pytorch.org/whl/rocm6.1
+  --index-url https://download.pytorch.org/whl/cu121
 
 # Core dependencies used by training/eval/scripts
 pip install \
@@ -56,14 +58,21 @@ pip install "setuptools<81"
 pip install -e .
 ```
 
-### AMD Notes on Optional Acceleration Libraries
+### NVIDIA Notes on Optional Acceleration Libraries
 
-- The currently documented `flash_attn`, `flashinfer`, and `block_sparse_attn` install paths are CUDA-specific.
-- On ROCm machines, those CUDA wheels fail at runtime (missing `libcudart.so.12`), and source builds are not wired in this repo yet.
-- The repo now includes ROCm-safe fallbacks:
-  - `flash_attn` API calls fallback to PyTorch SDPA kernels.
-  - `flashinfer` RMSNorm/RoPE hooks are optional.
-  - `blocksparse` streaming attention falls back to `sdpa` when unavailable.
+- `flash_attn`, `flashinfer`, and `block_sparse_attn` are all CUDA-native and should be installed on NVIDIA hardware.
+- `block_sparse_attn` is required for paper-faithful DuoAttention sparse streaming kernels.
+- `flashinfer` provides faster RMSNorm/RoPE kernels (optional but recommended).
+- Without `block_sparse_attn`, Duo streaming falls back to SDPA; use `--duo-strict-no-sdpa-fallback` to catch this.
+
+### AMD / ROCm (Secondary, Portability Only)
+
+The prior `exp/amd-gpu-inference` branch targeted AMD MI300X (ROCm 6.1). ROCm support is preserved in the codebase but is not the active development target.
+
+- On ROCm, `flash_attn`, `flashinfer`, and `block_sparse_attn` CUDA wheels fail at runtime.
+- ROCm-safe fallbacks are in place: SDPA for attention, optional flashinfer hooks, SDPA fallback for blocksparse.
+- For AMD setup, use the ROCm PyTorch wheel (`--index-url https://download.pytorch.org/whl/rocm6.1`).
+- ROCm-specific audit notes: `streaming/ReKV/ROCM_Backend_Audit.md`.
 
 ### Install LMMs-Eval (eval only)
 
@@ -105,7 +114,7 @@ cd ..
 ```
 
 ## Verify Installation
-To verify that the AMD environment installation was successful, run:
+To verify that the environment installation was successful, run:
 ```bash
 python - <<'PY'
 import torch

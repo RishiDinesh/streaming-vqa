@@ -29,7 +29,8 @@ def _full_causal_attention(
                 f"q_heads={query.shape[1]} kv_heads={key.shape[1]}"
             )
         repeat_factor = query.shape[1] // key.shape[1]
-        # Torch 2.4 ROCm SDPA does not expose enable_gqa, so expand KV heads manually.
+        # SDPA enable_gqa is not always available (e.g. older PyTorch or non-CUDA backends),
+        # so expand KV heads manually for full cross-backend compatibility.
         key = key.repeat_interleave(repeat_factor, dim=1)
         value = value.repeat_interleave(repeat_factor, dim=1)
 

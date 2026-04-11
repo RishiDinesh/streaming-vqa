@@ -987,29 +987,17 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _apply_backend_speedups() -> None:
-    """Apply safe backend-aware performance knobs at process startup.
+    """Apply NVIDIA/CUDA performance knobs at process startup.
 
-    Shared behavior:
-    - torch.set_float32_matmul_precision('high')
-
-    ROCm behavior:
-    - keep the previous ROCm 7 auto-compile path because it materially helps
-      MI300X decode throughput in this repo.
-
-    CUDA / NVIDIA behavior:
-    - enable TF32 by default
-    - only enable torch.compile when explicitly requested with PYTORCH_COMPILE=1
+    - torch.set_float32_matmul_precision('high') — always
+    - TF32 enabled on CUDA (default, override with PYTORCH_TF32=0)
+    - torch.compile opt-in via PYTORCH_COMPILE=1
     """
     import os
 
     torch.set_float32_matmul_precision("high")
 
-    hip_ver = getattr(torch.version, "hip", None) or ""
-    cuda_ver = getattr(torch.version, "cuda", None) or ""
-    is_rocm = bool(hip_ver)
-    is_cuda = bool(cuda_ver) and not is_rocm
-
-    if is_cuda:
+    if torch.cuda.is_available():
         tf32_flag = os.environ.get("PYTORCH_TF32", "1").strip()
         if tf32_flag != "0":
             if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
@@ -1017,24 +1005,9 @@ def _apply_backend_speedups() -> None:
             if hasattr(torch.backends, "cudnn"):
                 torch.backends.cudnn.allow_tf32 = True
 
-    compile_flag = os.environ.get("PYTORCH_COMPILE", "").strip()
-    if compile_flag == "0":
-        return
-    should_try_compile = False
-    backend_label = "runtime"
-    if is_rocm:
-        should_try_compile = compile_flag == "1" or hip_ver.startswith("7.")
-        backend_label = "rocm"
-    elif is_cuda:
-        should_try_compile = compile_flag == "1"
-        backend_label = "cuda"
-    else:
-        should_try_compile = compile_flag == "1"
-
-    if not should_try_compile:
+    if os.environ.get("PYTORCH_COMPILE", "").strip() != "1":
         return
 
-    # Patch methods module so build_method_from_args compiles the LM after load.
     from . import methods as _methods
     _orig_build = _methods.build_method_from_args
 
@@ -1047,9 +1020,9 @@ def _apply_backend_speedups() -> None:
                 compiled = torch.compile(lang, mode="reduce-overhead", dynamic=True)
                 llava.language_model = compiled  # type: ignore[attr-defined]
                 compiled._rekv_compiled = True  # type: ignore[attr-defined]
-                print(f"[{backend_label}] torch.compile(reduce-overhead) applied to language model")
+                print("[cuda] torch.compile(reduce-overhead) applied to language model")
             except Exception as exc:
-                print(f"[{backend_label}] torch.compile skipped: {exc}")
+                print(f"[cuda] torch.compile skipped: {exc}")
         return m
 
     _methods.build_method_from_args = _compiling_build

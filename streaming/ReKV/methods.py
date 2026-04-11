@@ -187,26 +187,13 @@ def _classify_duo_deploy_window(
 
 def collect_runtime_backend_info(device: torch.device, dtype: torch.dtype) -> dict[str, Any]:
     device_name = None
-    rocm_arch = None
     accelerator_backend = "cpu"
     if device.type == "cuda" and torch.cuda.is_available():
-        if getattr(torch.version, "hip", None):
-            accelerator_backend = "rocm"
-        elif getattr(torch.version, "cuda", None):
-            accelerator_backend = "cuda"
-        else:
-            accelerator_backend = "gpu"
+        accelerator_backend = "cuda"
         try:
             device_name = torch.cuda.get_device_name(device)
         except Exception:
             device_name = None
-        try:
-            device_properties = torch.cuda.get_device_properties(device)
-            rocm_arch = getattr(device_properties, "gcnArchName", None)
-            if not device_name:
-                device_name = rocm_arch
-        except Exception:
-            device_properties = None
 
     return {
         "torch_version": torch.__version__,
@@ -215,9 +202,7 @@ def collect_runtime_backend_info(device: torch.device, dtype: torch.dtype) -> di
         "device": str(device),
         "accelerator_backend": accelerator_backend,
         "device_name": device_name,
-        "rocm_arch": rocm_arch,
         "torch_dtype": str(dtype).replace("torch.", ""),
-        "rocm_version": getattr(torch.version, "hip", None),
         "cuda_version": getattr(torch.version, "cuda", None),
         "flash_attn_available": bool(FLASH_ATTN_AVAILABLE),
         "block_sparse_attn_available": bool(is_blocksparse_available()),
@@ -265,7 +250,7 @@ def resolve_duo_backend_stack(
         "duo_result_category": (
             "nvidia_sparse_duo_equivalent"
             if streaming_attn_backend_actual == "blocksparse"
-            else "rocm_baseline_duo"
+            else "sdpa_fallback_duo"
         ),
     }
 
@@ -487,10 +472,6 @@ def extract_logits_from_output(output, output_projection=None) -> torch.Tensor:
             "Language model output does not expose logits and no output projection was provided."
         )
     hidden_states = output.last_hidden_state
-    # Some ROCm/compiled inference paths return inference tensors here; clone so
-    # the LM head can consume them without autograd bookkeeping errors.
-    if getattr(torch.version, "hip", None):
-        hidden_states = hidden_states.clone()
     return output_projection(hidden_states)
 
 
@@ -1065,9 +1046,6 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
         current_bytes = self._current_cpu_offload_bytes()
         self.cpu_offload_bytes_peak = max(self.cpu_offload_bytes_peak, current_bytes)
         return current_bytes
-
-    def ingest_features(self, feature_tensor: torch.Tensor, timestamp_sec: float) -> dict[str, Any]:
-        return super().ingest_features(feature_tensor, timestamp_sec)
 
     def _retrieved_timestamps(self, block_indices: list[int]) -> list[float]:
         timestamps: list[float] = []

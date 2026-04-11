@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SLURM profiling job for streaming ReKV methods.
+# Submit from the repo root:
+#   sbatch --output=/abs/path/logs/%x-%j.out streaming/ReKV/profile_streaming.sh [args]
+#
 #SBATCH --job-name=streaming-profile
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -6,7 +10,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=08:00:00
-#SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
 

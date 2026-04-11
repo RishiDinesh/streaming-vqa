@@ -13,7 +13,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--result-dir", required=True, help="Directory containing per-method result JSONs.")
     parser.add_argument("--profile-dir", required=True, help="Directory containing per-method profile JSONs.")
-    parser.add_argument("--env-summary", required=True, help="Path to the saved ROCm validator JSON.")
+    parser.add_argument("--env-summary", required=True, help="Path to the saved runtime validator JSON (from validate_runtime_env.py).")
     parser.add_argument("--output-path", required=True, help="Markdown report output path.")
     return parser.parse_args()
 
@@ -71,14 +71,13 @@ def main() -> int:
 
     methods = ["full_streaming", "duo_streaming", "rekv", "duo_plus_rekv"]
     lines: list[str] = []
-    lines.append("# ROCm Backend Audit Report")
+    lines.append("# Backend Audit Report")
     lines.append("")
     lines.append("## Environment")
     lines.append(f"- Python: `{env_summary.get('python', {}).get('executable')}`")
-    lines.append(
-        f"- Torch/ROCm: `{env_summary.get('torch_runtime', {}).get('torch_version')}` / "
-        f"`{env_summary.get('torch_runtime', {}).get('hip_version')}`"
-    )
+    torch_ver = env_summary.get('torch_runtime', {}).get('torch_version')
+    cuda_ver = env_summary.get('torch_runtime', {}).get('cuda_version')
+    lines.append(f"- Torch/CUDA: `{torch_ver}` / `{cuda_ver}`")
     lines.append("")
     lines.append("## Method Comparison")
     lines.append("")

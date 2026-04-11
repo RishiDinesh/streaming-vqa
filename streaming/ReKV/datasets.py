@@ -294,9 +294,7 @@ def _sample_decord_video(
     except ModuleNotFoundError:
         return _sample_imageio_video(video_path, sample_fps)
 
-    # This decord build crashes in its threaded FFmpeg decoder when num_threads >= 4.
-    # Clamp to 2: still ~30% faster than 1 thread, and never hits the crash.
-    safe_threads = min(max(int(decode_threads), 1), 2)
+    safe_threads = max(int(decode_threads), 1)
     reader = VideoReader(video_path, ctx=cpu(0), num_threads=safe_threads)
     native_fps = float(reader.get_avg_fps())
     if native_fps <= 0:

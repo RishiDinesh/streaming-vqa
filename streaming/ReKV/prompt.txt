@@ -1,126 +1,110 @@
 Streaming ReKV handoff
 ======================
 
-Use this file as the fast handoff context for the streaming `ReKV` lane.
+Fast context for the streaming/ReKV module on the exp/nv-gpu-inference branch.
 
-Active scope
-------------
-- Focus on `streaming/ReKV`.
-- Treat `duo_attn/` as support code for comparison methods.
-- Main active datasets:
-  - `RVS-Ego`
-  - `RVS-Movie`
-- Main active methods:
-  - `full_streaming`
-  - `duo_streaming`
-  - `rekv`
-  - `duo_plus_rekv`
-- Main detailed guide:
-  - `streaming/ReKV/ReKV_Duo.md`
-
-Current branch intent
----------------------
-- Current working branch: `exp/nv-gpu-inference`
-- Preferred execution target: NVIDIA SLURM cluster
-- Preferred Python environment for new runs: `conda activate duo`
-- Preferred runtime validator:
-  - `python -m streaming.ReKV.validate_runtime_env`
-- Historical note:
-  - the original project/papers/repos are NVIDIA-first
-  - `exp/amd-gpu-inference` is the porting/adaptation branch
-
-Streaming contract
-------------------
-- causal frame ingest only
-- one sampled frame per forward pass
-- shared state across questions from the same video
-- no offline whole-video prefill
-- question-time visibility uses sampled timestamps strictly earlier than each conversation `end_time`
-- dataset loader currently sorts conversations by `end_time`
-- all comparison methods must use the same sampled-frame schedule
-
-Main code
----------
-- `streaming/ReKV/run_eval.py`
-- `streaming/ReKV/profile_streaming.py`
-- `streaming/ReKV/methods.py`
-- `streaming/ReKV/datasets.py`
-- `streaming/ReKV/feature_cache.py`
-- `streaming/ReKV/precompute_features.py`
-- `streaming/ReKV/rekv_core/attention/rekv_attention.py`
-- `streaming/ReKV/rekv_core/attention/kv_cache_manager.py`
-- `streaming/ReKV/validate_runtime_env.py`
-
-Main scripts
-------------
-- `scripts/streaming_env.sh`
-- `scripts/run_streaming_full_eval_local.sh`
-- `scripts/run_streaming_profile_local.sh`
-- `scripts/run_streaming_subsample5_local.sh`
-- `scripts/run_streaming_subsample_matrix_local.sh`
-- `streaming/ReKV/run_eval.sh`
-- `streaming/ReKV/profile_streaming.sh`
-- `scripts/run_streaming_smoke.sh`
-
-Current corrected setup
------------------------
-- `run_eval.py` writes a shared `evaluation_manifest`.
-- The manifest now records question ordering correctly as:
-  - `dataset_loader_sorted_by_end_time`
-- `run_eval.py` now supports sharded evaluation with:
-  - `--num-chunks`
-  - `--chunk-index`
-- Feature-cache reuse is guarded by schedule-equivalence checks.
-- All methods share the same prompt-prefill / decode path in `methods.py`.
-- Duo methods expose actual backend resolution, not just library availability.
-- Duo methods support:
-  - `--duo-strict-no-sdpa-fallback`
-- ReKV retrieval on short probe horizons no longer crashes when `n_init` exceeds the currently available remainder.
-
-Backend policy
---------------
-- Use `validate_runtime_env` before trusting any Duo comparison.
-- On NVIDIA:
-  - expect `accelerator_backend = cuda`
-  - only treat Duo as native sparse streaming if `streaming_attn_backend_actual = blocksparse`
-  - prefer native CUDA libraries and kernels rather than AMD fallback assumptions
-- On ROCm:
-  - historical audit support remains
-  - `validate_rocm_env` is a compatibility alias to `validate_runtime_env`
-  - ROCm-specific notes live in `streaming/ReKV/ROCM_Backend_Audit.md`
-
-Working interpretation
-----------------------
-- `rekv` remains the safest mainline method to trust and extend.
-- `duo_plus_rekv` is explicitly an approximate hybrid:
-  - ReKV retrieval remains native
-  - Duo routing is applied over the assembled ReKV answer context
-- Do not describe Duo fallback runs as equivalent to native block-sparse Duo runs.
-
-Suggested workflow
-------------------
-1. Validate runtime:
-   `python -m streaming.ReKV.validate_runtime_env`
-2. Optionally precompute feature cache:
-   `python -m streaming.ReKV.precompute_features ...`
-3. Run eval:
-   `python -m streaming.ReKV.run_eval ...`
-   or `sbatch streaming/ReKV/run_eval.sh ...`
-   or `NUM_CHUNKS=N sbatch --array=0-(N-1) scripts/run_streaming_eval_slurm_array.sh`
-4. Judge:
-   `python -m streaming.ReKV.judge_results --in-place ...`
-5. Plot:
-   `python -m streaming.ReKV.plot_results ...`
-6. Profile:
-   `python -m streaming.ReKV.profile_streaming ...`
-   or `sbatch streaming/ReKV/profile_streaming.sh ...`
-
-Current result story
+Branch / environment
 --------------------
-- Retained full-eval trees still support the conservative conclusion:
-  - `rekv` is the main method to trust
-  - `duo_plus_rekv` is useful to compare and tune, but not a clear default winner
-- The branch is now better instrumented for backend-specific interpretation, especially for Duo.
-- The branch should be kept aligned with the official NVIDIA-first ReKV and Duo implementations:
-  - ReKV paper/repo: https://arxiv.org/abs/2503.00540 , https://github.com/Becomebright/ReKV
-  - Duo paper/repo: https://arxiv.org/abs/2410.10819 , https://github.com/mit-han-lab/duo-attention
+- Branch:   exp/nv-gpu-inference
+- Cluster:  NVIDIA SLURM
+- Conda env: <repo-root>/envs/duo  (created by setup.sh)
+- Activate: conda activate <repo-root>/envs/duo
+
+Datasets
+--------
+- rvs_ego:   annotation ego/ego4d_oe.json,     HF subset ego
+- rvs_movie: annotation movie/movienet_oe.json, HF subset movie
+- HF repo: Becomebright/RVS
+
+Methods (all four)
+------------------
+- full_streaming   — plain causal KV cache; no compression
+- duo_streaming    — Duo head routing; blocksparse kernel required
+- rekv             — local window on GPU + CPU offload + top-k retrieval at question time
+- duo_plus_rekv    — ReKV retrieval then Duo head routing over assembled context (approximate)
+
+Streaming contract (enforced identically across all methods)
+------------------------------------------------------------
+- Causal ingest only: one sampled frame per forward pass
+- Visibility cutoff: sampled timestamps strictly < conversation end_time (bisect_left)
+- Conversations sorted by end_time at load time
+- Shared KV state across all questions from the same video
+- No offline whole-video prefill
+- Feature cache must exactly match the run's sampling schedule
+
+Key files
+---------
+- streaming/ReKV/run_eval.py              — main eval loop (causal ingest, resume, sharding)
+- streaming/ReKV/methods.py               — all four method classes, shared utilities
+- streaming/ReKV/datasets.py              — RVS dataset loading, frame sampling
+- streaming/ReKV/feature_cache.py         — feature cache: validated load
+- streaming/ReKV/precompute_features.py   — batch extract and save visual features
+- streaming/ReKV/common.py               — data structures, scoring
+- streaming/ReKV/validate_runtime_env.py  — report actual backend stack
+- streaming/ReKV/judge_results.py         — LLM semantic scoring (0-5)
+- streaming/ReKV/plot_results.py          — paper-style quality/latency/memory plots
+- streaming/ReKV/profile_streaming.py     — single-video latency/memory profiling
+- streaming/ReKV/compare_subsamples.py    — cross-slice stability analysis
+- streaming/ReKV/smoke_test.py            — fast unit tests (no GPU required)
+- streaming/ReKV/rekv_core/patch.py       — patches HF model with ReKV attention forward
+- streaming/ReKV/rekv_core/attention/rekv_attention.py   — ReKV attention forward
+- streaming/ReKV/rekv_core/attention/kv_cache_manager.py — CPU offload engine
+
+Key scripts
+-----------
+- scripts/streaming_env.sh                    — conda env activation (project-local first)
+- streaming/ReKV/run_eval.sh                  — single-GPU SLURM eval job
+- streaming/ReKV/profile_streaming.sh         — SLURM profiling job
+- scripts/run_streaming_eval_slurm_array.sh   — multi-GPU sharded SLURM array
+- scripts/run_streaming_subset3_slurm.sh      — 3-video subset: all 4 methods, 4 jobs
+
+Workflow
+--------
+1. Setup (once):
+     bash setup.sh
+
+2. Validate backend:
+     python -m streaming.ReKV.validate_runtime_env
+     # Expect: streaming_attn_backend_actual = blocksparse
+
+3. Run 3-video subset (all 4 methods):
+     bash scripts/run_streaming_subset3_slurm.sh \
+       --annotation-path /path/to/ego4d_oe.json \
+       --video-root /path/to/videos \
+       --dataset rvs_ego \
+       --attn-dir /path/to/duo/weights
+
+4. Full eval (single GPU):
+     sbatch --output="$(pwd)/logs/%x-%j.out" streaming/ReKV/run_eval.sh \
+       --dataset rvs_ego --method rekv
+
+5. Full eval (multi-GPU sharded):
+     NUM_CHUNKS=8 DATASET=rvs_ego METHOD=rekv \
+       sbatch --array=0-7 \
+         --output="$(pwd)/logs/%x-%A_%a.out" \
+         scripts/run_streaming_eval_slurm_array.sh
+
+6. Judge answers:
+     python -m streaming.ReKV.judge_results --in-place <results.json>
+
+7. Plot:
+     python -m streaming.ReKV.plot_results <results.json> --output-dir outputs/plots/
+
+Backend requirements
+--------------------
+- flash-attn:        full-attention forward (strongly recommended)
+- block_sparse_attn: sparse Duo streaming (required for paper-faithful Duo)
+- flashinfer:        RMSNorm/RoPE acceleration (optional)
+- decord:            fast video decoding (recommended)
+Block-Sparse install: cd Block-Sparse-Attention && BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;89;90" python setup.py install
+
+Result categories in manifests
+-------------------------------
+- nvidia_sparse_duo_equivalent  — block_sparse_attn active, paper-faithful
+- sdpa_fallback_duo             — block_sparse_attn missing (should not occur on NVIDIA)
+
+Reference
+---------
+- Full guide:      streaming/ReKV/ReKV_Duo.md
+- ReKV paper:      https://arxiv.org/abs/2503.00540
+- DuoAttention:    https://arxiv.org/abs/2410.10819
