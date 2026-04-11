@@ -8,7 +8,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG STREAMING_VQA_REPO="https://github.com/RishiDinesh/streaming-vqa.git"
 ARG STREAMING_VQA_REF="main"
 ARG BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;86;89;90"
-ARG MAX_JOBS=4
+ARG MAX_JOBS=1
+ARG NVCC_THREADS=1
 ARG LMMS_EVAL_REPO="https://github.com/RishiDinesh/lmms-eval.git"
 ARG LMMS_EVAL_REF="146a2836a3e34347d611a348592f25ac22958589"
 ARG BLOCK_SPARSE_ATTN_REPO="https://github.com/RishiDinesh/Block-Sparse-Attention.git"
@@ -24,7 +25,8 @@ ENV VIRTUAL_ENV=/opt/venv \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     BLOCK_SPARSE_ATTN_CUDA_ARCHS=${BLOCK_SPARSE_ATTN_CUDA_ARCHS} \
-    MAX_JOBS=${MAX_JOBS}
+    MAX_JOBS=${MAX_JOBS} \
+    NVCC_THREADS=${NVCC_THREADS}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -97,7 +99,7 @@ RUN cd /workspace/Block-Sparse-Attention \
  && python setup.py install
 
 RUN python /opt/mmda/verify_install.py \
- && python -m duo_attn.train --help >/dev/null \
+ && python -m duo_attn.train --help >/dev/null
 
 
 FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime
