@@ -8,33 +8,62 @@ We adapt the idea of DuoAttention to the multi-modal setting, specifically for v
 ## Flowchart
 ![image](images/duo_atten_crop.png)
 
-## Environment Setup
+## Environment Setup (AMD/ROCm, tested on MI300X VF)
+
+This setup was validated in this repo on:
+- Ubuntu 24.04.2
+- ROCm runtime with `gfx942` (AMD Instinct MI300X VF)
+- Conda env: `duo`
 
 ```bash
 conda create -yn duo python=3.10
 conda activate duo
 
-# Install CUDA toolkit
-conda install -y \
-  -c "nvidia/label/cuda-12.4.1" \
-  -c conda-forge \
-  cuda-toolkit
+# PyTorch ROCm build (ROCm 6.1 wheel line)
+pip install \
+  torch==2.4.1 \
+  torchvision==0.19.1 \
+  torchaudio==2.4.1 \
+  --index-url https://download.pytorch.org/whl/rocm6.1
 
-# Install PyTorch with CUDA 12.4 support
-pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+# Core dependencies used by training/eval/scripts
+pip install \
+  transformers==4.45.2 \
+  opencv-python \
+  decord \
+  accelerate \
+  sentencepiece \
+  datasets \
+  wandb \
+  zstandard \
+  matplotlib \
+  huggingface_hub==0.25.2 \
+  tensor_parallel==2.0.0 \
+  ninja \
+  packaging \
+  tqdm \
+  requests \
+  pandas \
+  seaborn \
+  jieba \
+  fuzzywuzzy \
+  rouge
 
-# Install other dependencies
-pip install transformers==4.45.2 opencv-python decord accelerate sentencepiece datasets wandb zstandard matplotlib huggingface_hub==0.25.2 tensor_parallel==2.0.0 ninja packaging
+# tensor_parallel currently imports pkg_resources
+pip install "setuptools<81"
 
-# Install FlashAttention
-pip install "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.8/flash_attn-2.6.3+cu124torch2.4-cp310-cp310-linux_x86_64.whl"
-
-# Install FlashInfer
-pip install "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.1.6/flashinfer-0.1.6+cu121torch2.4-cp310-cp310-linux_x86_64.whl#sha256=d7605fbe3f14ef7f36e702f627c1f06e5a32495b5ebfe34313c3fb15f3e4eb06"
-
-# Install DuoAttention
+# Install this repo
 pip install -e .
 ```
+
+### AMD Notes on Optional Acceleration Libraries
+
+- The currently documented `flash_attn`, `flashinfer`, and `block_sparse_attn` install paths are CUDA-specific.
+- On ROCm machines, those CUDA wheels fail at runtime (missing `libcudart.so.12`), and source builds are not wired in this repo yet.
+- The repo now includes ROCm-safe fallbacks:
+  - `flash_attn` API calls fallback to PyTorch SDPA kernels.
+  - `flashinfer` RMSNorm/RoPE hooks are optional.
+  - `blocksparse` streaming attention falls back to `sdpa` when unavailable.
 
 ### Install LMMs-Eval (eval only)
 
@@ -50,7 +79,7 @@ pip install -e .
 cd ..
 ```
 
-### Install Block Sparse Streaming Attention
+### Install Block Sparse Streaming Attention (CUDA-only today)
 
 This project uses a patched fork of Block Sparse Attention with the required `setup.py` changes already applied. To setup:
 
@@ -62,7 +91,7 @@ cd Block-Sparse-Attention
 git checkout 8e73b82a47de87dba3110e40c38c35f41c3f5d0d
 ```
 
-This fork targets the cluster GPUs through `setup.py`.
+This fork targets NVIDIA cluster GPUs through `setup.py`.
 - 86 corresponds to RTX A2000 / A4000 / A4500 / A5000 / A6000 class,
 - 89 corresponds to Ada / RTX 4090. 
 
@@ -76,21 +105,28 @@ cd ..
 ```
 
 ## Verify Installation
-To verify that the installation was successful, you can run the following command in the root directory of the project:
+To verify that the AMD environment installation was successful, run:
 ```bash
 python - <<'PY'
 import torch
 print("torch:", torch.__version__)
 print("torch cuda:", torch.version.cuda)
 print("cuda available:", torch.cuda.is_available())
-import flash_attn
-print("flash_attn ok")
-import flashinfer
-print("flashinfer ok")
-import block_sparse_attn
-import block_sparse_attn_cuda
-print("block_sparse_attn:", block_sparse_attn.__file__)
-print("block_sparse_attn_cuda:", block_sparse_attn_cuda.__file__)
-print("block_sparse_attn ok")
+if torch.cuda.is_available():
+    print("device:", torch.cuda.get_device_name(0))
+
+import transformers
+import decord
+import cv2
+import datasets
+import duo_attn
+print("core deps ok")
+
+for name in ("flash_attn", "flashinfer", "block_sparse_attn"):
+    try:
+        __import__(name)
+        print(f"{name}: available")
+    except Exception as exc:
+        print(f"{name}: not available ({type(exc).__name__})")
 PY
 ```

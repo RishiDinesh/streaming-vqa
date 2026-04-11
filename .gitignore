@@ -1,8 +1,12 @@
 dataset/
 datasets/
 outputs/*/*step*
+outputs/evaluations_streaming/feature_cache/
+outputs/evaluations_streaming/**/qualitative/qualitative_bundle.json
 untracked/
 logs/
+*.json.tmp
+*.tmp
 
 # Synthetic video gen — large files
 # Ignore all data and output folders, only track code
@@ -222,6 +226,7 @@ __marimo__/
 
 weights/
 models/
+model/
 benchmark_results_llava/
 long_prompt.txt
 # macOS specific files
