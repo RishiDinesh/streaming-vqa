@@ -391,7 +391,7 @@ class ContextManager:
             else:  # init KV and context are in self.global_remainder
                 # load init KV
                 init_st = 0
-                init_ed = init_st + self.n_init
+                init_ed = min(init_st + self.n_init, self.global_remainder[0].size(2))
                 global_h_k[:, :, init_st:init_ed] = self.global_remainder[0][:, :, init_st:init_ed]
                 global_h_v[:, :, init_st:init_ed] = self.global_remainder[1][:, :, init_st:init_ed]
                 ed = init_ed
@@ -446,7 +446,8 @@ class ContextManager:
 
         if self.num_global_block <= self.topk:
             if not self.init_exc:  # The local window has not yet been filled, i.e., KV-Cache offloading has not been activated. Retrieval needs to be performed within the local window.
-                assert self.global_remainder[0].size(-2) > self.n_init, f'{self.global_remainder[0].shape}'
+                if self.global_remainder[0].size(-2) <= self.n_init:
+                    return [[] for _ in range(self.num_units)]
                 global_k = self.global_remainder[0][:, :, self.n_init:, :]  # (batch_size, n_head_kv, length - n_init, dim_head)
                 global_k = self._from_group_kv(global_k)  # (batch_size, num_heads, length - n_init, dim_head)
 

@@ -78,6 +78,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--deploy-sink-size", type=int, default=None)
     parser.add_argument("--deploy-recent-size", type=int, default=None)
+    parser.add_argument(
+        "--duo-strict-no-sdpa-fallback",
+        action="store_true",
+        help=(
+            "Fail fast for Duo-based methods if streaming attention would fall back to SDPA."
+        ),
+    )
     parser.add_argument("--n-local", type=int, default=15000)
     parser.add_argument("--retrieve-size", type=int, default=64)
     parser.add_argument("--retrieve-chunk-size", type=int, default=1)
@@ -131,6 +138,7 @@ def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
         "threshold": args.threshold,
         "deploy_sink_size": args.deploy_sink_size,
         "deploy_recent_size": args.deploy_recent_size,
+        "duo_strict_no_sdpa_fallback": args.duo_strict_no_sdpa_fallback,
         "n_local": args.n_local,
         "retrieve_size": args.retrieve_size,
         "retrieve_chunk_size": args.retrieve_chunk_size,

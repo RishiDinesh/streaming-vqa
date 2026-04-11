@@ -85,17 +85,38 @@ def main() -> int:
     manifest_summaries = []
     for payload in profiles:
         method_manifest = payload.get("evaluation_manifest", {}).get("method_manifest", {})
-        backend = method_manifest.get("kernel_backend_path", {})
-        duo_backend = method_manifest.get("duo_attention_backend")
+        backend = dict(method_manifest.get("backend_resolution", {}) or {})
+        duo_backend = backend.get("streaming_attn_backend_actual")
         rekv_config = method_manifest.get("rekv_config", {})
         manifest_summaries.append(
             " | ".join(
                 part
                 for part in [
                     wrapped_display_label(payload, width=24).replace("\n", " "),
-                    f"attn={backend.get('attention_module_load_path')}" if backend.get("attention_module_load_path") else None,
-                    f"duo={duo_backend}" if duo_backend else None,
-                    f"rekv_dot={rekv_config.get('dot_backend_actual')}" if rekv_config.get("dot_backend_actual") else None,
+                    (
+                        f"attn={backend.get('full_attn_backend_actual')}"
+                        if backend.get("full_attn_backend_actual")
+                        else (
+                            f"attn={backend.get('attention_module_load_path')}"
+                            if backend.get("attention_module_load_path")
+                            else None
+                        )
+                    ),
+                    f"duo_stream={duo_backend}" if duo_backend else None,
+                    (
+                        f"rekv_dot={backend.get('rekv_dot_backend_actual')}"
+                        if backend.get("rekv_dot_backend_actual")
+                        else (
+                            f"rekv_dot={rekv_config.get('dot_backend_actual')}"
+                            if rekv_config.get("dot_backend_actual")
+                            else None
+                        )
+                    ),
+                    (
+                        f"category={method_manifest.get('result_interpretation_category')}"
+                        if method_manifest.get("result_interpretation_category")
+                        else None
+                    ),
                 ]
                 if part
             )
