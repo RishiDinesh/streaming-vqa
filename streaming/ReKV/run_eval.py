@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
         choices=["full_streaming", "duo_streaming", "rekv", "rekv_no_offload", "duo_plus_rekv"],
     )
     parser.add_argument("--sample-fps", type=float, default=0.5)
+    parser.add_argument("--num-chunks", type=int, default=1)
+    parser.add_argument("--chunk-index", type=int, default=0)
     parser.add_argument("--max-videos", type=int, default=None)
     parser.add_argument("--video-offset", type=int, default=0)
     parser.add_argument("--video-index", type=int, default=None)
@@ -78,6 +80,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--deploy-sink-size", type=int, default=None)
     parser.add_argument("--deploy-recent-size", type=int, default=None)
+    parser.add_argument(
+        "--duo-strict-no-sdpa-fallback",
+        action="store_true",
+        help=(
+            "Fail fast for Duo-based methods if the CUDA-only blocksparse path is unavailable "
+            "and streaming attention would fall back to SDPA."
+        ),
+    )
 
     parser.add_argument("--n-local", type=int, default=15000)
     parser.add_argument("--retrieve-size", type=int, default=64)
@@ -112,6 +122,8 @@ def default_output_path(args: argparse.Namespace) -> Path:
         base_dir = base_dir / slugify(args.subsample_name)
     elif args.max_videos is not None:
         base_dir = base_dir / f"subsample{args.max_videos}"
+    if int(args.num_chunks) > 1:
+        base_dir = base_dir / "shards" / f"chunk{int(args.chunk_index):03d}-of-{int(args.num_chunks):03d}"
     return base_dir / args.method / model_slug / f"{timestamp}_results.json"
 
 
@@ -136,6 +148,8 @@ def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
         "model": args.model,
         "method": args.method,
         "sample_fps": args.sample_fps,
+        "num_chunks": args.num_chunks,
+        "chunk_index": args.chunk_index,
         "max_videos": args.max_videos,
         "video_offset": args.video_offset,
         "video_index": args.video_index,
@@ -153,6 +167,7 @@ def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
         "threshold": args.threshold,
         "deploy_sink_size": args.deploy_sink_size,
         "deploy_recent_size": args.deploy_recent_size,
+        "duo_strict_no_sdpa_fallback": args.duo_strict_no_sdpa_fallback,
         "n_local": args.n_local,
         "retrieve_size": args.retrieve_size,
         "retrieve_chunk_size": args.retrieve_chunk_size,
@@ -167,6 +182,10 @@ def build_run_config(args: argparse.Namespace) -> dict[str, Any]:
 def validate_comparison_run_config(run_config: dict[str, Any]) -> None:
     if float(run_config["sample_fps"]) <= 0:
         raise ValueError("sample_fps must be > 0 for comparable streaming evaluation.")
+    if int(run_config["num_chunks"]) <= 0:
+        raise ValueError("num_chunks must be >= 1.")
+    if not (0 <= int(run_config["chunk_index"]) < int(run_config["num_chunks"])):
+        raise ValueError("chunk_index must satisfy 0 <= chunk_index < num_chunks.")
     if int(run_config["max_new_tokens"]) <= 0:
         raise ValueError("max_new_tokens must be > 0 for comparable streaming evaluation.")
     if int(run_config["video_decode_threads"]) <= 0:
@@ -181,6 +200,8 @@ def validate_comparison_run_config(run_config: dict[str, Any]) -> None:
         sparsity = run_config.get("sparsity")
         if sparsity is not None and not (0.0 <= float(sparsity) <= 1.0):
             raise ValueError("sparsity must be in [0, 1].")
+        if run_config.get("duo_strict_no_sdpa_fallback") not in {True, False}:
+            raise ValueError("duo_strict_no_sdpa_fallback must be a boolean.")
     if run_config["method"] in {"rekv", "rekv_no_offload", "duo_plus_rekv"}:
         if int(run_config["n_local"]) <= 0:
             raise ValueError("n_local must be > 0 for ReKV-based methods.")
@@ -217,6 +238,8 @@ def build_evaluation_manifest(
             "dataset": run_config.get("dataset"),
             "model": run_config.get("model"),
             "sample_fps": run_config.get("sample_fps"),
+            "num_chunks": run_config.get("num_chunks"),
+            "chunk_index": run_config.get("chunk_index"),
             "max_new_tokens": run_config.get("max_new_tokens"),
             "seed": run_config.get("seed"),
             "dtype_request": run_config.get("dtype"),
@@ -238,11 +261,20 @@ def build_evaluation_manifest(
         "streaming_protocol": {
             "causal_cutoff_policy": "sampled_timestamps_strictly_before_end_time",
             "frame_ingest_policy": "one_sampled_frame_per_forward_pass",
-            "question_ordering": "dataset_loader_sorted_by_start_time_then_end_time",
+            "question_ordering": "dataset_loader_sorted_by_end_time",
             "shared_state_across_questions": True,
             "offline_full_video_prefill": False,
             "resume_requires_run_config_match": True,
             "feature_cache_requires_schedule_equivalence": True,
+        },
+        "parallel_execution": {
+            "dataset_sharding_mode": (
+                "contiguous_video_chunk"
+                if int(run_config.get("num_chunks") or 1) > 1
+                else "single_process"
+            ),
+            "num_chunks": run_config.get("num_chunks"),
+            "chunk_index": run_config.get("chunk_index"),
         },
         "method_manifest": method_manifest,
         "feature_cache_manifest": (
@@ -874,6 +906,11 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
         video_offset=args.video_offset,
         max_videos=args.max_videos,
     )
+    if args.num_chunks > 1:
+        chunk_size = (len(samples) + args.num_chunks - 1) // args.num_chunks
+        chunk_start = args.chunk_index * chunk_size
+        chunk_end = min(len(samples), chunk_start + chunk_size)
+        samples = samples[chunk_start:chunk_end]
     if not samples:
         raise ValueError("No samples matched the requested dataset/video filters.")
 
@@ -949,55 +986,79 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
-def _apply_rocm_speedups() -> None:
-    """Apply safe MI300X / ROCm performance knobs at process startup.
+def _apply_backend_speedups() -> None:
+    """Apply safe backend-aware performance knobs at process startup.
 
-    These are always-on optimisations that do not change numerical output:
-    - torch.set_float32_matmul_precision('high'): lets the matmul unit pick
-      TF32 for intermediate accumulation (bfloat16 weights are unaffected).
-    - PYTORCH_COMPILE=1 env var: wraps the language model with
-      torch.compile(mode='reduce-overhead', dynamic=True) which fuses ops and
-      enables kernel caching.  Adds ~60s of one-time warm-up but cuts per-token
-      decode latency by ~30-50% on ROCm 7 / gfx942.  Disable with
-      PYTORCH_COMPILE=0 if you hit a compilation error.
+    Shared behavior:
+    - torch.set_float32_matmul_precision('high')
+
+    ROCm behavior:
+    - keep the previous ROCm 7 auto-compile path because it materially helps
+      MI300X decode throughput in this repo.
+
+    CUDA / NVIDIA behavior:
+    - enable TF32 by default
+    - only enable torch.compile when explicitly requested with PYTORCH_COMPILE=1
     """
     import os
 
     torch.set_float32_matmul_precision("high")
 
+    hip_ver = getattr(torch.version, "hip", None) or ""
+    cuda_ver = getattr(torch.version, "cuda", None) or ""
+    is_rocm = bool(hip_ver)
+    is_cuda = bool(cuda_ver) and not is_rocm
+
+    if is_cuda:
+        tf32_flag = os.environ.get("PYTORCH_TF32", "1").strip()
+        if tf32_flag != "0":
+            if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.allow_tf32 = True
+
     compile_flag = os.environ.get("PYTORCH_COMPILE", "").strip()
     if compile_flag == "0":
         return
-    # Only enable when explicitly requested or when running on ROCm 7+.
-    hip_ver = getattr(torch.version, "hip", None) or ""
-    rocm7_or_newer = hip_ver.startswith("7.")
-    if compile_flag == "1" or rocm7_or_newer:
-        # Patch methods module so build_method_from_args compiles the LM after load.
-        from . import methods as _methods
-        _orig_build = _methods.build_method_from_args
+    should_try_compile = False
+    backend_label = "runtime"
+    if is_rocm:
+        should_try_compile = compile_flag == "1" or hip_ver.startswith("7.")
+        backend_label = "rocm"
+    elif is_cuda:
+        should_try_compile = compile_flag == "1"
+        backend_label = "cuda"
+    else:
+        should_try_compile = compile_flag == "1"
 
-        def _compiling_build(args):  # type: ignore[override]
-            m = _orig_build(args)
-            # All method classes store the LlavaOnevision model as self.model
-            llava = getattr(m, "model", None)
-            lang = getattr(llava, "language_model", None)
-            if lang is not None and not getattr(lang, "_rekv_compiled", False):
-                try:
-                    compiled = torch.compile(lang, mode="reduce-overhead", dynamic=True)
-                    llava.language_model = compiled  # type: ignore[attr-defined]
-                    compiled._rekv_compiled = True  # type: ignore[attr-defined]
-                    print("[rocm] torch.compile(reduce-overhead) applied to language model")
-                except Exception as exc:
-                    print(f"[rocm] torch.compile skipped: {exc}")
-            return m
+    if not should_try_compile:
+        return
 
-        _methods.build_method_from_args = _compiling_build
+    # Patch methods module so build_method_from_args compiles the LM after load.
+    from . import methods as _methods
+    _orig_build = _methods.build_method_from_args
+
+    def _compiling_build(args):  # type: ignore[override]
+        m = _orig_build(args)
+        llava = getattr(m, "model", None)
+        lang = getattr(llava, "language_model", None)
+        if lang is not None and not getattr(lang, "_rekv_compiled", False):
+            try:
+                compiled = torch.compile(lang, mode="reduce-overhead", dynamic=True)
+                llava.language_model = compiled  # type: ignore[attr-defined]
+                compiled._rekv_compiled = True  # type: ignore[attr-defined]
+                print(f"[{backend_label}] torch.compile(reduce-overhead) applied to language model")
+            except Exception as exc:
+                print(f"[{backend_label}] torch.compile skipped: {exc}")
+        return m
+
+    _methods.build_method_from_args = _compiling_build
 
 
 def main() -> int:
     args = parse_args()
     seed_everything(args.seed)
-    _apply_rocm_speedups()
+    _apply_backend_speedups()
     if args.resume and args.output_path is None:
         raise ValueError("--resume requires an explicit --output-path so the runner knows which file to continue.")
     if args.flush_every_videos <= 0:

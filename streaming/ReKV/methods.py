@@ -188,7 +188,14 @@ def _classify_duo_deploy_window(
 def collect_runtime_backend_info(device: torch.device, dtype: torch.dtype) -> dict[str, Any]:
     device_name = None
     rocm_arch = None
+    accelerator_backend = "cpu"
     if device.type == "cuda" and torch.cuda.is_available():
+        if getattr(torch.version, "hip", None):
+            accelerator_backend = "rocm"
+        elif getattr(torch.version, "cuda", None):
+            accelerator_backend = "cuda"
+        else:
+            accelerator_backend = "gpu"
         try:
             device_name = torch.cuda.get_device_name(device)
         except Exception:
@@ -206,6 +213,7 @@ def collect_runtime_backend_info(device: torch.device, dtype: torch.dtype) -> di
         "transformers_version": transformers.__version__,
         "device_type": device.type,
         "device": str(device),
+        "accelerator_backend": accelerator_backend,
         "device_name": device_name,
         "rocm_arch": rocm_arch,
         "torch_dtype": str(dtype).replace("torch.", ""),
@@ -218,6 +226,91 @@ def collect_runtime_backend_info(device: torch.device, dtype: torch.dtype) -> di
             "flash_attn" if FLASH_ATTN_AVAILABLE else "sdpa_fallback"
         ),
     }
+
+
+def resolve_duo_backend_stack(
+    *,
+    streaming_attn_backend_requested: str = "blocksparse",
+) -> dict[str, Any]:
+    block_sparse_available = bool(is_blocksparse_available())
+    flash_attn_available = bool(FLASH_ATTN_AVAILABLE)
+    flashinfer_available = bool(flashinfer is not None)
+    if streaming_attn_backend_requested == "blocksparse":
+        if block_sparse_available:
+            streaming_attn_backend_actual = "blocksparse"
+            streaming_attn_fallback_reason = None
+        else:
+            streaming_attn_backend_actual = "sdpa"
+            streaming_attn_fallback_reason = (
+                "block_sparse_attn_unavailable_in_current_environment"
+            )
+    elif streaming_attn_backend_requested == "sdpa":
+        streaming_attn_backend_actual = "sdpa"
+        streaming_attn_fallback_reason = None
+    else:
+        streaming_attn_backend_actual = streaming_attn_backend_requested
+        streaming_attn_fallback_reason = None
+
+    return {
+        "full_attn_backend_actual": "flash_attn" if flash_attn_available else "sdpa_fallback",
+        "streaming_attn_backend_requested": streaming_attn_backend_requested,
+        "streaming_attn_backend_actual": streaming_attn_backend_actual,
+        "streaming_attn_fallback_reason": streaming_attn_fallback_reason,
+        # The current eval path does not replace these with flashinfer kernels.
+        "rope_backend_actual": "torch_transformers",
+        "rmsnorm_backend_actual": "torch_transformers",
+        "flash_attn_available": flash_attn_available,
+        "flashinfer_available": flashinfer_available,
+        "block_sparse_attn_available": block_sparse_available,
+        "duo_result_category": (
+            "nvidia_sparse_duo_equivalent"
+            if streaming_attn_backend_actual == "blocksparse"
+            else "rocm_baseline_duo"
+        ),
+    }
+
+
+def build_method_backend_report(
+    *,
+    runtime_backend_info: dict[str, Any],
+    duo_backend_stack: dict[str, Any] | None = None,
+    rekv_dot_backend_requested: str | None = None,
+    rekv_dot_backend_actual: str | None = None,
+) -> dict[str, Any]:
+    report = {
+        "attention_module_load_path": runtime_backend_info.get("attention_module_load_path"),
+        "flash_attn_available": runtime_backend_info.get("flash_attn_available"),
+        "flashinfer_available": runtime_backend_info.get("flashinfer_available"),
+        "block_sparse_attn_available": runtime_backend_info.get("block_sparse_attn_available"),
+        "full_attn_backend_actual": None,
+        "streaming_attn_backend_requested": None,
+        "streaming_attn_backend_actual": None,
+        "streaming_attn_fallback_reason": None,
+        "rope_backend_actual": None,
+        "rmsnorm_backend_actual": None,
+        "rekv_dot_backend_requested": rekv_dot_backend_requested,
+        "rekv_dot_backend_actual": rekv_dot_backend_actual,
+        "result_interpretation_category": None,
+    }
+    if duo_backend_stack is not None:
+        report.update(
+            {
+                "full_attn_backend_actual": duo_backend_stack.get("full_attn_backend_actual"),
+                "streaming_attn_backend_requested": duo_backend_stack.get(
+                    "streaming_attn_backend_requested"
+                ),
+                "streaming_attn_backend_actual": duo_backend_stack.get(
+                    "streaming_attn_backend_actual"
+                ),
+                "streaming_attn_fallback_reason": duo_backend_stack.get(
+                    "streaming_attn_fallback_reason"
+                ),
+                "rope_backend_actual": duo_backend_stack.get("rope_backend_actual"),
+                "rmsnorm_backend_actual": duo_backend_stack.get("rmsnorm_backend_actual"),
+                "result_interpretation_category": duo_backend_stack.get("duo_result_category"),
+            }
+        )
+    return report
 
 
 def get_stop_token_ids(model: LlavaOnevisionForConditionalGeneration, tokenizer) -> set[int]:
@@ -393,9 +486,11 @@ def extract_logits_from_output(output, output_projection=None) -> torch.Tensor:
         raise AttributeError(
             "Language model output does not expose logits and no output projection was provided."
         )
+    hidden_states = output.last_hidden_state
     # Some ROCm/compiled inference paths return inference tensors here; clone so
     # the LM head can consume them without autograd bookkeeping errors.
-    hidden_states = output.last_hidden_state.clone()
+    if getattr(torch.version, "hip", None):
+        hidden_states = hidden_states.clone()
     return output_projection(hidden_states)
 
 
@@ -669,7 +764,14 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         raise NotImplementedError
 
     def _build_answer_stats(self, question: str, metadata: dict[str, Any]) -> dict[str, Any]:
-        return {"method_name": self.method_name}
+        return {
+            "method_name": self.method_name,
+            "backend_resolution": dict(
+                build_method_backend_report(
+                    runtime_backend_info=self.runtime_backend_info,
+                )
+            ),
+        }
 
     def get_runtime_stats(self) -> dict[str, Any]:
         return {
@@ -690,6 +792,9 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
             "method_name": self.method_name,
             "method_family": self.method_name,
             "kernel_backend_path": dict(self.runtime_backend_info),
+            "backend_resolution": build_method_backend_report(
+                runtime_backend_info=self.runtime_backend_info,
+            ),
             "prompt_prefill_policy": "single_prefill_per_question",
             "streaming_protocol": {
                 "causal_cutoff_policy": "sampled_timestamps_strictly_before_end_time",
@@ -717,6 +822,7 @@ class DuoStreamingMethod(_BaseLlavaStreamingMethod):
         seed: int = 42,
         deploy_sink_size: int | None = None,
         deploy_recent_size: int | None = None,
+        strict_no_sdpa_fallback: bool = False,
         clear_cuda_cache_on_reset: bool = False,
     ) -> None:
         super().__init__(
@@ -753,6 +859,18 @@ class DuoStreamingMethod(_BaseLlavaStreamingMethod):
             deploy_sink_size=self.sink_size,
             deploy_recent_size=self.recent_size,
         )
+        self.strict_no_sdpa_fallback = bool(strict_no_sdpa_fallback)
+        self.duo_backend_stack = resolve_duo_backend_stack(
+            streaming_attn_backend_requested="blocksparse"
+        )
+        if (
+            self.strict_no_sdpa_fallback
+            and self.duo_backend_stack["streaming_attn_backend_actual"] == "sdpa"
+        ):
+            raise RuntimeError(
+                "DuoAttention strict mode requested, but streaming attention resolved to SDPA "
+                f"fallback: {self.duo_backend_stack['streaming_attn_fallback_reason']}"
+            )
 
     def _validate_video_features(self, video_features: torch.Tensor) -> None:
         if video_features.ndim != 3 or video_features.shape[0] != 1:
@@ -779,6 +897,13 @@ class DuoStreamingMethod(_BaseLlavaStreamingMethod):
             "duo_deploy_window_class": self.duo_deploy_window_class,
             "duo_cache_semantics": "official_tuple_kv_compressed_streaming",
             "duo_eval_attention_backend": self.runtime_backend_info["attention_module_load_path"],
+            "strict_no_sdpa_fallback": self.strict_no_sdpa_fallback,
+            "backend_resolution": dict(
+                build_method_backend_report(
+                    runtime_backend_info=self.runtime_backend_info,
+                    duo_backend_stack=self.duo_backend_stack,
+                )
+            ),
         }
 
     def get_evaluation_manifest(self) -> dict[str, Any]:
@@ -788,6 +913,13 @@ class DuoStreamingMethod(_BaseLlavaStreamingMethod):
                 "method_family": "duo_streaming",
                 "cache_semantics_label": "duo_tuple_kv_compressed_streaming",
                 "duo_attention_backend": self.runtime_backend_info["attention_module_load_path"],
+                "backend_resolution": build_method_backend_report(
+                    runtime_backend_info=self.runtime_backend_info,
+                    duo_backend_stack=self.duo_backend_stack,
+                ),
+                "duo_backend_policy": {
+                    "strict_no_sdpa_fallback": self.strict_no_sdpa_fallback,
+                },
                 "duo_deploy_config": {
                     "trained_sink_size": self.trained_sink_size,
                     "trained_recent_size": self.trained_recent_size,
@@ -796,6 +928,7 @@ class DuoStreamingMethod(_BaseLlavaStreamingMethod):
                     "deploy_window_class": self.duo_deploy_window_class,
                     "actual_sparsity": self.actual_sparsity,
                 },
+                "result_interpretation_category": self.duo_backend_stack["duo_result_category"],
             }
         )
         return manifest
@@ -826,6 +959,9 @@ class FullStreamingMethod(_BaseLlavaStreamingMethod):
                 "method_family": "full_streaming",
                 "cache_semantics_label": "plain_full_streaming_cache",
                 "retrieval_offload_mode": "none",
+                "backend_resolution": build_method_backend_report(
+                    runtime_backend_info=self.runtime_backend_info,
+                ),
             }
         )
         return manifest
@@ -1086,6 +1222,13 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
             "rekv_dot_backend_requested": self.rekv_dot_backend_requested,
             "rekv_dot_backend_actual": self.rekv_dot_backend_actual,
             "retrieval_context_layout": "init_plus_retrieved_old_plus_forced_local",
+            "backend_resolution": dict(
+                build_method_backend_report(
+                    runtime_backend_info=self.runtime_backend_info,
+                    rekv_dot_backend_requested=self.rekv_dot_backend_requested,
+                    rekv_dot_backend_actual=self.rekv_dot_backend_actual,
+                )
+            ),
             **self.last_retrieval_stats,
         }
 
@@ -1125,6 +1268,11 @@ class ReKVStreamingMethod(_BaseLlavaStreamingMethod):
                     "dot_backend_requested": self.rekv_dot_backend_requested,
                     "dot_backend_actual": self.rekv_dot_backend_actual,
                 },
+                "backend_resolution": build_method_backend_report(
+                    runtime_backend_info=self.runtime_backend_info,
+                    rekv_dot_backend_requested=self.rekv_dot_backend_requested,
+                    rekv_dot_backend_actual=self.rekv_dot_backend_actual,
+                ),
             }
         )
         return manifest
@@ -1153,6 +1301,7 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
         seed: int = 42,
         deploy_sink_size: int | None = None,
         deploy_recent_size: int | None = None,
+        strict_no_sdpa_fallback: bool = False,
         n_local: int = 15000,
         retrieve_size: int = 64,
         retrieve_chunk_size: int = 1,
@@ -1213,6 +1362,18 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
             deploy_sink_size=self.sink_size,
             deploy_recent_size=self.recent_size,
         )
+        self.strict_no_sdpa_fallback = bool(strict_no_sdpa_fallback)
+        self.duo_backend_stack = resolve_duo_backend_stack(
+            streaming_attn_backend_requested="blocksparse"
+        )
+        if (
+            self.strict_no_sdpa_fallback
+            and self.duo_backend_stack["streaming_attn_backend_actual"] == "sdpa"
+        ):
+            raise RuntimeError(
+                "Duo+ReKV strict mode requested, but Duo streaming attention resolved to SDPA "
+                f"fallback: {self.duo_backend_stack['streaming_attn_fallback_reason']}"
+            )
 
         self.n_local = int(n_local)
         # Compute n_init for the ReKV context manager that preserves enough
@@ -1261,6 +1422,7 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
             "duo_cache_semantics": "hybrid_rekv_context_plus_duo_head_routing",
             "duo_eval_attention_backend": self.runtime_backend_info["attention_module_load_path"],
             "effective_duo_recent_window_tokens": min(self.n_local, self.recent_size),
+            "strict_no_sdpa_fallback": self.strict_no_sdpa_fallback,
             "n_local": self.n_local,
             "retrieve_size": self.retrieve_size,
             "retrieve_chunk_size": self.retrieve_chunk_size,
@@ -1269,6 +1431,14 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
             "rekv_dot_backend_requested": self.rekv_dot_backend_requested,
             "rekv_dot_backend_actual": self.rekv_dot_backend_actual,
             "retrieval_context_layout": "init_plus_retrieved_old_plus_forced_local",
+            "backend_resolution": dict(
+                build_method_backend_report(
+                    runtime_backend_info=self.runtime_backend_info,
+                    duo_backend_stack=self.duo_backend_stack,
+                    rekv_dot_backend_requested=self.rekv_dot_backend_requested,
+                    rekv_dot_backend_actual=self.rekv_dot_backend_actual,
+                )
+            ),
             **self.last_retrieval_stats,
         }
 
@@ -1281,6 +1451,15 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
                 "retrieval_offload_mode": "rekv_context_manager_with_cpu_offload",
                 "hybrid_mode_label": "approximate_duo_over_rekv_context",
                 "duo_attention_backend": self.runtime_backend_info["attention_module_load_path"],
+                "backend_resolution": build_method_backend_report(
+                    runtime_backend_info=self.runtime_backend_info,
+                    duo_backend_stack=self.duo_backend_stack,
+                    rekv_dot_backend_requested=self.rekv_dot_backend_requested,
+                    rekv_dot_backend_actual=self.rekv_dot_backend_actual,
+                ),
+                "duo_backend_policy": {
+                    "strict_no_sdpa_fallback": self.strict_no_sdpa_fallback,
+                },
                 "duo_deploy_config": {
                     "trained_sink_size": self.trained_sink_size,
                     "trained_recent_size": self.trained_recent_size,
@@ -1290,6 +1469,7 @@ class DuoPlusReKVStreamingMethod(ReKVStreamingMethod):
                     "actual_sparsity": self.actual_sparsity,
                     "effective_recent_window_tokens": min(self.n_local, self.recent_size),
                 },
+                "result_interpretation_category": self.duo_backend_stack["duo_result_category"],
             }
         )
         return manifest
@@ -1314,6 +1494,7 @@ def build_method_from_args(args) -> StreamingMethod:
             seed=args.seed,
             deploy_sink_size=args.deploy_sink_size,
             deploy_recent_size=args.deploy_recent_size,
+            strict_no_sdpa_fallback=getattr(args, "duo_strict_no_sdpa_fallback", False),
         )
     if args.method == "rekv":
         return ReKVStreamingMethod(
@@ -1344,6 +1525,7 @@ def build_method_from_args(args) -> StreamingMethod:
             seed=args.seed,
             deploy_sink_size=args.deploy_sink_size,
             deploy_recent_size=args.deploy_recent_size,
+            strict_no_sdpa_fallback=getattr(args, "duo_strict_no_sdpa_fallback", False),
             n_local=args.n_local,
             retrieve_size=args.retrieve_size,
             retrieve_chunk_size=args.retrieve_chunk_size,

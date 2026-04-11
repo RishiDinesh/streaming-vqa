@@ -29,6 +29,7 @@ ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ANNOTATION_PATH=$1
 VIDEO_ROOT=$2
 MAX_VIDEOS=${3:-1}
+SBATCH_ARGS=${SBATCH_ARGS:-}
 
 DUO_JOB_NAME=${DUO_JOB_NAME:-stream-duo-smoke}
 REKV_JOB_NAME=${REKV_JOB_NAME:-stream-rekv-smoke}
@@ -37,7 +38,12 @@ ATTN_DIR=${ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_
 
 cd "${ROOT}"
 
-sbatch --job-name="${DUO_JOB_NAME}" streaming/ReKV/run_eval.sh \
+declare -a SBATCH_EXTRA_ARGS=()
+if [[ -n "${SBATCH_ARGS}" ]]; then
+    read -r -a SBATCH_EXTRA_ARGS <<< "${SBATCH_ARGS}"
+fi
+
+sbatch "${SBATCH_EXTRA_ARGS[@]}" --job-name="${DUO_JOB_NAME}" streaming/ReKV/run_eval.sh \
     --annotation-path "${ANNOTATION_PATH}" \
     --video-root "${VIDEO_ROOT}" \
     --model "${MODEL}" \
@@ -45,7 +51,7 @@ sbatch --job-name="${DUO_JOB_NAME}" streaming/ReKV/run_eval.sh \
     --attn-dir "${ATTN_DIR}" \
     --max-videos "${MAX_VIDEOS}"
 
-sbatch --job-name="${REKV_JOB_NAME}" streaming/ReKV/run_eval.sh \
+sbatch "${SBATCH_EXTRA_ARGS[@]}" --job-name="${REKV_JOB_NAME}" streaming/ReKV/run_eval.sh \
     --annotation-path "${ANNOTATION_PATH}" \
     --video-root "${VIDEO_ROOT}" \
     --model "${MODEL}" \

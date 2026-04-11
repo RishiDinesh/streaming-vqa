@@ -1,59 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-activate_duo_env() {
-  # Prefer /opt/venv (torch 2.9 + ROCm 7) over the duo conda env (torch 2.4 + ROCm 6.1).
-  # ROCm 7 ships tuned MI300X kernels that are ~3-5x faster for this model.
-  local _check_pkgs='
-import importlib
-for name in ("torch", "numpy", "matplotlib", "transformers", "tqdm", "duo_attn"):
-    importlib.import_module(name)
-'
-
-  if [[ -x "/opt/venv/bin/python" ]]; then
-    if /opt/venv/bin/python - <<PY >/dev/null 2>&1
-${_check_pkgs}
-PY
-    then
-      export PATH="/opt/venv/bin:${PATH}"
-      echo "[env] Using /opt/venv (torch $(/opt/venv/bin/python -c 'import torch; print(torch.__version__)'))" >&2
-      return
-    fi
-  fi
-
-  if command -v conda >/dev/null 2>&1; then
-    eval "$(conda shell.bash hook)"
-    conda activate duo
-    return
-  fi
-
-  local candidate
-  for candidate in \
-    "/root/miniforge3/etc/profile.d/conda.sh" \
-    "/opt/conda/etc/profile.d/conda.sh" \
-    "/usr/local/miniconda3/etc/profile.d/conda.sh"
-  do
-    if [[ -f "${candidate}" ]]; then
-      # shellcheck disable=SC1090
-      source "${candidate}"
-      conda activate duo
-      return
-    fi
-  done
-
-  if python - <<'PY' >/dev/null 2>&1
-import importlib
-for name in ("torch", "numpy", "matplotlib", "transformers", "tqdm"):
-    importlib.import_module(name)
-PY
-  then
-    echo "[warn] Could not locate preferred environment; using current Python: $(command -v python)" >&2
-    return
-  fi
-
-  echo "Could not locate a suitable Python environment with required packages." >&2
-  exit 1
-}
+ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/streaming_env.sh"
 
 usage() {
     cat <<'EOF'
@@ -108,7 +58,6 @@ if [[ $# -ne 1 ]]; then
 fi
 
 MODE=$1
-ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DATASET=${DATASET:-rvs_ego}
 MODEL=${MODEL:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}
 HF_REPO_ID=${HF_REPO_ID:-Becomebright/RVS}
@@ -135,7 +84,7 @@ AB_DEPLOY_SINK_SIZE=${AB_DEPLOY_SINK_SIZE:-}
 AB_DEPLOY_RECENT_SIZE=${AB_DEPLOY_RECENT_SIZE:-}
 EXTRA_ARGS=${EXTRA_ARGS:-}
 
-activate_duo_env
+activate_streaming_env
 
 cd "${ROOT}"
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
