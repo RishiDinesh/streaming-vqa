@@ -3,18 +3,22 @@ Streaming ReKV handoff
 
 Fast context for the streaming/ReKV module on the exp/nv-gpu-inference branch.
 
-Branch / environment
---------------------
+Branch / cluster
+----------------
 - Branch:   exp/nv-gpu-inference
-- Cluster:  NVIDIA SLURM
-- Conda env: <repo-root>/envs/duo  (created by setup.sh)
-- Activate: conda activate <repo-root>/envs/duo
+- Cluster:  Toronto CS NVIDIA SLURM (login node: comps0)
+- Conda:    /u/navdeep/miniconda3  (referenced in ~/.bashrc)
+- Env:      <repo-root>/envs/duo   (prefix-based, lives in scratch space)
+- Activate: source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+            conda activate <repo-root>/envs/duo
+- Repo:     /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
 
 Datasets
 --------
 - rvs_ego:   annotation ego/ego4d_oe.json,     HF subset ego
 - rvs_movie: annotation movie/movienet_oe.json, HF subset movie
 - HF repo: Becomebright/RVS
+- Videos auto-downloaded into <repo>/.hf_cache/ on first run (no manual prep needed)
 
 Methods (all four)
 ------------------
@@ -22,6 +26,17 @@ Methods (all four)
 - duo_streaming    — Duo head routing; blocksparse kernel required
 - rekv             — local window on GPU + CPU offload + top-k retrieval at question time
 - duo_plus_rekv    — ReKV retrieval then Duo head routing over assembled context (approximate)
+
+Default eval config (matches prior successful runs)
+---------------------------------------------------
+- model:         llava-hf/llava-onevision-qwen2-0.5b-ov-hf
+- sample_fps:    0.5
+- max_new_tokens: 64
+- n_local:       15000
+- retrieve_size: 64
+- n_frame_tokens: 196
+- attn_dir:      outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632
+- sparsity:      0.5
 
 Streaming contract (enforced identically across all methods)
 ------------------------------------------------------------
@@ -31,6 +46,28 @@ Streaming contract (enforced identically across all methods)
 - Shared KV state across all questions from the same video
 - No offline whole-video prefill
 - Feature cache must exactly match the run's sampling schedule
+
+First-time setup (do once)
+--------------------------
+1. Install Miniconda (login node):
+     bash /tmp/Miniconda3-latest-Linux-x86_64.sh -b -p /u/navdeep/miniconda3
+     source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+
+2. Build env (must be on a GPU compute node — compiles CUDA extensions):
+     srun --nodes=1 --ntasks=1 --gres=gpu:1 --cpus-per-task=8 --mem=32G \
+          --time=01:00:00 --pty bash -l
+     # then inside the compute node:
+     source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+     cd /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+     BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;89;90" bash setup.sh 2>&1 | tee logs/setup_$(date +%Y%m%d_%H%M%S).log
+
+3. Validate (still on compute node):
+     conda activate <repo-root>/envs/duo
+     python -m streaming.ReKV.validate_runtime_env
+     # Expect: "streaming_attn_backend_actual": "blocksparse"
+
+BLOCK_SPARSE_ATTN_CUDA_ARCHS: A100=80, H100=90, L40/Ada=89. Default "80;89;90" covers all.
+Check GPU arch: nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
 
 Key files
 ---------
@@ -52,43 +89,52 @@ Key files
 
 Key scripts
 -----------
-- scripts/streaming_env.sh                    — conda env activation (project-local first)
+- scripts/streaming_env.sh                    — conda env activation (project-local prefix first)
 - streaming/ReKV/run_eval.sh                  — single-GPU SLURM eval job
 - streaming/ReKV/profile_streaming.sh         — SLURM profiling job
 - scripts/run_streaming_eval_slurm_array.sh   — multi-GPU sharded SLURM array
-- scripts/run_streaming_subset3_slurm.sh      — 3-video subset: all 4 methods, 4 jobs
+- scripts/run_streaming_subset3_slurm.sh      — N-video subset: all 4 methods, 4 jobs
 
 Workflow
 --------
-1. Setup (once):
-     bash setup.sh
+1. Smoke test (1 video, all 4 methods — verify env works):
+     bash scripts/run_streaming_subset3_slurm.sh --max-videos 1
 
-2. Validate backend:
-     python -m streaming.ReKV.validate_runtime_env
-     # Expect: streaming_attn_backend_actual = blocksparse
+2. 5-video subset:
+     bash scripts/run_streaming_subset3_slurm.sh --max-videos 5
 
-3. Run 3-video subset (all 4 methods):
-     bash scripts/run_streaming_subset3_slurm.sh \
-       --annotation-path /path/to/ego4d_oe.json \
-       --video-root /path/to/videos \
-       --dataset rvs_ego \
-       --attn-dir /path/to/duo/weights
-
-4. Full eval (single GPU):
+3. Full eval (single GPU):
      sbatch --output="$(pwd)/logs/%x-%j.out" streaming/ReKV/run_eval.sh \
        --dataset rvs_ego --method rekv
 
-5. Full eval (multi-GPU sharded):
+4. Full eval (multi-GPU sharded):
      NUM_CHUNKS=8 DATASET=rvs_ego METHOD=rekv \
        sbatch --array=0-7 \
          --output="$(pwd)/logs/%x-%A_%a.out" \
          scripts/run_streaming_eval_slurm_array.sh
 
-6. Judge answers:
-     python -m streaming.ReKV.judge_results --in-place <results.json>
+5. After jobs finish (script prints exact commands):
+     python -m streaming.ReKV.compare_subsamples \
+         <result1.json> <result2.json> <result3.json> <result4.json> \
+         --output-dir outputs/evaluations_streaming/rvs-ego/subset1/comparison/
+     python -m streaming.ReKV.plot_results \
+         <result1.json> <result2.json> <result3.json> <result4.json> \
+         --output-dir outputs/evaluations_streaming/rvs-ego/subset1/plots/
 
-7. Plot:
-     python -m streaming.ReKV.plot_results <results.json> --output-dir outputs/plots/
+Monitoring jobs
+---------------
+- squeue -u ${USER}                                     # all your jobs
+- tail -f logs/stream-<method>-sub1-<jobid>.out         # live log for one job
+- watch -n 30 'tail -n 5 logs/stream-*-sub1-*.out'     # all logs at once
+- sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS  # finished job stats
+
+Disk layout
+-----------
+- /u/navdeep/miniconda3/   — conda base (~500 MB, home fs 688 GB free)
+- <repo>/envs/duo/          — Python env (~10 GB, scratch space)
+- <repo>/.hf_cache/         — HF model + dataset cache (videos downloaded here)
+- <repo>/outputs/           — eval results, plots (scratch space)
+- <repo>/logs/              — SLURM job logs
 
 Backend requirements
 --------------------
@@ -96,10 +142,9 @@ Backend requirements
 - block_sparse_attn: sparse Duo streaming (required for paper-faithful Duo)
 - flashinfer:        RMSNorm/RoPE acceleration (optional)
 - decord:            fast video decoding (recommended)
-Block-Sparse install: cd Block-Sparse-Attention && BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;89;90" python setup.py install
 
-Result categories in manifests
--------------------------------
+Result categories
+-----------------
 - nvidia_sparse_duo_equivalent  — block_sparse_attn active, paper-faithful
 - sdpa_fallback_duo             — block_sparse_attn missing (should not occur on NVIDIA)
 

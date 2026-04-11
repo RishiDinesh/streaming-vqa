@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Single-GPU SLURM eval job for streaming ReKV methods.
-# Submit from the repo root:
-#   sbatch streaming/ReKV/run_eval.sh --dataset rvs_ego --method rekv [...]
 #
-# The --output log path is set on the sbatch command line by the submit wrapper
-# so it resolves to an absolute path under <repo-root>/logs/.
-# If submitting this script directly, pass --output yourself:
-#   sbatch --output=/abs/path/logs/%x-%j.out streaming/ReKV/run_eval.sh ...
+# Always submit from the repo root with an absolute --output path:
+#   sbatch --output="$(pwd)/logs/%x-%j.out" streaming/ReKV/run_eval.sh --method rekv ...
+#
+# Or use the submit wrapper which handles all of this:
+#   bash scripts/run_streaming_subset3_slurm.sh
+#   bash scripts/run_streaming_eval_slurm_array.sh
 #
 #SBATCH --job-name=streaming-eval
 #SBATCH --nodes=1
@@ -21,11 +21,15 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 mkdir -p "${ROOT}/logs"
 
+# HF_HOME: keep model/dataset cache inside the project if set by caller,
+# otherwise fall back to ~/.cache/huggingface (safe on Toronto cluster /h).
+export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+
 # shellcheck disable=SC1091
 source "${ROOT}/scripts/streaming_env.sh"
 activate_streaming_env
 
 cd "${ROOT}"
-export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 
 python -m streaming.ReKV.run_eval "$@"

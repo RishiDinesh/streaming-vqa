@@ -2,7 +2,7 @@
 
 Working reference for the `streaming/ReKV` module on the `exp/nv-gpu-inference` branch.
 
-**Target:** NVIDIA SLURM cluster · CUDA · conda env `duo` (at `<repo-root>/envs/duo`)
+**Target:** NVIDIA SLURM cluster (Toronto CS) · CUDA · conda env at `<repo-root>/envs/duo`
 
 ---
 
@@ -71,7 +71,7 @@ Dataset (RVS-Ego or RVS-Movie)
 | `build_backend_audit_report.py` | Markdown comparison table across methods and backends |
 | `build_qualitative_bundle.py` | JSON+markdown qualitative examples across methods |
 | `profile_streaming.py` | Single-video profiling: latency/memory curves at fixed frame counts |
-| `smoke_test.py` | Fast unit tests for dataset loading, causal ingest logic, resume, plotting |
+| `smoke_test.py` | Fast unit tests (no GPU required) for dataset loading, causal ingest, resume, plotting |
 | `rekv_core/patch.py` | Patches HF model (Qwen2/Llama/Mistral) with ReKV attention forward |
 | `rekv_core/attention/rekv_attention.py` | ReKV attention forward: local+init+retrieved layout, Duo gate |
 | `rekv_core/attention/kv_cache_manager.py` | CPU offload engine: `ContextManager`, `MemoryUnit`, `VectorTensor` |
@@ -152,7 +152,82 @@ Plain causal KV cache accumulation. Model loads with `attn_implementation="eager
 
 ---
 
-## 6. Backend Requirements
+## 6. Environment Setup (Toronto CS Cluster)
+
+### 6.1 Conda location
+
+Conda lives at `/u/navdeep/miniconda3` (referenced in `~/.bashrc`). Activate it in any shell with:
+
+```bash
+source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+```
+
+The project env is installed as a **prefix** inside the repo (not a named env), so it stays in scratch space and doesn't touch home-dir quota:
+
+```
+<repo-root>/envs/duo/
+```
+
+Activate it:
+
+```bash
+conda activate /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/envs/duo
+```
+
+`scripts/streaming_env.sh` does this automatically for SLURM jobs — it tries the project prefix first, then falls back to a named `duo` env.
+
+### 6.2 First-time setup
+
+**Step 1 — Install Miniconda** (login node, once only):
+
+```bash
+bash /tmp/Miniconda3-latest-Linux-x86_64.sh -b -p /u/navdeep/miniconda3
+source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+conda --version
+```
+
+**Step 2 — Build the env** (must run on a GPU compute node — `block_sparse_attn` compiles against CUDA):
+
+```bash
+# Request an interactive GPU session
+srun --nodes=1 --ntasks=1 --gres=gpu:1 --cpus-per-task=8 --mem=32G \
+     --time=01:00:00 --pty bash -l
+
+# Inside the compute node:
+source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+cd /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;89;90" bash setup.sh 2>&1 | tee logs/setup_$(date +%Y%m%d_%H%M%S).log
+```
+
+`BLOCK_SPARSE_ATTN_CUDA_ARCHS`: A100=`80`, H100=`90`, L40/Ada=`89`. The default `"80;89;90"` covers all three. Check with `nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader`.
+
+**Step 3 — Validate** (still on the compute node):
+
+```bash
+conda activate /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/envs/duo
+python -m streaming.ReKV.validate_runtime_env
+```
+
+Expected:
+- `"streaming_attn_backend_actual": "blocksparse"` — Duo is paper-faithful ✓
+- `"flash_attn_available": true` ✓
+- `"cuda_available": true` ✓
+
+If `streaming_attn_backend_actual` is `"sdpa"`, the `block_sparse_attn` compile failed — check `logs/setup_*.log`.
+
+### 6.3 Disk layout
+
+| Location | Purpose | Notes |
+|---|---|---|
+| `/u/navdeep/miniconda3/` | Conda base install | ~500 MB, on home fs (1 TB, 32% used) |
+| `<repo>/envs/duo/` | Project Python env | ~10 GB, in scratch space |
+| `<repo>/.hf_cache/` | HF model + dataset cache | Videos auto-downloaded here |
+| `<repo>/outputs/` | All eval results, plots, logs | In scratch space |
+| `<repo>/logs/` | SLURM job stdout logs | Named `stream-<method>-<jobid>.out` |
+
+---
+
+## 7. Backend Requirements
 
 | Library | Role | Required? |
 |---|---|---|
@@ -162,49 +237,96 @@ Plain causal KV cache accumulation. Model loads with `attn_implementation="eager
 | `triton` | Triton kernel for ReKV inner attention | Optional (`--rekv-fattn`) |
 | `decord` | Fast video frame decoding | Recommended (imageio fallback) |
 
-Install Block-Sparse-Attention:
-```bash
-cd Block-Sparse-Attention
-BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;89;90" python setup.py install  # A100;Ada;H100
-```
-
-Validate:
-```bash
-python -m streaming.ReKV.validate_runtime_env
-# Expect: streaming_attn_backend_actual = blocksparse
-```
-
 ---
 
-## 7. SLURM Execution
+## 8. Running Evaluations
+
+Videos and annotations are auto-downloaded from HuggingFace (`Becomebright/RVS`) into `<repo>/.hf_cache/` on first run. No manual data prep needed.
+
+### 8.1 Smoke test — 1 video, all 4 methods
+
+Useful for verifying the environment end-to-end before committing to a larger run.
 
 ```bash
-# Set up environment once (installs to <repo-root>/envs/duo)
-bash setup.sh
+cd /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+bash scripts/run_streaming_subset3_slurm.sh --max-videos 1
+```
 
-# 3-video subset: all 4 methods, one job each
-bash scripts/run_streaming_subset3_slurm.sh \
-  --annotation-path /path/to/ego4d_oe.json \
-  --video-root /path/to/videos \
-  --dataset rvs_ego \
-  --attn-dir /path/to/duo/weights
+Jobs take ~5–15 min each for 1 video. Monitor:
 
-# Single-GPU eval
+```bash
+squeue -u ${USER}
+watch -n 30 'tail -n 5 logs/stream-*-sub1-*.out'
+```
+
+### 8.2 Subset — N videos, all 4 methods
+
+```bash
+# 5-video subset
+bash scripts/run_streaming_subset3_slurm.sh --max-videos 5
+```
+
+### 8.3 Full eval — single GPU
+
+```bash
 sbatch --output="$(pwd)/logs/%x-%j.out" streaming/ReKV/run_eval.sh \
   --dataset rvs_ego --method rekv --retrieve-size 64 --n-local 15000
+```
 
-# Multi-GPU sharded (N workers, one per array task)
+### 8.4 Full eval — multi-GPU sharded
+
+```bash
 NUM_CHUNKS=8 DATASET=rvs_ego METHOD=rekv \
   sbatch --array=0-7 \
     --output="$(pwd)/logs/%x-%A_%a.out" \
     scripts/run_streaming_eval_slurm_array.sh
 ```
 
-SLURM job spec: 1 GPU · 8 CPUs · 64 GB RAM · 8-hour limit · `DUO_STRICT_NO_SDPA_FALLBACK=1` by default.
+---
+
+## 9. After Jobs Finish
+
+The submit script prints the exact commands. General pattern:
+
+```bash
+source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+conda activate /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/envs/duo
+cd /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+
+TS=<timestamp>          # from the submit script output
+BASE=outputs/evaluations_streaming/rvs-ego/subset1   # or subset5, etc.
+
+# Compare all four methods
+python -m streaming.ReKV.compare_subsamples \
+    ${BASE}/full_streaming/${TS}_results.json \
+    ${BASE}/duo_streaming/${TS}_results.json \
+    ${BASE}/rekv/${TS}_results.json \
+    ${BASE}/duo_plus_rekv/${TS}_results.json \
+    --output-dir ${BASE}/comparison/
+
+# Plots (PNG files saved to plots/)
+python -m streaming.ReKV.plot_results \
+    ${BASE}/full_streaming/${TS}_results.json \
+    ${BASE}/duo_streaming/${TS}_results.json \
+    ${BASE}/rekv/${TS}_results.json \
+    ${BASE}/duo_plus_rekv/${TS}_results.json \
+    --output-dir ${BASE}/plots/
+```
+
+Outputs land in:
+```
+outputs/evaluations_streaming/rvs-ego/subset1/
+├── full_streaming/<ts>_results.json
+├── duo_streaming/<ts>_results.json
+├── rekv/<ts>_results.json
+├── duo_plus_rekv/<ts>_results.json
+├── comparison/    ← markdown table, CSV, stability plots
+└── plots/         ← aggregate_comparison.png, memory_comparison.png, ...
+```
 
 ---
 
-## 8. Cross-Method Comparability Checklist
+## 10. Cross-Method Comparability Checklist
 
 Before comparing results across methods, verify in the manifests:
 
@@ -219,7 +341,7 @@ Before comparing results across methods, verify in the manifests:
 
 ---
 
-## 9. Results Interpretation
+## 11. Results Interpretation
 
 - `rekv` is the strongest default: memory-efficient, paper-aligned, stable
 - `duo_streaming` is paper-aligned only when `streaming_attn_backend_actual = blocksparse`
@@ -232,7 +354,7 @@ Result category labels in manifests:
 
 ---
 
-## 10. Official References
+## 12. Official References
 
 - ReKV paper: https://arxiv.org/abs/2503.00540 · repo: https://github.com/Becomebright/ReKV
 - DuoAttention paper: https://arxiv.org/abs/2410.10819 · repo: https://github.com/mit-han-lab/duo-attention
