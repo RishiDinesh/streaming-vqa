@@ -1,0 +1,52 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Demo: MMDA",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/demo_mmda.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "group": "live-llava-demo",
+        "clear": true,
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: Baseline",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/demo_baseline.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "group": "live-llava-demo",
+        "clear": true,
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: MMDA + Baseline",
+      "dependsOrder": "parallel",
+      "dependsOn": [
+        "Demo: MMDA",
+        "Demo: Baseline"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
