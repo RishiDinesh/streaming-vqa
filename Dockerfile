@@ -98,7 +98,6 @@ RUN cd /workspace/Block-Sparse-Attention \
 
 RUN python /opt/mmda/verify_install.py \
  && python -m duo_attn.train --help >/dev/null \
- && python /workspace/scripts/cache_longvideobench_v.py --help >/dev/null
 
 
 FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime
