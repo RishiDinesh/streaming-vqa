@@ -6,7 +6,7 @@ It is meant to answer four questions clearly:
 - what the streaming contract is
 - how each component is wired
 - what each method is actually doing
-- how to run and interpret the stack on the current `exp/amd-gpu-inference` branch
+- how to run and interpret the stack on the current `exp/nv-gpu-inference` branch
 
 The main files behind this guide are:
 - [prompt.txt](/workspace/streaming-vqa/streaming/ReKV/prompt.txt)
@@ -37,13 +37,14 @@ The core flow is:
 6. write a result JSON with an `evaluation_manifest`
 7. judge, plot, profile, and inspect qualitative outputs from those JSONs
 
-The branch is now set up to preserve the ROCm portability work while still
-tracking the original NVIDIA-first upstream design.
+The branch is now set up so the same codebase can describe both:
+- ROCm fallback behavior, preserved for audit history
+- NVIDIA/CUDA cluster behavior, which is the preferred execution target for new work
 
 This matters because the original upstream ideas were NVIDIA-first:
 - the official ReKV paper/repo is built and evaluated on CUDA with multi-GPU NVIDIA hardware
 - the official DuoAttention paper/repo is built around CUDA, `flash-attn`, `flashinfer`, and Block-Sparse-Attention
-- this `exp/amd-gpu-inference` workstream is the porting/adaptation branch, not the historical baseline
+- the older `exp/amd-gpu-inference` workstream is a porting/adaptation branch, not the historical baseline
 
 One concrete flow bug was corrected in this pass:
 - the manifest now records question ordering as `dataset_loader_sorted_by_end_time`, which matches the actual loader behavior in [datasets.py](/workspace/streaming-vqa/streaming/ReKV/datasets.py)
@@ -335,13 +336,12 @@ That means results can now be interpreted honestly by backend regime.
 
 ## 6. Runtime Policy on This Branch
 
-This branch is aimed at AMD / ROCm validation while preserving source alignment
-with the original NVIDIA repos.
+This branch is aimed at NVIDIA cluster use, not just local ROCm validation.
 
 The current intended runtime policy is:
-- default Python environment: `/opt/venv`
-- default GPU execution path: local MI300X / ROCm-first validation
-- default backend check: `python -m streaming.ReKV.validate_rocm_env`
+- default Python environment: `conda activate duo`
+- default GPU execution path: SLURM
+- default backend check: `python -m streaming.ReKV.validate_runtime_env`
 
 Relevant entrypoints:
 - [scripts/streaming_env.sh](/workspace/streaming-vqa/scripts/streaming_env.sh)
@@ -351,7 +351,7 @@ Relevant entrypoints:
 
 Current behavior:
 - local launchers now use a shared env helper
-- the helper prefers ROCm automatically on AMD hosts
+- the helper prefers the `duo` Conda env by default
 - ROCm-specific scripts can still request `/opt/venv` explicitly
 - SLURM now has real `run_eval.sh` and `profile_streaming.sh` wrappers instead of a missing entrypoint
 - `run_eval.py` now supports ReKV-style dataset sharding with `--num-chunks` and `--chunk-index`
@@ -371,28 +371,13 @@ The key upstream facts to keep in mind are:
 - the official Duo repo installs `pytorch-cuda`, `flash-attn`, `flashinfer`, and Block-Sparse-Attention, and demonstrates single-A100 CUDA inference
 
 So for this branch:
-- NVIDIA/CUDA should still be treated as the native upstream target
-- AMD support remains useful as the portability branch
-- native Duo sparse kernels and cluster sharding remain important reference points even when this branch falls back on ROCm
+- NVIDIA/CUDA should be treated as the native target
+- AMD support remains useful, but secondary
+- native Duo sparse kernels and cluster sharding are not optional nice-to-haves; they are part of being paper-faithful
 
 ## 7. Backend Interpretation Rules
 
-### 7.1 ROCm / AMD
-
-This branch is the main place to keep the ROCm fallback story explicit and honest.
-
-Typical current behavior on MI300X:
-- `accelerator_backend = rocm`
-- `flash_attn` available
-- `block_sparse_attn` unavailable
-- Duo streaming attention resolves to SDPA fallback unless a native sparse path exists
-
-Recommended validation:
-1. run `python -m streaming.ReKV.validate_rocm_env`
-2. inspect `streaming_attn_backend_actual`
-3. keep Duo results labeled as fallback baselines when SDPA is active
-
-### 7.2 NVIDIA / CUDA
+### 7.1 NVIDIA / CUDA
 
 Expected behavior on the target cluster:
 - `accelerator_backend = cuda`
@@ -405,6 +390,14 @@ Recommended validation:
 2. inspect `streaming_attn_backend_actual`
 3. use `--duo-strict-no-sdpa-fallback` when you want to guarantee native sparse Duo behavior
 4. when evaluating at scale, shard runs across GPUs with `--num-chunks` / `--chunk-index` or the SLURM array worker
+
+### 7.2 ROCm
+
+ROCm support is still preserved, but it is no longer the primary target for new work on this branch.
+
+Historical note:
+- the ROCm audit work remains documented in [ROCM_Backend_Audit.md](/workspace/streaming-vqa/streaming/ReKV/ROCM_Backend_Audit.md)
+- the compatibility alias [validate_rocm_env.py](/workspace/streaming-vqa/streaming/ReKV/validate_rocm_env.py) still exists
 
 ### 7.3 Why backend labels matter
 
@@ -421,19 +414,20 @@ Those should not be described as equivalent results.
 The intended practical workflow is now:
 
 1. Validate runtime:
-   `python -m streaming.ReKV.validate_rocm_env`
+   `python -m streaming.ReKV.validate_runtime_env`
 2. Optionally precompute features:
    `python -m streaming.ReKV.precompute_features ...`
 3. Run eval:
    `python -m streaming.ReKV.run_eval ...`
-   or use the AMD/local launcher scripts
+   or submit `streaming/ReKV/run_eval.sh` with `sbatch`
+   or use `sbatch --array=0-(N-1) scripts/run_streaming_eval_slurm_array.sh` with `NUM_CHUNKS=N`
 4. Judge:
    `python -m streaming.ReKV.judge_results --in-place ...`
 5. Plot:
    `python -m streaming.ReKV.plot_results ...`
 6. Profile:
    `python -m streaming.ReKV.profile_streaming ...`
-   or use the AMD/local profile launcher
+   or submit `streaming/ReKV/profile_streaming.sh` with `sbatch`
 
 Supporting launcher scripts:
 - [run_streaming_full_eval_local.sh](/workspace/streaming-vqa/scripts/run_streaming_full_eval_local.sh)
@@ -475,7 +469,7 @@ Previously wrong or unclear:
 
 Current status:
 - manifest order text matches the loader
-- branch defaults are now ROCm-friendly on AMD hosts
+- branch defaults are now cluster-friendly and `duo`-first
 - SLURM wrappers exist
 - backend resolution is explicit in manifests, validation output, and method stats
 - the docs now treat NVIDIA/CUDA as the native baseline and AMD as the portability branch

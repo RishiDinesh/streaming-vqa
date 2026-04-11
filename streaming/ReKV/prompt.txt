@@ -20,11 +20,11 @@ Active scope
 
 Current branch intent
 ---------------------
-- Current working branch: `exp/amd-gpu-inference`
-- Preferred execution target: local or ROCm-first AMD validation
-- Preferred Python environment for new runs: `/opt/venv`
+- Current working branch: `exp/nv-gpu-inference`
+- Preferred execution target: NVIDIA SLURM cluster
+- Preferred Python environment for new runs: `conda activate duo`
 - Preferred runtime validator:
-  - `python -m streaming.ReKV.validate_rocm_env`
+  - `python -m streaming.ReKV.validate_runtime_env`
 - Historical note:
   - the original project/papers/repos are NVIDIA-first
   - `exp/amd-gpu-inference` is the porting/adaptation branch
@@ -85,7 +85,7 @@ Backend policy
   - only treat Duo as native sparse streaming if `streaming_attn_backend_actual = blocksparse`
   - prefer native CUDA libraries and kernels rather than AMD fallback assumptions
 - On ROCm:
-  - this branch is the main portability / validation branch
+  - historical audit support remains
   - `validate_rocm_env` is a compatibility alias to `validate_runtime_env`
   - ROCm-specific notes live in `streaming/ReKV/ROCM_Backend_Audit.md`
 
@@ -105,14 +105,15 @@ Suggested workflow
    `python -m streaming.ReKV.precompute_features ...`
 3. Run eval:
    `python -m streaming.ReKV.run_eval ...`
-   or the local launcher scripts
+   or `sbatch streaming/ReKV/run_eval.sh ...`
+   or `NUM_CHUNKS=N sbatch --array=0-(N-1) scripts/run_streaming_eval_slurm_array.sh`
 4. Judge:
    `python -m streaming.ReKV.judge_results --in-place ...`
 5. Plot:
    `python -m streaming.ReKV.plot_results ...`
 6. Profile:
    `python -m streaming.ReKV.profile_streaming ...`
-   or the local profile launcher
+   or `sbatch streaming/ReKV/profile_streaming.sh ...`
 
 Current result story
 --------------------
@@ -123,4 +124,3 @@ Current result story
 - The branch should be kept aligned with the official NVIDIA-first ReKV and Duo implementations:
   - ReKV paper/repo: https://arxiv.org/abs/2503.00540 , https://github.com/Becomebright/ReKV
   - Duo paper/repo: https://arxiv.org/abs/2410.10819 , https://github.com/mit-han-lab/duo-attention
-  - but this branch remains the AMD/ROCm adaptation path

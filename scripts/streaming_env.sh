@@ -6,7 +6,7 @@ import importlib
 for name in ("torch", "numpy", "matplotlib", "transformers", "tqdm", "duo_attn"):
     importlib.import_module(name)
 '
-  local _preference=${STREAMING_ENV_PREFERENCE:-auto}
+  local _preference=${STREAMING_ENV_PREFERENCE:-duo}
 
   _activate_conda_duo() {
     if command -v conda >/dev/null 2>&1; then
