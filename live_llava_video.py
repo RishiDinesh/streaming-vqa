@@ -650,6 +650,7 @@ def prepare_prompt_with_backoff(
     processor,
     video_path: str,
     requested_num_frames: int,
+    prompt_text: str,
     rendered_prompt: str,
     max_length: int,
     auto_backoff: bool,
@@ -672,7 +673,10 @@ def prepare_prompt_with_backoff(
         input_ids = raw_inputs["input_ids"][0].detach().cpu().tolist()
         decoded_raw = decode_text(processor.tokenizer, input_ids, False)
         decoded_skip = decode_text(processor.tokenizer, input_ids, True)
-        survived = prompt_text_survived(rendered_prompt, decoded_raw, decoded_skip)
+        # Compare against the user-authored text rather than the fully rendered
+        # chat template. Special tokens and expanded video placeholders mean the
+        # decoded prompt will not round-trip to the exact rendered template.
+        survived = prompt_text_survived(prompt_text, decoded_raw, decoded_skip)
         reached_cap = len(input_ids) >= int(max_length)
 
         attempt = {
@@ -805,6 +809,7 @@ def main() -> None:
         processor=processor,
         video_path=video_path,
         requested_num_frames=int(args.num_frames),
+        prompt_text=args.prompt,
         rendered_prompt=rendered_prompt,
         max_length=int(args.max_length),
         auto_backoff=not args.disable_auto_frame_backoff,
@@ -836,6 +841,12 @@ def main() -> None:
     banner_style = "bold green" if attention_summary["attention_mode"] == "duo" else "bold red"
     demo_console.print(Rule(Text(banner_text, style=banner_style), style=banner_style))
     print_stage_header(demo_console, "INPUT", "bold cyan")
+    demo_console.print(
+        Text.assemble(
+            ("Frames requested/used", "bold cyan"),
+            (f": {int(args.num_frames)} / {int(used_num_frames)}", "white"),
+        )
+    )
     demo_console.print(
         Text.assemble(
             ("Input sequence length", "bold cyan"),
