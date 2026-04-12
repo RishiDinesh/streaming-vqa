@@ -135,6 +135,17 @@ def add_shared_args(parser):
     parser.add_argument("--sparsity", type=float, default=0.5)
     parser.add_argument("--sink_size", type=int, default=None)
     parser.add_argument("--recent_size", type=int, default=None)
+    parser.add_argument(
+        "--baseline_attn_impl",
+        "--baseline-attn-impl",
+        dest="baseline_attn_impl",
+        choices=("default", "eager"),
+        default="default",
+        help=(
+            "Attention implementation for baseline runs. 'default' keeps the "
+            "model's stock optimized attention path; 'eager' forces eager attention."
+        ),
+    )
     parser.add_argument("--skip_plot", action="store_true")
 
 
@@ -648,16 +659,26 @@ def configure_model_for_mode(
     sparsity: float,
     sink_size_override: Optional[int],
     recent_size_override: Optional[int],
+    baseline_attn_impl: str = "default",
 ):
     print(f"Loading {mode} model: {model_name}")
     model_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    load_kwargs: Dict[str, Any] = {
+        "torch_dtype": model_dtype,
+        "low_cpu_mem_usage": True,
+    }
+    if mode == "duo":
+        load_kwargs["attn_implementation"] = "eager"
+    elif baseline_attn_impl == "eager":
+        load_kwargs["attn_implementation"] = "eager"
+
     model = LlavaOnevisionForConditionalGeneration.from_pretrained(
         model_name,
-        torch_dtype=model_dtype,
-        low_cpu_mem_usage=True,
-        attn_implementation="eager",
+        **load_kwargs,
     )
     model.eval()
+    resolved_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
+    print(f"[{mode}] Loaded attention implementation: {resolved_attn_impl}")
 
     resolved_sparsity = 0.0
     if mode == "duo":
@@ -909,6 +930,8 @@ def write_context_summary(rows: Sequence[Dict[str, Any]], output_path: Path):
             print(f"  prefill_memory_mb={row['ctx_memory']}", file=f)
             print(f"  generation_latency_ms={row['gen_latency']}", file=f)
             print(f"  generation_memory_mb={row['gen_memory']}", file=f)
+            if row.get("attn_implementation"):
+                print(f"  attn_implementation={row['attn_implementation']}", file=f)
             print(f"  prefix_seconds={row['prefix_seconds']:.2f} oom={row['oom']}", file=f)
             if row.get("error"):
                 print(f"  error={row['error']}", file=f)
@@ -926,6 +949,8 @@ def write_prefill_summary(rows: Sequence[Dict[str, Any]], output_path: Path):
             print(f"  prefill_total_ms={row['prefill_total_ms']}", file=f)
             print(f"  prefill_latency_ms_per_chunk={row['ctx_latency']}", file=f)
             print(f"  prefill_memory_mb={row['ctx_memory']}", file=f)
+            if row.get("attn_implementation"):
+                print(f"  attn_implementation={row['attn_implementation']}", file=f)
             print(f"  num_chunks={row['num_chunks']} oom={row['oom']}", file=f)
             if row.get("effective_first_chunk_size") is not None:
                 print(
@@ -1247,7 +1272,9 @@ def run_context_command(args):
             sparsity=args.sparsity,
             sink_size_override=args.sink_size,
             recent_size_override=args.recent_size,
+            baseline_attn_impl=args.baseline_attn_impl,
         )
+        mode_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
 
         try:
             for point in sweep_points:
@@ -1273,6 +1300,7 @@ def run_context_command(args):
                         "prefix_ratio": round(point.prefix_ratio, 6),
                         "num_frames": point.num_frames,
                         "sparsity": mode_sparsity if mode == "duo" else 0.0,
+                        "attn_implementation": mode_attn_impl,
                         **result,
                     }
                 )
@@ -1365,7 +1393,9 @@ def run_prefill_command(args):
             sparsity=args.sparsity,
             sink_size_override=args.sink_size,
             recent_size_override=args.recent_size,
+            baseline_attn_impl=args.baseline_attn_impl,
         )
+        mode_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
 
         try:
             prefill_kwargs = move_prefill_kwargs_to_model(model, batch)
@@ -1384,6 +1414,7 @@ def run_prefill_command(args):
                         "prefix_ratio": round(sweep_point.prefix_ratio, 6),
                         "num_frames": sweep_point.num_frames,
                         "sparsity": mode_sparsity if mode == "duo" else 0.0,
+                        "attn_implementation": mode_attn_impl,
                         "prefill_chunk_size": int(chunk_size),
                         "requested_prefill_chunk_size": int(chunk_size),
                         **result,
@@ -1410,6 +1441,7 @@ def run_prefill_command(args):
                 "video_path": args.video_path,
                 "model_scale": args.model_scale,
                 "model_name": args.model_name,
+                "baseline_attn_impl": args.baseline_attn_impl,
             },
             indent=2,
         ),

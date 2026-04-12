@@ -91,6 +91,17 @@ def parse_args():
     run_parser.add_argument("--sparsity", type=float, default=0.5)
     run_parser.add_argument("--sink_size", type=int, default=None)
     run_parser.add_argument("--recent_size", type=int, default=None)
+    run_parser.add_argument(
+        "--baseline_attn_impl",
+        "--baseline-attn-impl",
+        dest="baseline_attn_impl",
+        choices=("default", "eager"),
+        default="default",
+        help=(
+            "Attention implementation for baseline runs. 'default' keeps the "
+            "model's stock optimized attention path; 'eager' forces eager attention."
+        ),
+    )
     run_parser.add_argument("--skip_plot", action="store_true")
 
     plot_parser = subparsers.add_parser(
@@ -366,7 +377,9 @@ def run_context_command(args):
             sparsity=args.sparsity,
             sink_size_override=args.sink_size,
             recent_size_override=args.recent_size,
+            baseline_attn_impl=args.baseline_attn_impl,
         )
+        mode_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
 
         try:
             for point in sweep_points:
@@ -392,6 +405,7 @@ def run_context_command(args):
                         "prefix_ratio": round(point.prefix_ratio, 6),
                         "num_frames": point.num_frames,
                         "sparsity": mode_sparsity if mode == "duo" else 0.0,
+                        "attn_implementation": mode_attn_impl,
                         **result,
                     }
                 )
