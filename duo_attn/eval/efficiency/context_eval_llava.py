@@ -31,7 +31,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Standalone LLaVA context-length sweep benchmark using the "
-            "full-model multimodal prefill/decode flow."
+            "language-model prefill/decode flow after precomputing multimodal "
+            "embeddings."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -362,6 +363,10 @@ def run_context_command(args):
             f"using {point.num_frames} frames over {point.prefix_seconds:.2f}s "
             f"(ratio={point.prefix_ratio:.3f})"
         )
+    print(
+        "Prefill metrics below exclude vision-tower and multimodal-projector "
+        "time/memory and benchmark the language model only."
+    )
 
     rows: List[Dict[str, Any]] = []
     for mode in ("baseline", "duo"):

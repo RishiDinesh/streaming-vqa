@@ -17,6 +17,7 @@ from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 
 from duo_attn.eval.efficiency.benchmark_dynamic_llava import move_batch_to_device
 from duo_attn.eval.efficiency.utils import bench_func
+from duo_attn.eval.validate.inference import build_llava_video_inputs_embeds
 from duo_attn.patch import enable_duo_attention_eval
 from duo_attn.utils import (
     load_attn_pattern,
@@ -46,8 +47,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Standalone LLaVA efficiency suite for context sweep, prefill chunk "
-            "sweep, and plot regeneration using the full-model multimodal "
-            "benchmark flow."
+            "sweep, and plot regeneration using language-model-only prefill "
+            "benchmarking after precomputing multimodal embeddings."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -415,6 +416,18 @@ def run_full_model_prefill(
     )
 
 
+def run_language_model_prefill(
+    model,
+    inputs_embeds: torch.Tensor,
+    past_key_values=None,
+):
+    return model.language_model(
+        inputs_embeds=inputs_embeds,
+        past_key_values=past_key_values,
+        use_cache=True,
+    )
+
+
 def run_autoregressive_decode(
     model,
     past_key_values,
@@ -433,103 +446,22 @@ def run_autoregressive_decode(
         current_token = outputs.logits[:, -1, :].argmax(dim=-1).unsqueeze(1)
 
 
-def infer_multimodal_prefix_context(
-    model,
-    prefill_kwargs: Dict[str, Any],
-) -> int:
-    input_ids = prefill_kwargs.get("input_ids", None)
-    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
-        return 0
-
-    max_end = 0
-    for attr_name in ("video_token_index", "image_token_index"):
-        token_idx = getattr(model.config, attr_name, None)
-        if token_idx is None:
-            continue
-        positions = torch.nonzero(input_ids == int(token_idx), as_tuple=False)
-        if positions.numel() == 0:
-            continue
-        max_end = max(max_end, int(positions[:, 1].max().item()) + 1)
-    return max_end
-
-
-def slice_sequence_tensor(value: torch.Tensor, start: int, end: int) -> torch.Tensor:
-    if value.ndim == 0:
-        return value
-    if value.ndim == 1:
-        return value[start:end]
-    return value[:, start:end, ...]
-
-
-def slice_attention_mask_for_prefill(
-    attention_mask: torch.Tensor,
-    end: int,
-) -> torch.Tensor:
-    if attention_mask.ndim == 0:
-        return attention_mask
-    if attention_mask.ndim == 1:
-        return attention_mask[:end]
-    return attention_mask[..., :end]
-
-
-def build_prefill_chunk_kwargs(
-    prefill_kwargs: Dict[str, Any],
-    start: int,
-    end: int,
-    include_multimodal: bool,
-) -> Dict[str, Any]:
-    input_ids = prefill_kwargs.get("input_ids", None)
-    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
-        raise ValueError("Chunked prefill expects batched input_ids with shape [B, L].")
-
-    batch_size, seq_len = input_ids.shape
-    chunk_kwargs: Dict[str, Any] = {}
-    for key, value in prefill_kwargs.items():
-        if not torch.is_tensor(value):
-            if include_multimodal:
-                chunk_kwargs[key] = value
-            continue
-
-        if key == "attention_mask":
-            chunk_kwargs[key] = slice_attention_mask_for_prefill(value, end)
-            continue
-
-        if key in {"input_ids", "position_ids", "token_type_ids"}:
-            chunk_kwargs[key] = slice_sequence_tensor(value, start, end)
-            continue
-
-        if value.ndim >= 2 and value.shape[0] == batch_size and value.shape[1] == seq_len:
-            chunk_kwargs[key] = slice_sequence_tensor(value, start, end)
-            continue
-
-        if include_multimodal:
-            chunk_kwargs[key] = value
-
-    return chunk_kwargs
-
-
 def build_prefill_chunk_plan(
-    model,
-    prefill_kwargs: Dict[str, Any],
+    seq_len: int,
     requested_chunk_size: int,
-) -> Tuple[List[Tuple[int, int, bool]], int, int]:
-    input_ids = prefill_kwargs.get("input_ids", None)
-    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
-        raise ValueError("Chunked prefill expects batched input_ids with shape [B, L].")
+) -> List[Tuple[int, int]]:
+    if seq_len <= 0:
+        raise ValueError("Chunked prefill expects a positive sequence length.")
 
-    seq_len = int(input_ids.shape[1])
     chunk_size = max(1, int(requested_chunk_size))
-    multimodal_prefix_len = infer_multimodal_prefix_context(model, prefill_kwargs)
-
-    first_chunk_end = min(seq_len, max(chunk_size, multimodal_prefix_len))
-    chunks: List[Tuple[int, int, bool]] = [(0, first_chunk_end, True)]
-    start = first_chunk_end
+    chunks: List[Tuple[int, int]] = []
+    start = 0
     while start < seq_len:
         end = min(seq_len, start + chunk_size)
-        chunks.append((start, end, False))
+        chunks.append((start, end))
         start = end
 
-    return chunks, first_chunk_end, multimodal_prefix_len
+    return chunks
 
 
 def get_context_targets(args) -> List[int]:
@@ -704,23 +636,34 @@ def configure_model_for_mode(
 
 def run_benchmark_with_decode_steps(
     model,
-    prefill_kwargs: Dict[str, Any],
+    inputs_embeds: torch.Tensor,
     decode_tokens: int,
 ) -> Dict[str, Any]:
-    print("\n--- Pre-filling benchmark ---")
+    print("\n--- Language-model pre-filling benchmark ---")
     torch.cuda.reset_peak_memory_stats()
 
     def prefill_func():
         with torch.no_grad():
-            _ = run_full_model_prefill(model, prefill_kwargs, past_key_values=None)
+            _ = run_language_model_prefill(
+                model,
+                inputs_embeds,
+                past_key_values=None,
+            )
 
     ctx_latency, ctx_memory = bench_func(prefill_func, num_steps=10, num_warmup_steps=3)
 
     torch.cuda.reset_peak_memory_stats()
     with torch.no_grad():
-        outputs = run_full_model_prefill(model, prefill_kwargs, past_key_values=None)
+        outputs = run_language_model_prefill(
+            model,
+            inputs_embeds,
+            past_key_values=None,
+        )
     prefill_peak_memory = torch.cuda.max_memory_allocated() / 1024 / 1024
-    print(f"Peak memory usage in the pre-filling stage: {prefill_peak_memory:.2f} MB")
+    print(
+        "Peak memory usage in the language-model pre-filling stage: "
+        f"{prefill_peak_memory:.2f} MB"
+    )
 
     past_key_values = outputs.past_key_values
     pred_token_idx = outputs.logits[:, -1, :].argmax(dim=-1).unsqueeze(1)
@@ -781,8 +724,13 @@ def benchmark_one_point(
         max_length=max_length,
     )
     prefill_kwargs = move_prefill_kwargs_to_model(model, batch)
+    with torch.no_grad():
+        inputs_embeds = build_llava_video_inputs_embeds(model, prefill_kwargs)
+    del prefill_kwargs
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    result = run_benchmark_with_decode_steps(model, prefill_kwargs, decode_tokens)
+    result = run_benchmark_with_decode_steps(model, inputs_embeds, decode_tokens)
     result["decode_tokens"] = int(decode_tokens)
     return result
 
@@ -812,28 +760,17 @@ def safe_benchmark_one_point(*args, **kwargs) -> Dict[str, Any]:
 
 def run_prefill_only(
     model,
-    prefill_kwargs: Dict[str, Any],
+    inputs_embeds: torch.Tensor,
     prefill_chunk_size: int,
 ):
-    input_ids = prefill_kwargs.get("input_ids", None)
-    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
-        raise ValueError("Prefill chunk sweep expects batched input_ids with shape [B, L].")
-
-    seq_len = int(input_ids.shape[1])
-    chunk_plan, effective_first_chunk_size, multimodal_prefix_len = build_prefill_chunk_plan(
-        model,
-        prefill_kwargs,
-        prefill_chunk_size,
-    )
-    requested_chunk_size = max(1, int(prefill_chunk_size))
-    num_chunks = len(chunk_plan)
-
-    if effective_first_chunk_size > requested_chunk_size:
-        print(
-            "Promoting first multimodal chunk from "
-            f"{requested_chunk_size} to {effective_first_chunk_size} tokens "
-            f"to keep the full vision-token span intact."
+    if not torch.is_tensor(inputs_embeds) or inputs_embeds.ndim != 3:
+        raise ValueError(
+            "Prefill chunk sweep expects batched inputs_embeds with shape [B, L, H]."
         )
+
+    seq_len = int(inputs_embeds.shape[1])
+    chunk_plan = build_prefill_chunk_plan(seq_len, prefill_chunk_size)
+    num_chunks = len(chunk_plan)
 
     torch.cuda.reset_peak_memory_stats()
     start = torch.cuda.Event(enable_timing=True)
@@ -842,17 +779,12 @@ def run_prefill_only(
     past_key_values = None
     start.record()
     pbar = tqdm(chunk_plan, leave=False)
-    for s, e, include_multimodal in pbar:
-        chunk_kwargs = build_prefill_chunk_kwargs(
-            prefill_kwargs,
-            start=s,
-            end=e,
-            include_multimodal=include_multimodal,
-        )
+    for s, e in pbar:
+        chunk = inputs_embeds[:, s:e, :]
         with torch.no_grad():
-            outputs = run_full_model_prefill(
+            outputs = run_language_model_prefill(
                 model,
-                chunk_kwargs,
+                chunk,
                 past_key_values=past_key_values,
             )
         past_key_values = outputs.past_key_values
@@ -866,25 +798,28 @@ def run_prefill_only(
 
     prefill_total_ms = float(start.elapsed_time(end))
     peak_memory_mb = float(torch.cuda.max_memory_allocated() / 1024 / 1024)
-    print(f"Peak prefill ctx_memory: {peak_memory_mb:.2f} MB (max allocated GPU memory)")
+    print(
+        "Peak language-model prefill ctx_memory: "
+        f"{peak_memory_mb:.2f} MB (max allocated GPU memory)"
+    )
     return {
         "ctx_latency": prefill_total_ms / max(1, num_chunks),
         "ctx_memory": peak_memory_mb,
         "prefill_total_ms": prefill_total_ms,
         "num_chunks": num_chunks,
-        "effective_first_chunk_size": effective_first_chunk_size,
-        "multimodal_prefix_context": multimodal_prefix_len,
+        "effective_first_chunk_size": int(chunk_plan[0][1] - chunk_plan[0][0]),
+        "multimodal_prefix_context": None,
         "oom": False,
     }
 
 
 def safe_run_prefill_only(
     model,
-    prefill_kwargs: Dict[str, Any],
+    inputs_embeds: torch.Tensor,
     prefill_chunk_size: int,
 ):
     try:
-        return run_prefill_only(model, prefill_kwargs, prefill_chunk_size)
+        return run_prefill_only(model, inputs_embeds, prefill_chunk_size)
     except RuntimeError as exc:
         if "out of memory" not in str(exc).lower():
             raise
@@ -1257,6 +1192,10 @@ def run_context_command(args):
             f"using {point.num_frames} frames over {point.prefix_seconds:.2f}s "
             f"(ratio={point.prefix_ratio:.3f})"
         )
+    print(
+        "Prefill metrics below exclude vision-tower and multimodal-projector "
+        "time/memory and benchmark the language model only."
+    )
 
     rows: List[Dict[str, Any]] = []
     for mode in ("baseline", "duo"):
@@ -1378,6 +1317,10 @@ def run_prefill_command(args):
         prompt_text=prompt_text,
         max_length=args.max_length,
     )
+    print(
+        "Prefill chunk metrics below exclude vision-tower and multimodal-projector "
+        "time/memory and benchmark the language model only."
+    )
 
     rows: List[Dict[str, Any]] = []
     for mode in ("baseline", "duo"):
@@ -1397,14 +1340,20 @@ def run_prefill_command(args):
         )
         mode_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
 
+        inputs_embeds = None
         try:
             prefill_kwargs = move_prefill_kwargs_to_model(model, batch)
             actual_seq_len = int(prefill_kwargs["input_ids"].shape[1])
+            with torch.no_grad():
+                inputs_embeds = build_llava_video_inputs_embeds(model, prefill_kwargs)
+            del prefill_kwargs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             print(f"[{mode}] Fixed sequence length: {actual_seq_len}")
 
             for chunk_size in args.prefill_chunk_sizes:
                 print(f"\n[{mode}] Benchmarking prefill_chunk_size={chunk_size}")
-                result = safe_run_prefill_only(model, prefill_kwargs, chunk_size)
+                result = safe_run_prefill_only(model, inputs_embeds, chunk_size)
                 rows.append(
                     {
                         "mode": mode,
@@ -1421,6 +1370,8 @@ def run_prefill_command(args):
                     }
                 )
         finally:
+            if inputs_embeds is not None:
+                del inputs_embeds
             del model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
