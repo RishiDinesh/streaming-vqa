@@ -619,11 +619,21 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         self.max_new_tokens = int(max_new_tokens)
         self.clear_cuda_cache_on_reset = bool(clear_cuda_cache_on_reset)
         self.processor = AutoProcessor.from_pretrained(pretrained, trust_remote_code=True)
+        # flash_attention_2 is used uniformly across all four methods for two reasons:
+        # 1. Memory: eager attention materialises an O(seq_len²) attention matrix.
+        #    At 1800 frames × 196 tokens = 108k tokens this alone requires >300 GB,
+        #    killing the job well before the video is fully ingested.
+        # 2. Comparability: using the same kernel for every method keeps the baseline
+        #    fair — the only difference between methods is KV-cache layout, not kernel.
+        # duo_streaming / rekv / duo_plus_rekv patch on top of this base model and are
+        # unaffected: Duo's blocksparse kernel replaces attention for streaming heads,
+        # and ReKV's patch replaces the full attention forward per-layer.
+        attn_impl = "flash_attention_2" if FLASH_ATTN_AVAILABLE else "sdpa"
         self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(
             pretrained,
             torch_dtype=self.dtype,
             low_cpu_mem_usage=True,
-            attn_implementation="eager",
+            attn_implementation=attn_impl,
         )
         self.model.to(self.device)
         self.model.eval()
@@ -631,6 +641,7 @@ class _BaseLlavaStreamingMethod(StreamingMethod):
         self.tokenizer = self.processor.tokenizer
         self.stop_token_ids = get_stop_token_ids(self.model, self.tokenizer)
         self.init_prompt_ids = build_init_prompt_ids(self.tokenizer, self.device)
+        self.attn_impl_used = attn_impl
         self.base_cache = None
         self.sample_metadata: dict[str, Any] = {}
         self.frames_ingested = 0
@@ -940,6 +951,7 @@ class FullStreamingMethod(_BaseLlavaStreamingMethod):
                 "method_family": "full_streaming",
                 "cache_semantics_label": "plain_full_streaming_cache",
                 "retrieval_offload_mode": "none",
+                "full_attn_impl": self.attn_impl_used,
                 "backend_resolution": build_method_backend_report(
                     runtime_backend_info=self.runtime_backend_info,
                 ),

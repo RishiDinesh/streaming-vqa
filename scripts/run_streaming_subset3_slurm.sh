@@ -42,7 +42,7 @@ ATTN_DIR="${ATTN_DIR:-${ROOT}/outputs/train/0p5b_sink512_recent1024_maxlen32000_
 MAX_VIDEOS=1
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-64}"
 SAMPLE_FPS="${SAMPLE_FPS:-0.5}"
-VIDEO_DECODE_THREADS="${VIDEO_DECODE_THREADS:-4}"
+VIDEO_DECODE_THREADS="${VIDEO_DECODE_THREADS:-1}"
 REKV_TOPK="${REKV_TOPK:-64}"
 REKV_N_LOCAL="${REKV_N_LOCAL:-15000}"
 SPARSITY="${SPARSITY:-0.5}"
@@ -131,13 +131,14 @@ submit_method() {
     --job-name="stream-${method}-sub${MAX_VIDEOS}" \
     --nodes=1 \
     --ntasks=1 \
-    --gres=gpu:1 \
+    --partition=gpunodes \
+    --gres=gpu:rtx_a6000:1 \
     --cpus-per-task=8 \
     --mem=64G \
     --time=02:00:00 \
     --output="${LOG_DIR}/stream-${method}-sub${MAX_VIDEOS}-%j.out" \
     "${SBATCH_EXTRA[@]}" \
-    --export=ALL,HF_HOME="${HF_HOME}",TOKENIZERS_PARALLELISM=false \
+    "--export=HF_HOME=${HF_HOME},TOKENIZERS_PARALLELISM=false" \
     streaming/ReKV/run_eval.sh \
       --dataset        "${DATASET}" \
       --model          "${MODEL}" \

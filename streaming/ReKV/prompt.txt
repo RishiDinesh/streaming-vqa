@@ -1,155 +1,263 @@
-Streaming ReKV handoff
-======================
+Streaming ReKV + DuoAttention — Project Handoff
+================================================
 
-Fast context for the streaming/ReKV module on the exp/nv-gpu-inference branch.
+Branch: exp/nv-gpu-inference
+Cluster: Toronto CS NVIDIA SLURM (login node: comps0)
+Repo:    /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+Conda:   /u/navdeep/miniconda3  (in ~/.bashrc)
+Env:     <repo>/envs/duo  (prefix, in scratch space — not a named env)
+Activate: source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+          conda activate <repo>/envs/duo
 
-Branch / cluster
-----------------
-- Branch:   exp/nv-gpu-inference
-- Cluster:  Toronto CS NVIDIA SLURM (login node: comps0)
-- Conda:    /u/navdeep/miniconda3  (referenced in ~/.bashrc)
-- Env:      <repo-root>/envs/duo   (prefix-based, lives in scratch space)
-- Activate: source /u/navdeep/miniconda3/etc/profile.d/conda.sh
-            conda activate <repo-root>/envs/duo
-- Repo:     /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+Full guide: streaming/ReKV/ReKV_Duo.md
 
-Datasets
---------
-- rvs_ego:   annotation ego/ego4d_oe.json,     HF subset ego
-- rvs_movie: annotation movie/movienet_oe.json, HF subset movie
-- HF repo: Becomebright/RVS
-- Videos auto-downloaded into <repo>/.hf_cache/ on first run (no manual prep needed)
 
-Methods (all four)
-------------------
-- full_streaming   — plain causal KV cache; no compression
-- duo_streaming    — Duo head routing; blocksparse kernel required
-- rekv             — local window on GPU + CPU offload + top-k retrieval at question time
-- duo_plus_rekv    — ReKV retrieval then Duo head routing over assembled context (approximate)
+WHAT THIS PROJECT DOES
+-----------------------
+Evaluate 4 streaming video-QA methods on RVS benchmark (ego + movie videos).
+Each method ingests one sampled frame at a time and answers open-ended questions
+about what it saw — no offline whole-video prefill.
+Goal: compare quality (ROUGE-L F1), answer latency, and GPU/CPU memory.
 
-Default eval config (matches prior successful runs)
----------------------------------------------------
-- model:         llava-hf/llava-onevision-qwen2-0.5b-ov-hf
-- sample_fps:    0.5
-- max_new_tokens: 64
-- n_local:       15000
-- retrieve_size: 64
-- n_frame_tokens: 196
-- attn_dir:      outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632
-- sparsity:      0.5
 
-Streaming contract (enforced identically across all methods)
-------------------------------------------------------------
-- Causal ingest only: one sampled frame per forward pass
-- Visibility cutoff: sampled timestamps strictly < conversation end_time (bisect_left)
-- Conversations sorted by end_time at load time
-- Shared KV state across all questions from the same video
-- No offline whole-video prefill
-- Feature cache must exactly match the run's sampling schedule
+FOUR METHODS
+-------------
+full_streaming   — plain causal KV cache; keeps all frames on GPU
+                   KV cache ~4.3 GB for 60-min video; flash_attention_2 keeps it feasible
 
-First-time setup (do once)
---------------------------
-1. Install Miniconda (login node):
-     bash /tmp/Miniconda3-latest-Linux-x86_64.sh -b -p /u/navdeep/miniconda3
-     source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+duo_streaming    — Duo head routing: full KV for retrieval heads, sink+recent window
+                   for streaming heads; requires block_sparse_attn kernel
 
-2. Build env (must be on a GPU compute node — compiles CUDA extensions):
-     srun --nodes=1 --ntasks=1 --gres=gpu:1 --cpus-per-task=8 --mem=32G \
-          --time=01:00:00 --pty bash -l
-     # then inside the compute node:
-     source /u/navdeep/miniconda3/etc/profile.d/conda.sh
-     cd /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
-     BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;89;90" bash setup.sh 2>&1 | tee logs/setup_$(date +%Y%m%d_%H%M%S).log
+rekv             — local window on GPU + CPU offload + top-k cosine retrieval at Q time
+                   ~3.4 GB GPU + ~4.3 GB CPU for 1800-frame video
 
-3. Validate (still on compute node):
-     conda activate <repo-root>/envs/duo
-     python -m streaming.ReKV.validate_runtime_env
-     # Expect: "streaming_attn_backend_actual": "blocksparse"
+duo_plus_rekv    — ReKV retrieval then Duo head routing over assembled context (approximate)
+                   ~3.4 GB GPU + ~4.3 GB CPU; not a literal paper reproduction
 
-BLOCK_SPARSE_ATTN_CUDA_ARCHS: A100=80, H100=90, L40/Ada=89. Default "80;89;90" covers all.
-Check GPU arch: nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
 
-Key files
----------
-- streaming/ReKV/run_eval.py              — main eval loop (causal ingest, resume, sharding)
-- streaming/ReKV/methods.py               — all four method classes, shared utilities
-- streaming/ReKV/datasets.py              — RVS dataset loading, frame sampling
-- streaming/ReKV/feature_cache.py         — feature cache: validated load
-- streaming/ReKV/precompute_features.py   — batch extract and save visual features
-- streaming/ReKV/common.py               — data structures, scoring
-- streaming/ReKV/validate_runtime_env.py  — report actual backend stack
-- streaming/ReKV/judge_results.py         — LLM semantic scoring (0-5)
-- streaming/ReKV/plot_results.py          — paper-style quality/latency/memory plots
-- streaming/ReKV/profile_streaming.py     — single-video latency/memory profiling
-- streaming/ReKV/compare_subsamples.py    — cross-slice stability analysis
-- streaming/ReKV/smoke_test.py            — fast unit tests (no GPU required)
-- streaming/ReKV/rekv_core/patch.py       — patches HF model with ReKV attention forward
-- streaming/ReKV/rekv_core/attention/rekv_attention.py   — ReKV attention forward
-- streaming/ReKV/rekv_core/attention/kv_cache_manager.py — CPU offload engine
+CURRENT SMOKE-TEST RESULTS (1 video, 259 questions, RVS-Ego, subset1)
+----------------------------------------------------------------------
+Method                ROUGE-L F1   Latency(s)   Peak GPU    CPU offload
+duo_streaming          0.146        0.464        8.4 GB      —
+rekv                   0.275        0.082        3.4 GB      4.3 GB
+duo_plus_rekv          0.268        0.149        3.4 GB      4.3 GB
+full_streaming         OOM (A6000 node; 125 GB RAM exceeded)
 
-Key scripts
------------
-- scripts/streaming_env.sh                    — conda env activation (project-local prefix first)
-- streaming/ReKV/run_eval.sh                  — single-GPU SLURM eval job
-- streaming/ReKV/profile_streaming.sh         — SLURM profiling job
-- scripts/run_streaming_eval_slurm_array.sh   — multi-GPU sharded SLURM array
-- scripts/run_streaming_subset3_slurm.sh      — N-video subset: all 4 methods, 4 jobs
+duo_streaming scores lower because 50% of heads (s=0.5) use only a small
+recent window and miss mid-video context. rekv retrieves relevant blocks
+from CPU and wins on quality. Tuning --sparsity lower improves Duo quality
+but uses more GPU memory.
 
-Workflow
---------
-1. Smoke test (1 video, all 4 methods — verify env works):
-     bash scripts/run_streaming_subset3_slurm.sh --max-videos 1
 
-2. 5-video subset:
-     bash scripts/run_streaming_subset3_slurm.sh --max-videos 5
+DATA FLOW
+----------
+datasets.py         load RVS annotation JSON, sort convs by end_time, sample
+                    frames at sample_fps, resolve video path (local → HF download)
+  ↓
+[optional] precompute_features.py → feature_cache.py
+                    pre-extract visual tokens; guarantees bit-identical features
+  ↓
+methods.py          per-video reset; causal ingest (one frame per forward pass)
+                    full_streaming:   eager KV cache
+                    duo_streaming:    blocksparse streaming heads
+                    rekv:             patch_hf → rekv_attention_forward → ContextManager
+                    duo_plus_rekv:    same + Duo weights → rekv_duo_enabled=True
+  ↓
+answer_question → greedy_decode_with_cache
+                    retrieval triggered here for rekv/duo_plus_rekv
+                    returned past_key_values = [retrieved blocks] + [question tokens]
+  ↓
+run_eval.py         write result JSON, checkpoint/resume, sharding
 
-3. Full eval (single GPU):
-     sbatch --output="$(pwd)/logs/%x-%j.out" streaming/ReKV/run_eval.sh \
-       --dataset rvs_ego --method rekv
 
-4. Full eval (multi-GPU sharded):
-     NUM_CHUNKS=8 DATASET=rvs_ego METHOD=rekv \
-       sbatch --array=0-7 \
-         --output="$(pwd)/logs/%x-%A_%a.out" \
-         scripts/run_streaming_eval_slurm_array.sh
+KEY FILES
+----------
+run_eval.py                  main eval loop (causal ingest, resume, sharding)
+methods.py                   all four method classes + shared utilities
+datasets.py                  RVS dataset loading, frame sampling, video reader
+common.py                    data structs (StreamingVideoSample) + scoring functions
+feature_cache.py             validated feature cache load (schedule-equivalence check)
+precompute_features.py       batch-extract visual features to disk
+validate_runtime_env.py      print actual backend stack (blocksparse / sdpa / flash-attn)
+compare_subsamples.py        given N result JSONs → summary.md + stability plots
+plot_results.py              paper-style quality/latency/memory PNGs (15 plots)
+judge_results.py             LLM semantic scoring (0-5) for open-ended answers
+rescore_results.py           recompute ROUGE/token metrics without re-running eval
+build_qualitative_bundle.py  side-by-side predictions across methods for same questions
+smoke_test.py                fast unit tests (no GPU required)
+rekv_core/patch.py           patch_hf: replace HF attention forward with ReKV
+rekv_core/attention/rekv_attention.py   ReKV forward: local+init+retrieved, Duo gate
+rekv_core/attention/kv_cache_manager.py ContextManager: CPU offload + cosine retrieval
 
-5. After jobs finish (script prints exact commands):
-     python -m streaming.ReKV.compare_subsamples \
-         <result1.json> <result2.json> <result3.json> <result4.json> \
-         --output-dir outputs/evaluations_streaming/rvs-ego/subset1/comparison/
-     python -m streaming.ReKV.plot_results \
-         <result1.json> <result2.json> <result3.json> <result4.json> \
-         --output-dir outputs/evaluations_streaming/rvs-ego/subset1/plots/
 
-Monitoring jobs
----------------
-- squeue -u ${USER}                                     # all your jobs
-- tail -f logs/stream-<method>-sub1-<jobid>.out         # live log for one job
-- watch -n 30 'tail -n 5 logs/stream-*-sub1-*.out'     # all logs at once
-- sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS  # finished job stats
+KEY SCRIPTS
+------------
+scripts/run_streaming_subset3_slurm.sh    submit 4 SLURM jobs (one per method)
+streaming/ReKV/run_eval.sh                single-GPU SLURM job wrapper
+scripts/run_streaming_eval_slurm_array.sh multi-GPU sharded array eval
+scripts/streaming_env.sh                  conda activation (used by SLURM jobs)
+setup.sh                                  build conda env + CUDA extensions
 
-Disk layout
------------
-- /u/navdeep/miniconda3/   — conda base (~500 MB, home fs 688 GB free)
-- <repo>/envs/duo/          — Python env (~10 GB, scratch space)
-- <repo>/.hf_cache/         — HF model + dataset cache (videos downloaded here)
-- <repo>/outputs/           — eval results, plots (scratch space)
-- <repo>/logs/              — SLURM job logs
 
-Backend requirements
+RUNNING EVALUATIONS
 --------------------
-- flash-attn:        full-attention forward (strongly recommended)
-- block_sparse_attn: sparse Duo streaming (required for paper-faithful Duo)
-- flashinfer:        RMSNorm/RoPE acceleration (optional)
-- decord:            fast video decoding (recommended)
+# Smoke test: 1 video, all 4 methods (verify env works end-to-end)
+bash scripts/run_streaming_subset3_slurm.sh --max-videos 1
 
-Result categories
+# 5-video subset
+bash scripts/run_streaming_subset3_slurm.sh --max-videos 5
+
+# Full eval, single GPU
+sbatch --output="$(pwd)/logs/%x-%j.out" streaming/ReKV/run_eval.sh \
+  --dataset rvs_ego --method rekv --retrieve-size 64 --n-local 15000
+
+# Full eval, multi-GPU (8 shards)
+NUM_CHUNKS=8 DATASET=rvs_ego METHOD=rekv \
+  sbatch --array=0-7 --output="$(pwd)/logs/%x-%A_%a.out" \
+    scripts/run_streaming_eval_slurm_array.sh
+
+# After jobs finish (submit script prints exact commands):
+python -m streaming.ReKV.compare_subsamples \
+    <full>.json <duo>.json <rekv>.json <duo_plus_rekv>.json \
+    --output-dir outputs/evaluations_streaming/rvs-ego/subset1/comparison/
+python -m streaming.ReKV.plot_results \
+    <full>.json <duo>.json <rekv>.json <duo_plus_rekv>.json \
+    --output-dir outputs/evaluations_streaming/rvs-ego/subset1/plots/
+
+
+MONITORING JOBS
+----------------
+squeue -u ${USER}
+watch -n 30 'tail -n 5 logs/stream-*-sub1-*.out'
+sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS
+
+
+OUTPUT STRUCTURE
 -----------------
-- nvidia_sparse_duo_equivalent  — block_sparse_attn active, paper-faithful
-- sdpa_fallback_duo             — block_sparse_attn missing (should not occur on NVIDIA)
+outputs/evaluations_streaming/<dataset>/subset<N>/
+  <method>/<ts>_results.json      per-run result with all conv predictions + metrics
+  comparison/summary.md           headline quality/latency/memory table
+  comparison/stability_report.json  per-question score variance
+  comparison/*.png                slice_stability.png, delta_stability.png
+  plots/aggregate_comparison.png  bar chart: quality, latency, GPU, CPU
+  plots/quality_latency_tradeoff.png
+  plots/quality_memory_tradeoff.png
+  plots/pareto_tradeoffs_with_arrows.png
+  plots/*.png                     15 plots total
 
-Reference
----------
-- Full guide:      streaming/ReKV/ReKV_Duo.md
-- ReKV paper:      https://arxiv.org/abs/2503.00540
-- DuoAttention:    https://arxiv.org/abs/2410.10819
+Result JSON top-level keys:
+  run_config              CLI args used
+  evaluation_manifest     model, sample_fps, backend stack, rekv config
+  aggregate_metrics       avg_rouge_l_f1 (primary), latency, peak_memory_bytes,
+                          peak_cpu_offload_bytes, total_conversations_answered
+  videos[]                per-video data with conversations[]
+    conversations[].prediction          model's generated answer
+    conversations[].reference_answer    ground truth
+    conversations[].scores.rouge_l_f1   per-question quality
+    conversations[].method_stats        timing and retrieval stats
+
+
+FIRST-TIME SETUP
+-----------------
+1. Login node: accept conda ToS (once only):
+     conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+     conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+2. Get interactive GPU node:
+     srun --nodes=1 --ntasks=1 --gres=gpu:rtx_a6000:1 --partition=gpunodes \
+          --cpus-per-task=8 --mem=64G --time=01:00:00 --pty bash -l
+
+3. Build env (on compute node):
+     source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+     cd <repo>
+     BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;89;90" bash setup.sh 2>&1 | tee logs/setup.log
+     # A100=80  H100=90  RTX A6000/Ada=89  (default "80;89;90" covers all)
+
+4. Validate:
+     conda activate <repo>/envs/duo
+     python -m streaming.ReKV.validate_runtime_env
+     # Must see: "streaming_attn_backend_actual": "blocksparse"
+
+
+COMMON ISSUES AND FIXES
+------------------------
+avcodec_send_packet error (decord crash)
+  Fix: always --video-decode-threads 1 (default in submit scripts; do not increase)
+
+Disk quota exceeded on /u/navdeep during setup
+  Cause: CUDA packages (~8 GB) land in ~/.conda/pkgs by default
+  Fix: setup.sh redirects via CONDA_PKGS_DIRS=<repo>/.conda_pkgs
+       Clean home dir: conda clean --packages --tarballs
+
+CondaToSNonInteractiveError (Terms of Service not accepted)
+  Fix: run conda tos accept ... from login node before any batch conda ops
+
+user env retrieval failed requeued held
+  Cause: --export=NONE or --export=ONLY_VAR=... blocks SLURM prologue
+  Fix: use default --export=ALL; hardcode env vars inside run_eval.sh
+
+Batch job submission failed: requested node config not available
+  Fix: use --gres=gpu:rtx_a6000:1 --partition=gpunodes (already in submit scripts)
+
+full_streaming OOM (old issue — FIXED)
+  Cause: attn_implementation="eager" materialises O(seq_len²) attention matrix;
+         at 108k tokens this was >300 GB regardless of node RAM
+  Fix: all methods now use flash_attention_2 (falls back to sdpa). KV cache for
+       1800-frame video is only ~4.3 GB. OOM is gone, comparability preserved
+       (same kernel for all methods; only KV layout differs).
+
+rekv/duo_plus_rekv generating 1-word answers ("The person<|im_end|>")
+  Cause: after retrieval, past_key_values was missing question tokens; decoder
+         had no question context and emitted EOS immediately
+  Fix (already applied in rekv_attention.py line ~225):
+    current_key_value = (h_k, h_v)   # h_k = cat([retrieved, question])
+    NOT: current_key_value = (past_k, past_v)  # this was the bug
+
+BASH_SOURCE[0] wrong path in SLURM
+  Cause: SLURM copies scripts to /var/spool/slurmd/jobXXX/slurm_script
+  Fix: run_eval.sh hardcodes ROOT=<absolute path>
+
+
+LIMITATIONS
+------------
+- full_streaming KV cache grows linearly (~4.3 GB for 60-min video); manageable on A6000
+- duo_plus_rekv is approximate (streaming heads use n_local, not Duo's recent_size)
+- decord must use 1 thread on this cluster (avcodec thread safety issue)
+- rekv positional encoding: retrieved blocks lose absolute position (distance scaling only)
+- partial/OOM result JSONs show null aggregate_metrics; must delete and rerun
+- duo_streaming quality is lower than rekv at s=0.5; tune --sparsity lower to improve
+
+
+KEY PARAMETERS
+---------------
+--method           required   full_streaming | duo_streaming | rekv | duo_plus_rekv
+--dataset          rvs_ego    rvs_ego | rvs_movie
+--sample-fps       0.5        frames/sec to sample (must match across compared runs)
+--max-new-tokens   64         tokens to generate per answer
+--n-local          15000      ReKV GPU local window (tokens)
+--retrieve-size    64         ReKV top-k blocks from CPU at question time
+--n-frame-tokens   196        visual tokens per frame (LLaVA-OV = 196, must match model)
+--attn-dir         see scripts path to Duo trained head weights (.tsv files)
+--sparsity         0.5        fraction of streaming heads (0=all full, 1=all streaming)
+--video-decode-threads 1      keep at 1 (threading crashes on this cluster)
+--max-videos       all        limit videos (use 1 for smoke test)
+--num-chunks / --chunk-index  sharding for multi-GPU runs
+--resume                      resume from partial result JSON
+
+
+BACKEND REQUIREMENTS
+---------------------
+flash-attn          full-attention forward (strongly recommended)
+block_sparse_attn   Duo sparse streaming (required for paper-faithful Duo)
+flashinfer          RMSNorm/RoPE acceleration (optional; torch fallback)
+decord              fast video decoding (recommended; imageio fallback)
+triton              ReKV inner attention kernel (optional; --rekv-fattn flag)
+
+
+REFERENCES
+-----------
+ReKV:          https://arxiv.org/abs/2503.00540
+DuoAttention:  https://arxiv.org/abs/2410.10819
+Dataset:       HuggingFace Becomebright/RVS
+Model (0.5B):  llava-hf/llava-onevision-qwen2-0.5b-ov-hf
+Model (7B):    llava-hf/llava-onevision-qwen2-7b-ov-hf

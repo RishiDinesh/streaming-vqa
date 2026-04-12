@@ -1,5 +1,6 @@
 dataset/
 datasets/
+
 outputs/*/*step*
 outputs/evaluations_streaming/feature_cache/
 outputs/evaluations_streaming/**/qualitative/qualitative_bundle.json
@@ -8,6 +9,24 @@ logs/
 *.json.tmp
 *.tmp
 
+# Cluster / env artifacts — large, not code
+.conda_pkgs/
+.hf_cache/
+envs/
+
+# Conda package cache and metadata
+pkgs/
+conda-meta/
+*.conda
+*.tar.bz2
+
+# CUDA / compiled build artifacts
+*.ptx
+*.cubin
+*.fatbin
+*.nvvm
+*.o
+*.a
 # Synthetic video gen — large files
 # Ignore all data and output folders, only track code
 synthetic-video-gen/*

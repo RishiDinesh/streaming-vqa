@@ -24,8 +24,14 @@ set -euo pipefail
 REPO_ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ENV_PREFIX="${REPO_ROOT}/envs/duo"
 
+# Redirect conda package cache to scratch space so CUDA toolkit packages
+# (~8GB) don't exceed the home-directory quota on /u/navdeep.
+export CONDA_PKGS_DIRS="${REPO_ROOT}/.conda_pkgs"
+mkdir -p "${CONDA_PKGS_DIRS}"
+
 echo "==> Repo root: ${REPO_ROOT}"
 echo "==> Conda env prefix: ${ENV_PREFIX}"
+echo "==> Conda pkg cache:  ${CONDA_PKGS_DIRS}"
 
 # ---------------------------------------------------------------------------
 # Step 1: create the conda environment (prefix-based, in project dir)

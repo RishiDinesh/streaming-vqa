@@ -28,23 +28,27 @@
 #SBATCH --job-name=stream-eval-array
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:1
+#SBATCH --partition=gpunodes
+#SBATCH --gres=gpu:rtx_a6000:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=08:00:00
 
 set -euo pipefail
 
-ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# Hardcode ROOT: BASH_SOURCE[0] is unreliable when SLURM copies the script to spool.
+ROOT=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
 LOG_DIR="${ROOT}/logs"
 mkdir -p "${LOG_DIR}"
+
+export HF_HOME="${ROOT}/.hf_cache"
+export TOKENIZERS_PARALLELISM="false"
 
 # shellcheck disable=SC1091
 source "${ROOT}/scripts/streaming_env.sh"
 activate_streaming_env
 
 cd "${ROOT}"
-export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
   echo "SLURM_ARRAY_TASK_ID is required. Submit this script with sbatch --array=..." >&2
@@ -57,7 +61,7 @@ METHOD=${METHOD:-rekv}
 HF_REPO_ID=${HF_REPO_ID:-Becomebright/RVS}
 SAMPLE_FPS=${SAMPLE_FPS:-0.5}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-64}
-VIDEO_DECODE_THREADS=${VIDEO_DECODE_THREADS:-4}
+VIDEO_DECODE_THREADS=${VIDEO_DECODE_THREADS:-1}
 NUM_CHUNKS=${NUM_CHUNKS:-1}
 OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/outputs/evaluations_streaming/${DATASET//_/-}/slurm_array}
 FEATURE_CACHE_ROOT=${FEATURE_CACHE_ROOT:-}

@@ -222,7 +222,9 @@ def rekv_attention_forward(
                     h_v_cache = torch.cat([h_v[:,:, :n_init, :], h_v[:, :, max(0, h_k.size(-2) - n_local):, :]], dim=2)
                 current_key_value = (h_k_cache, h_v_cache)
             else:
-                current_key_value = (past_k, past_v)
+                # Return retrieved context + question tokens so autoregressive
+                # decoding attends to the full context including the question.
+                current_key_value = (h_k, h_v)
 
             is_retrieval_request = (
                 type(past_key_value) is ContextManager and past_key_value.to_retrieve

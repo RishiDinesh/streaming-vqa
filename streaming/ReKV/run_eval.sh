@@ -18,13 +18,13 @@
 
 set -euo pipefail
 
-ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# Hardcoded: BASH_SOURCE[0] is unreliable when SLURM copies the script to spool.
+ROOT=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
 mkdir -p "${ROOT}/logs"
 
-# HF_HOME: keep model/dataset cache inside the project if set by caller,
-# otherwise fall back to ~/.cache/huggingface (safe on Toronto cluster /h).
-export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
-export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+# Always keep HF cache inside the project scratch space, not home dir quota.
+export HF_HOME="${ROOT}/.hf_cache"
+export TOKENIZERS_PARALLELISM="false"
 
 # shellcheck disable=SC1091
 source "${ROOT}/scripts/streaming_env.sh"
