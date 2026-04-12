@@ -6,7 +6,8 @@
       "type": "shell",
       "command": "bash",
       "args": [
-        "scripts/demo_mmda.sh"
+        "scripts/demo_mmda_py.sh",
+        "0"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -25,7 +26,8 @@
       "type": "shell",
       "command": "bash",
       "args": [
-        "scripts/demo_baseline.sh"
+        "scripts/demo_baseline_py.sh",
+        "1"
       ],
       "options": {
         "cwd": "${workspaceFolder}"

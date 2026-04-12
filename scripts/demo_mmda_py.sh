@@ -23,14 +23,14 @@ fi
 
 exec env CUDA_VISIBLE_DEVICES="$GPU_ID" \
     /opt/venv/bin/python live_llava_video.py \
-    --model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+    --model_name llava-hf/llava-onevision-qwen2-7b-ov-hf \
     --video_path data/sample.mp4 \
-    --num_frames 32 \
-    --max_length 22000 \
+    --num_frames 150 \
+    --max_length 32000 \
     --max_new_tokens 128 \
     --prompt "Describe this video in detail." \
     --attention_mode duo \
-    --attn_load_dir outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632 \
+    --attn_load_dir ./outputs/train/7b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5 \
     --sparsity 0.5 \
     --sink_size 256 \
     --recent_size 512 \

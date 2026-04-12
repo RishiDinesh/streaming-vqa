@@ -256,6 +256,12 @@ def get_gpu_label() -> str:
     return "gpu_memory"
 
 
+def get_device_name(device: torch.device) -> str:
+    if device.type == "cuda":
+        return torch.cuda.get_device_name(get_cuda_device_index(device))
+    return device.type
+
+
 def snapshot_gpu_memory(device: torch.device) -> Dict[str, Optional[float]]:
     if device.type != "cuda":
         return {
@@ -875,6 +881,12 @@ def main() -> None:
         Text.assemble(
             ("Input sequence length", "bold cyan"),
             (f": {inputs_embeds.shape[1]}", "white"),
+        )
+    )
+    demo_console.print(
+        Text.assemble(
+            ("Using", "bold cyan"),
+            (f": {get_device_name(device)}", "white"),
         )
     )
     demo_console.print()
