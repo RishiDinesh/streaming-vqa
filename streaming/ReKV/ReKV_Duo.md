@@ -102,47 +102,275 @@ All four share the same frame schedule, the same model, and the same greedy deco
 
 ---
 
-## 3. End-to-End Data Flow
+## 3. Architecture & Workflow Diagrams
 
-```
-Dataset (HuggingFace: Becomebright/RVS)
-  │
-  ├── datasets.py
-  │     Load annotation JSON (ego4d_oe.json or movienet_oe.json)
-  │     Sort conversations by end_time (ascending)
-  │     Sample frames at sample_fps from native FPS
-  │     Resolve video file: --video-root → annotation path → HF download
-  │
-  ├── [optional] precompute_features.py → feature_cache.py
-  │     Pre-extract visual tokens, save to disk
-  │     Reloading guarantees bit-identical features across methods
-  │
-  ├── methods.py  (per-video reset, then frame-by-frame ingest)
-  │     All methods: attn_implementation="flash_attention_2" (or "sdpa" fallback)
-  │                  Same kernel for all — comparability is maintained.
-  │                  Duo/ReKV patch on top of this base model.
-  │     full_streaming:   plain KV cache; grows linearly with frames on GPU
-  │     duo_streaming:    enable_duo_attention_eval sets head routing per layer
-  │                       blocksparse kernel handles streaming heads
-  │     rekv:             patch_hf → rekv_attention_forward → ContextManager
-  │                       GPU local window + CPU offload + top-k retrieval
-  │     duo_plus_rekv:    same patch_hf + Duo weights loaded
-  │                       rekv_duo_enabled=True activates hybrid branch
-  │
-  ├── answer_question → greedy_decode_with_cache
-  │     For rekv/duo_plus_rekv: retrieval triggered here
-  │     Returned KV cache = [retrieved blocks] + [question tokens]
-  │     Autoregressive decode reuses this cache step-by-step
-  │
-  └── run_eval.py
-        Writes result JSON with evaluation_manifest + per-conversation scores
-        Checkpoint/resume across jobs
-        Sharding via --num-chunks / --chunk-index
+### 3.1 System Architecture
+
+```mermaid
+graph TD
+    subgraph DATA["📦 Data Layer"]
+        HF["HuggingFace\nBecomebright/RVS"]
+        ANN["Annotation JSON\nego4d_oe.json\nmovienet_oe.json"]
+        VID["Video Files\n.mp4 via decord"]
+        HF --> ANN
+        HF --> VID
+    end
+
+    subgraph PREP["⚙️ Pre-processing  •  datasets.py"]
+        SORT["Sort conversations\nby end_time ↑"]
+        SAMPLE["Sample frames\nat sample_fps=0.5"]
+        FEAT["[optional]\nprecompute_features.py\nfeature_cache.py"]
+        ANN --> SORT
+        VID --> SAMPLE
+        SAMPLE --> FEAT
+    end
+
+    subgraph EVAL["🔁 Evaluation Loop  •  run_eval.py"]
+        INGEST["Causal Ingest\none frame per forward pass\nbisect_left cutoff enforced"]
+        QA["answer_question\ngreedy_decode_with_cache"]
+        CKPT["Checkpoint / Resume\nwrite_json_atomic every N convs"]
+        SHARD["Sharding\n--num-chunks / --chunk-index"]
+        INGEST --> QA --> CKPT
+        SHARD -.->|splits dataset| INGEST
+    end
+
+    subgraph METHODS["🧠 Method Classes  •  methods.py"]
+        BASE["_BaseLlavaStreamingMethod\nLlavaOnevisionForConditionalGeneration\nattn_implementation=flash_attention_2"]
+        FS["full_streaming\nDynamicCache on GPU\ngrows every frame"]
+        DUO["duo_streaming\nenable_duo_attention_eval\nblock_sparse_attn kernel"]
+        REKV["rekv\npatch_hf → rekv_attention_forward\nContextManager offload"]
+        DPR["duo_plus_rekv\npatch_hf + Duo heads\nrekv_duo_enabled=True"]
+        BASE --> FS & DUO & REKV & DPR
+    end
+
+    subgraph CORE["⚡ ReKV Attention Core"]
+        PATCH["rekv_core/patch.py\npatch_hf + RotaryEmbeddingESM"]
+        ATTN["rekv_attention.py\nrekv_attention_forward\nDuo hybrid gate"]
+        KVM["kv_cache_manager.py\nContextManager\nMemoryUnit · VectorTensor"]
+        DOTPROD["dot_production_attention/\nTorchMultiStage (default)\nTriton (--rekv-fattn)"]
+        PATCH --> ATTN --> KVM
+        ATTN --> DOTPROD
+    end
+
+    subgraph OUT["📊 Outputs"]
+        JSON["result JSON\nper-conversation predictions\naggregate_metrics"]
+        CMP["compare_subsamples.py\nsummary.md · stability plots"]
+        PLT["plot_results.py\n15 PNG plots\nPareto · memory · latency"]
+        JSON --> CMP & PLT
+    end
+
+    SORT --> INGEST
+    FEAT -.->|cache hit| INGEST
+    METHODS --> INGEST
+    CORE -.->|patches| REKV & DPR
+    QA --> JSON
 ```
 
 ---
 
-## 4. Module Map — What Each File Does
+### 3.2 Per-Video Evaluation Flow
+
+```mermaid
+sequenceDiagram
+    participant RL as run_eval.py
+    participant DS as datasets.py
+    participant M  as method (any)
+    participant LM as LLaVA-OV LM
+    participant CP as Checkpoint
+
+    RL->>DS: load_dataset(rvs_ego / rvs_movie)
+    DS-->>RL: videos sorted by end_time
+
+    loop for each video
+        RL->>M: reset(sample_metadata)
+        M->>LM: encode_init_prompt → base_cache
+
+        loop for each frame (causal, one at a time)
+            RL->>M: ingest_frame(frame, timestamp)
+            M->>LM: extract visual features (vision encoder)
+            M->>LM: language_model forward(features, past_kv)
+            LM-->>M: updated past_key_values
+            Note over M: KV cache updated per method strategy
+        end
+
+        loop for each question (at its end_time cutoff)
+            RL->>M: answer_question(question_text)
+            Note over M: rekv/duo_plus_rekv: retrieval here
+            M->>LM: prefill question prompt + KV cache
+            LM-->>M: first token logits
+            loop greedy decode (max_new_tokens=64)
+                M->>LM: next token + working_cache
+                LM-->>M: logits + updated cache
+            end
+            M-->>RL: prediction + latency + memory stats
+            RL->>CP: checkpoint(partial results)
+        end
+
+        RL->>CP: flush completed video → result JSON
+    end
+
+    RL->>RL: write_json_atomic(final results)
+```
+
+---
+
+### 3.3 KV Cache Layout — All Four Methods
+
+```mermaid
+block-beta
+    columns 12
+
+    block:label_fs["full_streaming"]:1
+    end
+    block:fs_init["INIT\n(frozen)"]:1
+    end
+    block:fs_f1["frame 1"]:1
+    end
+    block:fs_f2["frame 2"]:1
+    end
+    block:fs_dots["· · ·"]:4
+    end
+    block:fs_fn["frame N\n(latest)"]:2
+    end
+    space:2
+
+    block:label_duo["duo_streaming"]:1
+    end
+    block:duo_full["── full-attn heads (25%) ──────────────────────"]:8
+    end
+    block:duo_sink["SINK"]:1
+    end
+    block:duo_dots["···"]:1
+    end
+    block:duo_rec["RECENT"]:1
+    end
+    space:1
+
+    block:label_rekv["rekv"]:1
+    end
+    block:rekv_init["INIT\n(GPU)"]:1
+    end
+    block:rekv_cpu["◄── old blocks on CPU RAM (offloaded) ──────►"]:6
+    end
+    block:rekv_local["── local window ──\n(GPU, n_local tokens)"]:3
+    end
+    space:1
+
+    block:label_dpr["duo_plus_rekv"]:1
+    end
+    block:dpr_init["INIT\n(GPU)"]:1
+    end
+    block:dpr_cpu["◄── CPU offload ──────►"]:4
+    end
+    block:dpr_ret["top-k retrieved\n(GPU at QA time)"]:2
+    end
+    block:dpr_loc["local\nwindow"]:2
+    end
+    space:2
+```
+
+> **Note:** At question time, `rekv` and `duo_plus_rekv` load top-k blocks from CPU → GPU, assemble `[INIT] + [retrieved] + [local]`, then run attention over this assembled context only.
+
+---
+
+### 3.4 ReKV Ingest & Retrieval Detail
+
+```mermaid
+flowchart LR
+    subgraph INGEST["🎬 Ingest Phase  (per frame)"]
+        direction TB
+        F["new frame\n196 tokens"]
+        F --> LOC["local window\nGPU · n_local tokens"]
+        F --> FULL["full offload check"]
+        FULL -->|"window full\n→ evict oldest block"| CPU["CPU RAM\nMemoryUnit\n(K, V tensors)"]
+        FULL -->|"representative key\n(fp32, 1 vector/block)"| VT["VectorTensor\nGPU index"]
+        INIT["init tokens\n~512 system prompt\nfrozen on GPU"]
+    end
+
+    subgraph QA["❓ Question-Answer Phase"]
+        direction TB
+        Q["question query\n(embed → fp32 key)"]
+        Q --> COS["cosine similarity\nquery · VectorTensor"]
+        COS --> TOPK["top-k=64 block indices"]
+        TOPK --> LOAD["load blocks\nCPU → GPU\nasync CUDA stream"]
+        LOAD --> ASM["assembled context\nINIT + retrieved + local"]
+        ASM --> ATTN2["flash_attention_2\nor TorchMultiStage\nover assembled context"]
+        ATTN2 --> GD["greedy decode\n(reuse assembled KV\nstep by step)"]
+    end
+
+    CPU -.->|"top-k blocks\nloaded on demand"| LOAD
+    INIT -.-> ASM
+    LOC -.-> ASM
+```
+
+---
+
+### 3.5 Duo Head Routing (shared by `duo_streaming` and `duo_plus_rekv`)
+
+```mermaid
+flowchart TD
+    subgraph LOAD["Model Init"]
+        W["attn_dir\nlearned head weights .tsv"]
+        W --> HW["full_attention_heads\nper-layer tensor\nshape: num_kv_heads\nvalues: 0 or 1"]
+    end
+
+    subgraph LAYER["Per-Layer Attention Forward"]
+        HW --> ROUTE{head routing}
+        ROUTE -->|"head weight = 1\n~25% of heads"| FULL["Full-attention head\nattend ALL past tokens\nflash_attention_2"]
+        ROUTE -->|"head weight = 0\n~75% of heads"| STREAM["Streaming head\nattend SINK + RECENT only\nblock_sparse_attn kernel"]
+        FULL --> CAT["concat along\nhead dimension"]
+        STREAM --> CAT
+        CAT --> OUT["layer output"]
+    end
+
+    subgraph CACHE["KV Cache Growth"]
+        FULL2["full heads\nKV grows every frame\nbounded by video length"]
+        STREAM2["streaming heads\nKV bounded: sink_size + recent_size\nold tokens evicted"]
+    end
+
+    FULL -.-> FULL2
+    STREAM -.-> STREAM2
+```
+
+---
+
+### 3.6 SLURM Job Submission & Output Structure
+
+```mermaid
+flowchart TD
+    subgraph SUBMIT["Submit  (login node)"]
+        S1["run_streaming_subset3_slurm.sh\n--max-videos N"]
+        S2["run_streaming_eval_slurm_array.sh\nNUM_CHUNKS=4"]
+        S1 -->|"4 jobs\none per method"| SLURM
+        S2 -->|"4 chunks × 4 methods\n= 16 jobs"| SLURM
+    end
+
+    subgraph SLURM["SLURM Queue\n2× RTX A6000 nodes"]
+        J1["job: full_streaming c0"] & J2["job: full_streaming c1"]
+        J3["job: rekv c0"] & J4["..."]
+    end
+
+    subgraph JOB["Each Job  •  run_eval.sh"]
+        E["source streaming_env.sh\nconda activate envs/duo"]
+        E --> PY["python -m streaming.ReKV.run_eval\n--method · --dataset · --num-chunks\n--chunk-index · --resume"]
+    end
+
+    subgraph RESULTS["Output Files"]
+        direction LR
+        R1["chunk_000.json\nchunk_001.json\nchunk_002.json\nchunk_003.json"]
+        R2["compare_subsamples.py\n→ summary.md\n→ stability_report.json\n→ *.png"]
+        R3["plot_results.py\n→ 15 PNG plots"]
+        R1 --> R2 & R3
+    end
+
+    SLURM --> JOB --> RESULTS
+```
+
+---
+
+## 4. End-to-End Data Flow
+
+## 5. Module Map — What Each File Does
 
 ### Core evaluation loop
 
@@ -193,7 +421,7 @@ Dataset (HuggingFace: Becomebright/RVS)
 
 ---
 
-## 5. Attention Architecture Deep Dive
+## 6. Attention Architecture Deep Dive
 
 ### 5.1 ReKV attention forward (`rekv_attention.py`)
 
@@ -230,7 +458,7 @@ Handles the local-window + init-token layout:
 
 ---
 
-## 6. Output Files — What Each File Means
+## 7. Output Files — What Each File Means
 
 ### Result JSON: `outputs/evaluations_streaming/<dataset>/<subset>/<method>/<ts>_results.json`
 
@@ -334,7 +562,7 @@ Top-level structure:
 
 ---
 
-## 7. Environment Setup
+## 8. Environment Setup
 
 ### 7.1 Conda location
 
@@ -405,7 +633,7 @@ If `streaming_attn_backend_actual` is `"sdpa"`, the `block_sparse_attn` compile 
 
 ---
 
-## 8. Running Evaluations
+## 9. Running Evaluations
 
 ### 8.1 Smoke test — 1 video, all methods
 
@@ -494,7 +722,7 @@ outputs/evaluations_streaming/rvs-ego/subset1/
 
 ---
 
-## 9. Common Issues and Fixes
+## 10. Common Issues and Fixes
 
 ### `avcodec_send_packet >= 0 (-11 vs. 0)` — decord threading crash
 **Symptom:** SLURM job fails partway through video ingest with a `DECORDError`.
@@ -546,7 +774,7 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 ---
 
-## 10. Limitations
+## 11. Limitations
 
 | Limitation | Detail |
 |---|---|
@@ -559,7 +787,7 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 ---
 
-## 11. Cross-Method Comparability Checklist
+## 12. Cross-Method Comparability Checklist
 
 Before comparing numbers across result JSONs, verify these fields match:
 
@@ -574,7 +802,7 @@ Before comparing numbers across result JSONs, verify these fields match:
 
 ---
 
-## 12. Backend Requirements
+## 13. Backend Requirements
 
 | Library | Role | Required? |
 |---|---|---|
@@ -586,7 +814,7 @@ Before comparing numbers across result JSONs, verify these fields match:
 
 ---
 
-## 13. Key Parameters Reference
+## 14. Key Parameters Reference
 
 | Parameter | Default | Effect |
 |---|---|---|
@@ -608,7 +836,7 @@ Before comparing numbers across result JSONs, verify these fields match:
 
 ---
 
-## 14. Official References
+## 15. Official References
 
 - ReKV paper: https://arxiv.org/abs/2503.00540 · repo: https://github.com/Becomebright/ReKV
 - DuoAttention paper: https://arxiv.org/abs/2410.10819 · repo: https://github.com/mit-han-lab/duo-attention
