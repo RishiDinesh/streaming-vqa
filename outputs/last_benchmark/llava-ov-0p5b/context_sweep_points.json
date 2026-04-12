@@ -1,0 +1,58 @@
+[
+  {
+    "target_context": 4000,
+    "actual_context": 4131,
+    "prefix_seconds": 373.4731,
+    "prefix_ratio": 0.125,
+    "num_frames": 21
+  },
+  {
+    "target_context": 8000,
+    "actual_context": 8051,
+    "prefix_seconds": 746.9128333333333,
+    "prefix_ratio": 0.25,
+    "num_frames": 41
+  },
+  {
+    "target_context": 12000,
+    "actual_context": 12167,
+    "prefix_seconds": 1120.3525666666667,
+    "prefix_ratio": 0.375,
+    "num_frames": 62
+  },
+  {
+    "target_context": 16000,
+    "actual_context": 16087,
+    "prefix_seconds": 1493.7923,
+    "prefix_ratio": 0.5,
+    "num_frames": 82
+  },
+  {
+    "target_context": 20000,
+    "actual_context": 20007,
+    "prefix_seconds": 1867.2320333333334,
+    "prefix_ratio": 0.625,
+    "num_frames": 102
+  },
+  {
+    "target_context": 24000,
+    "actual_context": 24123,
+    "prefix_seconds": 2240.671766666667,
+    "prefix_ratio": 0.75,
+    "num_frames": 123
+  },
+  {
+    "target_context": 28000,
+    "actual_context": 28043,
+    "prefix_seconds": 2614.1115,
+    "prefix_ratio": 0.875,
+    "num_frames": 143
+  },
+  {
+    "target_context": 32000,
+    "actual_context": 32000,
+    "prefix_seconds": 2987.5512333333336,
+    "prefix_ratio": 1.0,
+    "num_frames": 164
+  }
+]
