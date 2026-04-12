@@ -19,6 +19,8 @@
 #   FEATURE_CACHE_ROOT path to feature cache          (only used when USE_FEATURE_CACHE=1)
 #   ATTN_DIR           path to Duo attention weights  (required for duo_* methods)
 #   SPARSITY           Duo head sparsity              (default: 0.5)
+#   DEPLOY_SINK_SIZE   Duo sink window override       (default: use trained value)
+#   DEPLOY_RECENT_SIZE Duo recent window override     (default: use trained value)
 #   REKV_TOPK          ReKV retrieved blocks          (default: 64)
 #   REKV_N_LOCAL       ReKV local window size tokens  (default: 15000)
 #   DUO_STRICT_NO_SDPA_FALLBACK  fail if block_sparse_attn missing (default: 1)
@@ -68,6 +70,8 @@ FEATURE_CACHE_ROOT=${FEATURE_CACHE_ROOT:-}
 USE_FEATURE_CACHE=${USE_FEATURE_CACHE:-0}
 ATTN_DIR=${ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632}
 SPARSITY=${SPARSITY:-0.5}
+DEPLOY_SINK_SIZE=${DEPLOY_SINK_SIZE:-}
+DEPLOY_RECENT_SIZE=${DEPLOY_RECENT_SIZE:-}
 REKV_TOPK=${REKV_TOPK:-64}
 REKV_N_LOCAL=${REKV_N_LOCAL:-15000}
 DUO_STRICT_NO_SDPA_FALLBACK=${DUO_STRICT_NO_SDPA_FALLBACK:-1}
@@ -114,12 +118,16 @@ fi
 case "${METHOD}" in
   duo_streaming)
     COMMON_ARGS+=(--attn-dir "${ATTN_DIR}" --sparsity "${SPARSITY}")
+    [[ -n "${DEPLOY_SINK_SIZE}"   ]] && COMMON_ARGS+=(--deploy-sink-size   "${DEPLOY_SINK_SIZE}")
+    [[ -n "${DEPLOY_RECENT_SIZE}" ]] && COMMON_ARGS+=(--deploy-recent-size "${DEPLOY_RECENT_SIZE}")
     ;;
   rekv)
     COMMON_ARGS+=(--retrieve-size "${REKV_TOPK}" --n-local "${REKV_N_LOCAL}")
     ;;
   duo_plus_rekv)
     COMMON_ARGS+=(--attn-dir "${ATTN_DIR}" --sparsity "${SPARSITY}" --retrieve-size "${REKV_TOPK}" --n-local "${REKV_N_LOCAL}")
+    [[ -n "${DEPLOY_SINK_SIZE}"   ]] && COMMON_ARGS+=(--deploy-sink-size   "${DEPLOY_SINK_SIZE}")
+    [[ -n "${DEPLOY_RECENT_SIZE}" ]] && COMMON_ARGS+=(--deploy-recent-size "${DEPLOY_RECENT_SIZE}")
     ;;
 esac
 
