@@ -25,16 +25,16 @@ The primary goal is to compare **quality** (ROUGE-L F1), **answer latency**, and
 
 All four share the same frame schedule, the same model, and the same greedy decode path.
 
-**Current smoke-test results (1 video, 259 questions, RVS-Ego):**
+**Full-dataset results — RVS-Movie (22 videos, 1905 questions, s=0.75 for Duo methods):**
 
 | Method | ROUGE-L F1 | Latency (s) | Peak GPU | Peak CPU offload |
 |---|---|---|---|---|
-| `duo_streaming` | 0.146 | 0.464 | 8.4 GB | — |
-| `rekv` | 0.275 | 0.082 | 3.4 GB | 4.3 GB |
-| `duo_plus_rekv` | 0.268 | 0.149 | 3.4 GB | 4.3 GB |
-| `full_streaming` | TBD (running with flash_attn fix) | TBD | TBD | — |
+| `full_streaming` | **0.1396** | 1.34 | 9.2 GB | — |
+| `duo_streaming` (s=0.75, sink=512, recent=1024) | 0.1277 | **0.33** | 3.5 GB | — |
+| `rekv` (topk=64, n_local=15k) | 0.1160 | 0.63 | **3.2 GB** | 2.3 GB |
+| `duo_plus_rekv` (s=0.75, topk=64) | 0.1181 | 0.89 | 3.2 GB | 2.3 GB |
 
-`duo_streaming` scores lower than `rekv` because the streaming heads (50% of heads at s=0.5) see only a small sink+recent window and miss mid-video context. `rekv` retrieves the most relevant blocks from CPU and wins on quality.
+`full_streaming` is the uncompressed upper bound. `duo_streaming` is fastest but loses mid-video context in streaming heads. `rekv` and `duo_plus_rekv` trade a small quality drop for dramatically lower and constant GPU memory via CPU offload. A re-run with sink=256/recent=512 is in progress to measure the window-size vs quality tradeoff.
 
 ### Method details — step by step
 
@@ -97,8 +97,9 @@ All four share the same frame schedule, the same model, and the same greedy deco
 
 - `full_streaming` is the uncompressed upper bound on quality; memory cost grows with video length
 - `rekv` trades a small quality drop for dramatically lower and **constant** GPU memory regardless of video length
-- `duo_streaming` at s=0.75 has tighter memory than s=0.5 but loses more context (75% streaming heads), so quality drops further
+- `duo_streaming` at s=0.75 has tighter memory than s=0.5 but 75% of heads see only sink+recent window — more context lost, quality drops further
 - `duo_plus_rekv` attempts to recover quality over plain `rekv` by applying Duo routing over the retrieved context, but adds retrieval overhead
+- Duo sink/recent window sizes are a quality/memory knob: sink=512/recent=1024 (trained default) vs sink=256/recent=512 (smaller window, less memory, more context loss)
 
 ---
 
@@ -639,39 +640,63 @@ sbatch --output="$(pwd)/logs/%x-%j.out" streaming/ReKV/run_eval.sh \
   --dataset rvs_ego --method rekv --retrieve-size 64 --n-local 15000
 ```
 
-### 8.4 Full eval — multi-GPU sharded
+### 8.4 Full eval — multi-GPU sharded (rvs-movie, 4 chunks)
 
 ```bash
-NUM_CHUNKS=8 DATASET=rvs_ego METHOD=rekv \
-  sbatch --array=0-7 \
-    --output="$(pwd)/logs/%x-%A_%a.out" \
-    scripts/run_streaming_eval_slurm_array.sh
+# rvs-movie: 22 videos, ~5-6 per chunk, 4 chunks sufficient
+for METHOD in full_streaming duo_streaming rekv duo_plus_rekv; do
+  for C in 0 1 2 3; do
+    DATASET=rvs_movie METHOD=${METHOD} NUM_CHUNKS=4 SPARSITY=0.75 \
+    DEPLOY_SINK_SIZE=256 DEPLOY_RECENT_SIZE=512 \
+    OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-movie/full_eval/run1" \
+    sbatch --array=${C} \
+           --output="${PWD}/logs/movie-${METHOD}-c${C}-%j.out" \
+           scripts/run_streaming_eval_slurm_array.sh
+  done
+done
 ```
 
-### 8.5 After jobs finish
+### 8.5 Full eval — rvs-ego (must use 10 chunks, 1 video each, 120G RAM)
+
+rvs-ego has 10 videos of exactly 60 min each. Each 60-min video accumulates a large KV cache; running multiple videos per job causes host RAM OOM. Use `NUM_CHUNKS=10` and `--mem=120G`.
 
 ```bash
-conda activate /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/envs/duo
-cd /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+for METHOD in full_streaming duo_streaming rekv duo_plus_rekv; do
+  for C in $(seq 0 9); do
+    DATASET=rvs_ego METHOD=${METHOD} NUM_CHUNKS=10 SPARSITY=0.75 \
+    DEPLOY_SINK_SIZE=256 DEPLOY_RECENT_SIZE=512 \
+    OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-ego/full_eval/run2" \
+    sbatch --array=${C} --mem=120G \
+           --output="${PWD}/logs/ego-${METHOD}-c${C}-%j.out" \
+           scripts/run_streaming_eval_slurm_array.sh
+  done
+done
+```
 
-TS=<timestamp>   # printed by the submit script
-BASE=outputs/evaluations_streaming/rvs-ego/subset1
+### 8.6 After jobs finish — merge chunks and generate plots
 
-# Compare all methods → summary.md, stability plots
+Chunk JSONs must be merged before plotting. Chunks with `videos=[]` (OOM/crash) are skipped automatically.
+
+```bash
+# Merge chunk_000..chunk_N JSONs into one file per method
+# (run the inline merge script or adapt the one in the session history)
+MERGED=outputs/evaluations_streaming/rvs-movie/full_eval/merged   # or rvs-ego
+
+# Compare → summary.md + stability plots
 python -m streaming.ReKV.compare_subsamples \
-    ${BASE}/full_streaming/${TS}_results.json \
-    ${BASE}/duo_streaming/${TS}_results.json \
-    ${BASE}/rekv/${TS}_results.json \
-    ${BASE}/duo_plus_rekv/${TS}_results.json \
-    --output-dir ${BASE}/comparison/
+    ${MERGED}/full_streaming.json \
+    ${MERGED}/duo_streaming.json \
+    ${MERGED}/rekv.json \
+    ${MERGED}/duo_plus_rekv.json \
+    --output-dir ${MERGED}/../comparison/
 
-# Quality/latency/memory plots → PNG files
+# Quality/latency/memory plots → 15 PNGs
 python -m streaming.ReKV.plot_results \
-    ${BASE}/full_streaming/${TS}_results.json \
-    ${BASE}/duo_streaming/${TS}_results.json \
-    ${BASE}/rekv/${TS}_results.json \
-    ${BASE}/duo_plus_rekv/${TS}_results.json \
-    --output-dir ${BASE}/plots/
+    ${MERGED}/full_streaming.json \
+    ${MERGED}/duo_streaming.json \
+    ${MERGED}/rekv.json \
+    ${MERGED}/duo_plus_rekv.json \
+    --output-dir ${MERGED}/../plots/
 ```
 
 Output directory structure:
@@ -727,10 +752,26 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 **Cause:** Generic `--gres=gpu:1` is not accepted; the cluster requires a typed GPU spec.
 **Fix:** Use `--gres=gpu:rtx_a6000:1 --partition=gpunodes` (already set in submit scripts).
 
-### `full_streaming` OOM on A6000 nodes
-**Symptom:** `full_streaming` job is killed by the OOM killer, or exits with CUDA out of memory.
-**Cause:** `full_streaming` keeps the entire video KV cache on GPU. A 1800-frame video at 0.5 fps = 30 min video requires >120 GB total memory, exceeding the 125 GB node limit.
-**Status/limitation:** This is fundamental to the method. For long videos, `full_streaming` is not runnable on A6000 nodes. Options: skip it, use a high-RAM node (request `--mem=250G` on a CPU node for offload), or limit `--max-videos` to very short videos.
+### OOM on rvs-ego full eval (all methods, not just `full_streaming`)
+**Symptom:** Jobs OOM-killed mid-video, chunk JSON has `videos=0` and null aggregate_metrics.
+**Root causes:**
+1. `--mem=64G` was too low — A6000 nodes have 125 GB RAM total; request `--mem=120G`.
+2. `NUM_CHUNKS=4` → 2–3 ego videos per job. Each ego video is 60 min / 1800 frames. `full_streaming` accumulates ~13 GB KV cache *per video*; running 2–3 serially in one job without freeing memory between them exhausts RAM. `rekv`/`duo_plus_rekv` CPU offload (~4 GB/video) has the same problem.
+**Fix:** Use `NUM_CHUNKS=10` (1 video per job) and `--mem=120G`. The KV cache fully resets between videos so no accumulation across the chunk.
+
+```bash
+# rvs-ego: 10 chunks × 4 methods = 40 jobs, 1 video each
+for METHOD in full_streaming duo_streaming rekv duo_plus_rekv; do
+  for C in $(seq 0 9); do
+    DATASET=rvs_ego METHOD=${METHOD} NUM_CHUNKS=10 SPARSITY=0.75 \
+    DEPLOY_SINK_SIZE=256 DEPLOY_RECENT_SIZE=512 \
+    OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-ego/full_eval/run2" \
+    sbatch --array=${C} --mem=120G \
+           --output="${PWD}/logs/ego2-${METHOD}-c${C}-%j.out" \
+           scripts/run_streaming_eval_slurm_array.sh
+  done
+done
+```
 
 ### `rekv`/`duo_plus_rekv` generating 1–3 word answers (`"The person<|im_end|>"`)
 **Symptom:** After retrieval, the model immediately emits the EOS token and produces 1-word answers.
@@ -753,12 +794,13 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 | Limitation | Detail |
 |---|---|
-| `full_streaming` memory | KV cache is ~4.3 GB for a 60-min video at 0.5 fps. With flash_attention_2 (no O(seq_len²) matrix), full_streaming runs fine on A6000. The old `eager` OOM was a kernel bug, not a method limitation. |
+| `full_streaming` memory (rvs-movie) | KV cache grows to ~9 GB for 22-min average movie video. Runs fine on A6000 (48 GB VRAM) with flash_attention_2. |
+| `full_streaming` memory (rvs-ego) | 60-min ego videos hit ~13 GB KV cache. Still fits on GPU, but total job RAM hits ~30 GB. Requires `--mem=120G` and `NUM_CHUNKS=10` (1 video/job) to avoid host RAM OOM. |
 | `duo_plus_rekv` is approximate | Streaming heads see the ReKV local window (`n_local`), not standalone Duo's `recent_size`; results are not a literal paper reproduction |
 | Single-GPU decode only | `decord` is not multi-thread safe on this cluster (`avcodec_send_packet` errors); must use `--video-decode-threads 1` |
 | `rekv` positional encoding | Uses `RotaryEmbeddingESM` distance scaling; retrieved blocks lose their absolute position, only relative distances are preserved |
-| Result JSONs from partial/OOM runs | If a job OOMs mid-run, the partial JSON on disk will show `total_conversations_answered < N` and null aggregate metrics; must delete and rerun cleanly |
-| Duo quality on streaming | `duo_streaming` at `s=0.5` (50% streaming heads) has notably lower ROUGE-L than `rekv` for mid-length videos because streaming heads miss non-local context; tuning `--sparsity` lower helps but uses more memory |
+| Result JSONs from partial/OOM runs | If a job OOMs mid-run, the partial JSON on disk will have `videos=[]` and null aggregate metrics; delete and rerun with `NUM_CHUNKS=10 --mem=120G` |
+| Duo sink/recent window is a knob | Trained with sink=512/recent=1024; deploy can override with `--deploy-sink-size` / `--deploy-recent-size`. Smaller windows → less GPU memory, more context lost |
 
 ---
 
@@ -803,9 +845,11 @@ Before comparing numbers across result JSONs, verify these fields match:
 | `--n-frame-tokens` | `196` | Visual tokens per frame (must match model; LLaVA-OV = 196) |
 | `--attn-dir` | see scripts | Path to Duo trained head weights (`.tsv` files) |
 | `--sparsity` | `0.5` | Fraction of streaming heads in Duo (0=all full, 1=all streaming) |
+| `--deploy-sink-size` | trained value | Override Duo sink window size (tokens); default is whatever was in training config (512) |
+| `--deploy-recent-size` | trained value | Override Duo recent window size (tokens); default is 1024 from training |
 | `--video-decode-threads` | `1` | Decord thread count; keep at 1 (threading crashes on this cluster) |
 | `--max-videos` | all | Limit number of videos (for smoke tests) |
-| `--num-chunks` / `--chunk-index` | `1` / `0` | For sharded multi-GPU runs |
+| `--num-chunks` / `--chunk-index` | `1` / `0` | For sharded multi-GPU runs; use `NUM_CHUNKS=10` for rvs-ego to get 1 video/job |
 | `--resume` | flag | Resume from existing partial result JSON |
 | `--rekv-fattn` | flag | Use Triton kernel for ReKV inner attention (requires BLOCK_DMODEL in {16,32,64,128}) |
 
