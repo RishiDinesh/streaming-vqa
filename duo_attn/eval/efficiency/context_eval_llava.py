@@ -77,7 +77,15 @@ def parse_args():
     run_parser.add_argument("--max_num_frames", type=int, default=512)
     run_parser.add_argument("--num_points", type=int, default=5)
     run_parser.add_argument("--target_contexts", type=int, nargs="+", default=None)
-    run_parser.add_argument("--decode_tokens", type=int, default=100)
+    run_parser.add_argument(
+        "--decode_tokens",
+        type=int,
+        default=100,
+        help=(
+            "Number of autoregressive decode steps to average over when "
+            "reporting per-token generation latency."
+        ),
+    )
     run_parser.add_argument("--seed", type=int, default=42)
     run_parser.add_argument("--threshold", type=float, default=0.5)
     run_parser.add_argument("--sparsity", type=float, default=0.5)
@@ -244,58 +252,35 @@ def plot_context_results(
 
     x = np.arange(len(labels))
     width = 0.36
-    fig, axes = plt.subplots(2, 1, figsize=(13, 9), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(13, 12), sharex=True)
 
     plot_specs = (
         (
             axes[0],
-            "gen_latency",
-            "Latency (ms/token)",
-            "Context Length",
-            "Per-Token Decoding Latency by Context Length",
-            1.0,
-            False,
+            "gen_memory",
+            "Memory (GB)",
+            1024.0,
         ),
         (
             axes[1],
-            "gen_memory",
-            "Memory (GB)",
-            "Context Length",
-            "Decoding Memory by Context Length",
-            1024.0,
-            False,
+            "ctx_latency",
+            "Prefill Latency (ms)",
+            1.0,
+        ),
+        (
+            axes[2],
+            "gen_latency",
+            "Autoregressive Decode Latency / Token (ms)",
+            1.0,
         ),
     )
 
-    for ax, metric, ylabel, xlabel, subtitle, divisor, normalize_by_context in plot_specs:
-        plot_baseline_rows = []
-        plot_duo_rows = []
-
-        for row in baseline_rows:
-            if row is None:
-                plot_baseline_rows.append(None)
-                continue
-            row_copy = dict(row)
-            if normalize_by_context and row_copy.get(metric) is not None:
-                context_len = max(1, int(row_copy["actual_context"]))
-                row_copy[metric] = float(row_copy[metric]) / context_len
-            plot_baseline_rows.append(row_copy)
-
-        for row in duo_rows:
-            if row is None:
-                plot_duo_rows.append(None)
-                continue
-            row_copy = dict(row)
-            if normalize_by_context and row_copy.get(metric) is not None:
-                context_len = max(1, int(row_copy["actual_context"]))
-                row_copy[metric] = float(row_copy[metric]) / context_len
-            plot_duo_rows.append(row_copy)
-
+    for ax, metric, ylabel, divisor in plot_specs:
         baseline_vals, baseline_oom, _ = metric_values_with_oom_markers(
-            plot_baseline_rows, metric, divisor
+            baseline_rows, metric, divisor
         )
         duo_vals, duo_oom, _ = metric_values_with_oom_markers(
-            plot_duo_rows, metric, divisor
+            duo_rows, metric, divisor
         )
 
         baseline_bars = ax.bar(
@@ -316,8 +301,6 @@ def plot_context_results(
         )
 
         ax.set_ylabel(ylabel)
-        ax.set_xlabel(xlabel)
-        ax.set_title(subtitle)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
         if divisor != 1.0:
             ax.ticklabel_format(axis="y", style="plain", useOffset=False)
@@ -326,16 +309,14 @@ def plot_context_results(
         annotate_oom_points(ax, baseline_bars, baseline_vals, baseline_oom)
         annotate_oom_points(ax, duo_bars, duo_vals, duo_oom)
 
-    axes[0].set_xticks(x)
-    axes[0].set_xticklabels(labels)
-    axes[0].tick_params(axis="x", labelbottom=True)
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(labels)
+    axes[-1].set_xticks(x)
+    axes[-1].set_xticklabels(labels)
+    axes[-1].set_xlabel("Context Length")
     axes[0].legend(loc="upper left")
     fig.suptitle(title, fontsize=18, y=0.99)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
@@ -452,6 +433,8 @@ def run_context_command(args):
 
 def run_plot_command(args):
     input_json = Path(args.input_json)
+    if input_json.is_dir():
+        input_json = input_json / "context_sweep_results.json"
     rows = load_json(input_json)
     if not isinstance(rows, list) or not rows:
         raise ValueError(f"No rows found in {input_json}")

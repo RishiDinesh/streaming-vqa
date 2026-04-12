@@ -57,7 +57,15 @@ def parse_args():
     context_parser.add_argument("--max_context", type=int, default=32000)
     context_parser.add_argument("--num_points", type=int, default=5)
     context_parser.add_argument("--target_contexts", type=int, nargs="+", default=None)
-    context_parser.add_argument("--decode_tokens", type=int, default=100)
+    context_parser.add_argument(
+        "--decode_tokens",
+        type=int,
+        default=100,
+        help=(
+            "Number of autoregressive decode steps to average over when "
+            "reporting per-token generation latency."
+        ),
+    )
 
     prefill_parser = subparsers.add_parser(
         "prefill", help="Run fixed-context prefill chunk sweep with full-model inputs."
@@ -396,6 +404,24 @@ def run_full_model_prefill(
     )
 
 
+def run_autoregressive_decode(
+    model,
+    past_key_values,
+    pred_token_idx: torch.Tensor,
+    decode_steps: int,
+):
+    current_past_key_values = past_key_values
+    current_token = pred_token_idx
+    for _ in range(max(1, int(decode_steps))):
+        outputs = model(
+            input_ids=current_token,
+            past_key_values=current_past_key_values,
+            use_cache=True,
+        )
+        current_past_key_values = outputs.past_key_values
+        current_token = outputs.logits[:, -1, :].argmax(dim=-1).unsqueeze(1)
+
+
 def infer_multimodal_prefix_context(
     model,
     prefill_kwargs: Dict[str, Any],
@@ -677,22 +703,32 @@ def run_benchmark_with_decode_steps(
 
     past_key_values = outputs.past_key_values
     pred_token_idx = outputs.logits[:, -1, :].argmax(dim=-1).unsqueeze(1)
+    decode_steps = max(1, int(decode_tokens))
 
     print("\n--- Decoding benchmark ---")
+    torch.cuda.reset_peak_memory_stats()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    with torch.no_grad():
+        run_autoregressive_decode(
+            model=model,
+            past_key_values=past_key_values,
+            pred_token_idx=pred_token_idx,
+            decode_steps=decode_steps,
+        )
+    end.record()
+    torch.cuda.synchronize()
 
-    def decode_func():
-        with torch.no_grad():
-            _ = model(
-                input_ids=pred_token_idx,
-                past_key_values=past_key_values,
-                use_cache=True,
-            )
-
-    gen_latency, gen_memory = bench_func(
-        decode_func,
-        num_steps=max(1, int(decode_tokens)),
-        num_warmup_steps=min(10, max(1, int(decode_tokens))),
+    decode_total_ms = float(start.elapsed_time(end))
+    gen_latency = decode_total_ms / decode_steps
+    gen_memory = torch.cuda.max_memory_allocated() / 1024 / 1024
+    print(
+        f"Autoregressive decode time for {decode_steps} tokens: "
+        f"{decode_total_ms:.2f} ms"
     )
+    print(f"Per-token decoding latency: {gen_latency:.2f} ms")
+    print(f"Peak memory usage in the decoding stage: {gen_memory:.2f} MB")
 
     return {
         "ctx_latency": ctx_latency,
@@ -918,6 +954,18 @@ def format_chunk_label(chunk_size: int) -> str:
     return f"{chunk_size / 1000:.1f}K"
 
 
+def format_context_label(context_len: int) -> str:
+    if context_len >= 1_000_000:
+        if context_len % 1_000_000 == 0:
+            return f"{context_len // 1_000_000}M"
+        return f"{context_len / 1_000_000:.1f}M"
+    if context_len >= 1000:
+        if context_len % 1000 == 0:
+            return f"{context_len // 1000}K"
+        return f"{context_len / 1000:.1f}K"
+    return str(context_len)
+
+
 def infer_prefill_title(config: Optional[Dict[str, Any]], rows: Sequence[Dict[str, Any]]) -> str:
     if not rows:
         return "Prefill Chunk Sweep"
@@ -1097,18 +1145,30 @@ def plot_prefill_results(rows: Sequence[Dict[str, Any]], output_plot: Path, titl
 
 
 def plot_context_results(rows: Sequence[Dict[str, Any]], output_path: Path):
-    labels = [f"{row['actual_context'] // 1000}K" for row in rows if row["mode"] == "baseline"]
+    context_points = sorted({int(row["actual_context"]) for row in rows})
+    labels = [format_context_label(context_len) for context_len in context_points]
     x = np.arange(len(labels))
     width = 0.36
 
-    baseline_rows = [row for row in rows if row["mode"] == "baseline"]
-    duo_rows = [row for row in rows if row["mode"] == "duo"]
+    baseline_map = {
+        int(row["actual_context"]): row
+        for row in rows
+        if str(row.get("mode")) == "baseline"
+    }
+    duo_map = {
+        int(row["actual_context"]): row
+        for row in rows
+        if str(row.get("mode")) == "duo"
+    }
+    baseline_rows = [baseline_map.get(context_len) for context_len in context_points]
+    duo_rows = [duo_map.get(context_len) for context_len in context_points]
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
 
-    for ax, metric, ylabel, title in (
-        (axes[0], "ctx_latency", "Latency (ms)", "Prefill Latency by Context Length"),
-        (axes[1], "ctx_memory", "Memory (MB)", "Prefill Memory by Context Length"),
+    for ax, metric, ylabel in (
+        (axes[0], "ctx_memory", "Memory (MB)"),
+        (axes[1], "ctx_latency", "Prefill Latency (ms)"),
+        (axes[2], "gen_latency", "Autoregressive Decode Latency / Token (ms)"),
     ):
         baseline_vals = metric_values_with_oom_bars(baseline_rows, metric, 1.0)
         duo_vals = metric_values_with_oom_bars(duo_rows, metric, 1.0)
@@ -1129,14 +1189,13 @@ def plot_context_results(rows: Sequence[Dict[str, Any]], output_path: Path):
             edgecolor="#333333",
         )
         ax.set_ylabel(ylabel)
-        ax.set_title(title)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
         annotate_oom(ax, bars1, baseline_rows)
         annotate_oom(ax, bars2, duo_rows)
 
-    axes[1].set_xlabel("Context Length")
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(labels)
+    axes[-1].set_xlabel("Context Length")
+    axes[-1].set_xticks(x)
+    axes[-1].set_xticklabels(labels)
     axes[0].legend(loc="upper left")
     fig.tight_layout()
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
@@ -1378,6 +1437,8 @@ def run_prefill_command(args):
 
 def run_context_plot_command(args):
     input_json = Path(args.input_json)
+    if input_json.is_dir():
+        input_json = input_json / "context_sweep_results.json"
     rows = load_json(input_json)
     if not isinstance(rows, list) or not rows:
         raise ValueError(f"No rows found in {input_json}")
@@ -1393,6 +1454,8 @@ def run_context_plot_command(args):
 
 def run_prefill_plot_command(args):
     input_json = Path(args.input_json)
+    if input_json.is_dir():
+        input_json = input_json / "prefill_chunk_sweep_results.json"
     rows = load_json(input_json)
     if not isinstance(rows, list):
         raise ValueError(f"Expected a list of rows in {input_json}")
