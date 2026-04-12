@@ -222,6 +222,10 @@ def format_mb(num_bytes: float) -> str:
     return f"{mb:.2f} MB"
 
 
+def format_gb(num_bytes: float) -> str:
+    return f"{bytes_to_gb(num_bytes):.2f} GB"
+
+
 def synchronize_if_needed(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(get_cuda_device_index(device))
@@ -260,6 +264,14 @@ def get_device_name(device: torch.device) -> str:
     if device.type == "cuda":
         return torch.cuda.get_device_name(get_cuda_device_index(device))
     return device.type
+
+
+def get_device_summary(device: torch.device) -> str:
+    if device.type != "cuda":
+        return get_device_name(device)
+    device_index = get_cuda_device_index(device)
+    total_bytes = float(torch.cuda.get_device_properties(device_index).total_memory)
+    return f"{get_device_name(device)} ({format_gb(total_bytes)} VRAM)"
 
 
 def snapshot_gpu_memory(device: torch.device) -> Dict[str, Optional[float]]:
@@ -886,7 +898,13 @@ def main() -> None:
     demo_console.print(
         Text.assemble(
             ("Using", "bold cyan"),
-            (f": {get_device_name(device)}", "white"),
+            (f": {get_device_summary(device)}", "white"),
+        )
+    )
+    demo_console.print(
+        Text.assemble(
+            ("Model", "bold cyan"),
+            (f": {args.model_name}", "white"),
         )
     )
     demo_console.print()
