@@ -2,7 +2,7 @@
 
 Working reference for the `streaming/ReKV` module on the `exp/nv-gpu-inference` branch.
 
-**Target:** NVIDIA SLURM cluster (Toronto CS, login node: `comps0`) · CUDA · conda env at `<repo>/envs/duo`
+**Target:** NVIDIA SLURM cluster · RTX A6000 GPUs (48 GB VRAM each) · CUDA · conda env at `<repo>/envs/duo`
 
 ---
 
@@ -217,56 +217,31 @@ sequenceDiagram
 ### 3.3 KV Cache Layout — All Four Methods
 
 ```mermaid
-block-beta
-    columns 12
+graph TD
+    subgraph FS["full_streaming — GPU only"]
+        direction LR
+        fs_init["INIT tokens\n(system prompt)"] --- fs_f1["frame 1"] --- fs_f2["frame 2"] --- fs_dots["· · ·"] --- fs_fn["frame N\n(latest)"]
+    end
 
-    block:label_fs["full_streaming"]:1
+    subgraph DUO["duo_streaming — split by head type"]
+        direction LR
+        duo_full["full-attn heads ~25%\nall frames · GPU\nkernel: block_sparse_attn"] --- duo_stream["streaming heads ~75%\nSINK + RECENT window · GPU\nkernel: block_sparse_attn"]
     end
-    block:fs_init["INIT\n(frozen)"]:1
-    end
-    block:fs_f1["frame 1"]:1
-    end
-    block:fs_f2["frame 2"]:1
-    end
-    block:fs_dots["· · ·"]:4
-    end
-    block:fs_fn["frame N\n(latest)"]:2
-    end
-    space:2
 
-    block:label_duo["duo_streaming"]:1
+    subgraph REKV["rekv — GPU local + CPU offload"]
+        direction LR
+        rekv_init["INIT\nGPU"] --- rekv_cpu["old blocks\nCPU RAM\noffloaded"] --- rekv_local["local window\nn_local tokens\nGPU"]
     end
-    block:duo_full["── full-attn heads (25%) ──────────────────────"]:8
-    end
-    block:duo_sink["SINK"]:1
-    end
-    block:duo_dots["···"]:1
-    end
-    block:duo_rec["RECENT"]:1
-    end
-    space:1
 
-    block:label_rekv["rekv"]:1
+    subgraph DPR["duo_plus_rekv — ReKV offload + Duo head split at QA time"]
+        direction LR
+        dpr_init["INIT\nGPU"] --- dpr_cpu["CPU offload"] --- dpr_ret["top-k retrieved\nGPU at QA time"] --- dpr_loc["local window\nGPU"]
     end
-    block:rekv_init["INIT\n(GPU)"]:1
-    end
-    block:rekv_cpu["◄── old blocks on CPU RAM (offloaded) ──────►"]:6
-    end
-    block:rekv_local["── local window ──\n(GPU, n_local tokens)"]:3
-    end
-    space:1
 
-    block:label_dpr["duo_plus_rekv"]:1
-    end
-    block:dpr_init["INIT\n(GPU)"]:1
-    end
-    block:dpr_cpu["◄── CPU offload ──────►"]:4
-    end
-    block:dpr_ret["top-k retrieved\n(GPU at QA time)"]:2
-    end
-    block:dpr_loc["local\nwindow"]:2
-    end
-    space:2
+    style FS fill:#ddf4ff,stroke:#0969da
+    style DUO fill:#fff8c5,stroke:#9a6700
+    style REKV fill:#dafbe1,stroke:#1a7f37
+    style DPR fill:#ffebe9,stroke:#cf222e
 ```
 
 > **Note:** At question time, `rekv` and `duo_plus_rekv` load top-k blocks from CPU → GPU, assemble `[INIT] + [retrieved] + [local]`, then run attention over this assembled context only.
@@ -338,7 +313,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph SUBMIT["Submit  (login node)"]
+    subgraph SUBMIT["Submit  (head node)"]
         S1["run_streaming_subset3_slurm.sh\n--max-videos N"]
         S2["run_streaming_eval_slurm_array.sh\nNUM_CHUNKS=4"]
         S1 -->|"4 jobs\none per method"| SLURM
@@ -582,7 +557,7 @@ conda activate /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-
 
 ### 7.2 First-time setup
 
-**Step 1 — Install Miniconda** (login node, once only):
+**Step 1 — Install Miniconda** (head node, once only):
 ```bash
 bash /tmp/Miniconda3-latest-Linux-x86_64.sh -b -p /u/navdeep/miniconda3
 source /u/navdeep/miniconda3/etc/profile.d/conda.sh
@@ -736,7 +711,7 @@ outputs/evaluations_streaming/rvs-ego/subset1/
 
 ### `CondaToSNonInteractiveError` during setup
 **Symptom:** Setup job fails immediately with a Terms of Service error.
-**Fix:** Run once from the login node:
+**Fix:** Run once from the head node:
 ```bash
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r

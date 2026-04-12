@@ -2,7 +2,7 @@ Streaming ReKV + DuoAttention — Project Handoff
 ================================================
 
 Branch: exp/nv-gpu-inference
-Cluster: Toronto CS NVIDIA SLURM (login node: comps0)
+Cluster: NVIDIA SLURM · RTX A6000 GPUs (48 GB VRAM each)
 Repo:    /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
 Conda:   /u/navdeep/miniconda3  (in ~/.bashrc)
 Env:     <repo>/envs/duo  (prefix, in scratch space — not a named env)
@@ -190,7 +190,7 @@ Disk quota exceeded on /u/navdeep during setup
        Clean home dir: conda clean --packages --tarballs
 
 CondaToSNonInteractiveError (Terms of Service not accepted)
-  Fix: run conda tos accept ... from login node before any batch conda ops
+  Fix: run conda tos accept ... from head node before any batch conda ops
 
 user env retrieval failed requeued held
   Cause: --export=NONE or --export=ONLY_VAR=... blocks SLURM prologue
