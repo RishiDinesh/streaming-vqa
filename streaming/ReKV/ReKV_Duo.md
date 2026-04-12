@@ -36,6 +36,70 @@ All four share the same frame schedule, the same model, and the same greedy deco
 
 `duo_streaming` scores lower than `rekv` because the streaming heads (50% of heads at s=0.5) see only a small sink+recent window and miss mid-video context. `rekv` retrieves the most relevant blocks from CPU and wins on quality.
 
+### Method details — step by step
+
+**`full_streaming`**
+1. Loads LLaVA-OV with `flash_attention_2` — tiled kernel, never materialises the O(seq²) matrix
+2. Each video frame: runs a full LM forward, appending 196 new KV tokens to the cache on GPU
+3. KV cache grows linearly for the full video — all frames stay resident in GPU VRAM
+4. At question time: feeds the question into the model with the full accumulated KV cache
+5. Greedy decodes token-by-token, reusing the growing KV cache at each step
+6. **Upper-bound baseline** — attends over every ingested frame, no compression or retrieval
+
+*Underlying:* `flash_attention_2`. Standard HuggingFace DynamicCache. No offload, no sparsity.
+
+---
+
+**`duo_streaming` (s=0.75)**
+1. Loads model with `flash_attention_2`, then `enable_duo_attention_eval` replaces attention on each layer
+2. Learned head weights (from `attn_dir`) classify each KV head: 25% are **full-attention heads** (keep all tokens), 75% are **streaming heads** (keep only sink + recent window)
+3. During ingest: full heads accumulate all KV tokens normally; streaming heads maintain a fixed-size sink+recent window — evicting old tokens as new frames arrive
+4. KV cache size stays **bounded** regardless of video length (streaming heads never grow)
+5. At question time: full heads attend over all past tokens; streaming heads attend only over their window via the **blocksparse** CUDA kernel
+6. Whatever fell outside the streaming window is permanently lost — no retrieval
+
+*Underlying:* `block_sparse_attn` for streaming heads, `flash_attention_2` for full-attention heads. No CPU offload.
+
+---
+
+**`rekv` (topk=64, n_local=15000)**
+1. Loads model with `flash_attention_2`, then `patch_hf` replaces every attention layer's forward with `rekv_attention_forward`
+2. During ingest: most recent 15,000 tokens (n_local) stay on GPU; older blocks (one block = one frame = 196 tokens) are **offloaded to CPU RAM** as `MemoryUnit` objects; a compact fp32 representative key vector per block stays on GPU
+3. The init tokens (first ~512 system-prompt tokens) are frozen on GPU permanently
+4. At question time: cosine similarity between question query and all block key vectors → **top-64 blocks** loaded back from CPU to GPU
+5. Assembled context: `[init tokens] + [top-64 retrieved blocks] + [local 15k window]` — full attention over this for the answer
+6. Greedy decode reuses the assembled KV cache step-by-step; CPU offload released after each question
+
+*Underlying:* `TorchMultiStageDotProductionAttention` (tiled PyTorch) for ReKV inner attention. `flash_attention_2` as base model. Async CUDA streams for CPU↔GPU offload.
+
+---
+
+**`duo_plus_rekv` (s=0.75, topk=64)**
+1. Loads model with `flash_attention_2`, applies both ReKV's `patch_hf` and Duo's head weight registration — `rekv_duo_enabled=True` activates the hybrid branch
+2. During ingest: identical to `rekv` — local window on GPU, old blocks offloaded to CPU
+3. At question time: ReKV retrieval runs first — same cosine-similarity top-64 selection assembles `[init] + [retrieved] + [local]`
+4. Over the assembled context, **Duo head routing is applied**: 25% of heads attend over the full assembled context; 75% streaming heads attend only over init + local window
+5. `duo_n_init` is extended to cover Duo's sink tokens so they are always present in the retrieved context
+6. Greedy decode over the hybrid-assembled KV cache
+
+*Underlying:* `block_sparse_attn` for streaming heads during decode. `TorchMultiStageDotProductionAttention` for ReKV retrieval. `flash_attention_2` as base. CPU offload same as rekv.
+
+---
+
+### What the comparison will show
+
+| Axis | Expected ordering |
+|---|---|
+| **Quality (ROUGE-L F1)** | `full_streaming` ≥ `rekv` ≈ `duo_plus_rekv` > `duo_streaming` |
+| **Answer latency** | `rekv` < `full_streaming` < `duo_plus_rekv` < `duo_streaming` |
+| **Peak GPU memory** | `rekv` ≈ `duo_plus_rekv` < `duo_streaming` < `full_streaming` |
+| **CPU offload** | `rekv` ≈ `duo_plus_rekv` (~4 GB) vs none for others |
+
+- `full_streaming` is the uncompressed upper bound on quality; memory cost grows with video length
+- `rekv` trades a small quality drop for dramatically lower and **constant** GPU memory regardless of video length
+- `duo_streaming` at s=0.75 has tighter memory than s=0.5 but loses more context (75% streaming heads), so quality drops further
+- `duo_plus_rekv` attempts to recover quality over plain `rekv` by applying Duo routing over the retrieved context, but adds retrieval overhead
+
 ---
 
 ## 3. End-to-End Data Flow
