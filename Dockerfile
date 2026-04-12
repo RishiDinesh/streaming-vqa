@@ -98,6 +98,8 @@ RUN pip install -e /workspace/lmms-eval \
 RUN cd /workspace/Block-Sparse-Attention \
  && python setup.py install
 
+RUN pip install --force-reinstall "setuptools<81"
+
 RUN python /opt/mmda/verify_install.py \
  && python -m duo_attn.train --help >/dev/null
 
@@ -127,6 +129,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender1 \
     ca-certificates \
+    openssh-server \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
@@ -138,8 +141,16 @@ RUN mkdir -p \
     /workspace/models \
     /workspace/outputs \
     /cache/huggingface \
-    /cache/torch
+    /cache/torch \
+    /var/run/sshd \
+    /root/.ssh \
+ && chmod 700 /root/.ssh
+
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
 
 WORKDIR /workspace
 
-ENTRYPOINT ["bash"]
+EXPOSE 22 8888
+
+CMD ["/start.sh"]
