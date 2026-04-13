@@ -2,10 +2,17 @@
 # Full eval: 7B model, all 4 methods in parallel (1 GPU each),
 # sink=256/recent=512, s=0.75, both datasets (rvs_ego, rvs_movie).
 #
-# Run from repo root:
-#   bash scripts/run_7b_full_eval_local.sh
+# Flow per dataset:
+#   1. Launch 4 methods in parallel (gpu0=full_streaming, gpu1=rekv,
+#      gpu2=duo_streaming, gpu3=duo_plus_rekv)
+#   2. Wait for all 4 to finish
+#   3. Run LLM judge (in-place, adds judge_score to JSONs)
+#   4. Generate plots (auto-uses judge_score)
+#   5. Generate comparison summary.md
+#   Then repeat for next dataset.
 #
-# After all methods finish: judge (LLM scoring) → plots (judge score) → comparison summary.
+# Run from repo root:
+#   bash scripts/run_7b_full_eval_local.sh 2>&1 | tee logs/7b_full_eval.log
 #
 # Overrides:
 #   DATASETS    space-separated (default: "rvs_ego rvs_movie")
@@ -14,9 +21,11 @@
 #   RESUME      resume from existing output (default: 1)
 #   EXTRA_ARGS  extra args forwarded to run_eval
 
-set -euo pipefail
+set -uo pipefail   # no -e: we handle errors manually around wait
 ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "${ROOT}"
+
+mkdir -p "${ROOT}/logs"
 
 PYTHON=/opt/venv/bin/python
 MODEL=llava-hf/llava-onevision-qwen2-7b-ov-hf
@@ -55,30 +64,29 @@ run_method_bg() {
     maxv_flag=(--max-videos "${MAX_VIDEOS}")
   fi
 
-  echo "[gpu${gpu}] launching ${dataset}/${method}/${tag}"
-  CUDA_VISIBLE_DEVICES=${gpu} $PYTHON -m streaming.ReKV.run_eval \
-    --dataset "${dataset}" \
-    --allow-hf-video-download \
-    --model "${MODEL}" \
-    --sample-fps 0.5 \
-    --max-new-tokens 64 \
-    --video-decode-threads 1 \
-    --clear-cuda-cache-on-reset \
-    --method "${method}" \
-    --output-path "${out}" \
-    "${resume_flag[@]}" \
-    "${overwrite_flag[@]}" \
-    "${maxv_flag[@]}" \
-    "$@" \
-    ${EXTRA_ARGS} \
-    > "${log}" 2>&1 &
-  # store PID in a file so the parent shell can read it cleanly
+  echo "[gpu${gpu}] starting ${method} → ${log}"
+  env CUDA_VISIBLE_DEVICES="${gpu}" \
+    $PYTHON -m streaming.ReKV.run_eval \
+      --dataset "${dataset}" \
+      --allow-hf-video-download \
+      --model "${MODEL}" \
+      --sample-fps 0.5 \
+      --max-new-tokens 64 \
+      --video-decode-threads 1 \
+      --clear-cuda-cache-on-reset \
+      --method "${method}" \
+      --output-path "${out}" \
+      "${resume_flag[@]}" \
+      "${overwrite_flag[@]}" \
+      "${maxv_flag[@]}" \
+      "$@" \
+      ${EXTRA_ARGS} \
+      > "${log}" 2>&1 &
   echo $! > "${log%.log}.pid"
 }
 
 wait_all() {
   local dataset=$1
-  local failed=0
   local pid_files=(
     "${OUTPUT_ROOT}/${dataset}/full_streaming/full_streaming.pid"
     "${OUTPUT_ROOT}/${dataset}/rekv/rekv_topk${REKV_TOPK}_nlocal${REKV_N_LOCAL}.pid"
@@ -86,22 +94,20 @@ wait_all() {
     "${OUTPUT_ROOT}/${dataset}/duo_plus_rekv/duo_plus_rekv_s075_sink${SINK}_recent${RECENT}_topk${REKV_TOPK}.pid"
   )
   local labels=(full_streaming rekv duo_streaming duo_plus_rekv)
+  local failed=0
   for i in "${!pid_files[@]}"; do
     local pid
     pid=$(cat "${pid_files[$i]}")
-    echo "[gpu${i}] ${labels[$i]} pid=${pid}"
-    if wait "${pid}"; then
-      echo "[gpu${i}] ${labels[$i]} done OK"
+    local rc=0
+    wait "${pid}" || rc=$?
+    if [[ ${rc} -eq 0 ]]; then
+      echo "[gpu${i}] ${labels[$i]} (pid ${pid}) — OK"
     else
-      echo "[gpu${i}] ${labels[$i]} FAILED" >&2
+      echo "[gpu${i}] ${labels[$i]} (pid ${pid}) — FAILED (exit ${rc})" >&2
       failed=1
     fi
   done
-  if [[ "${failed}" == "1" ]]; then
-    echo "One or more methods failed — check logs under ${OUTPUT_ROOT}/${dataset}/" >&2
-    find "${OUTPUT_ROOT}/${dataset}" -name "*.log" | sort | xargs -I{} echo "  {}"
-    exit 1
-  fi
+  return ${failed}
 }
 
 post_process() {
@@ -114,7 +120,8 @@ post_process() {
     done < <(find "${OUTPUT_ROOT}/${dataset}/${method_dir}" -maxdepth 1 -name "*.json" 2>/dev/null | sort)
   done
   if [[ ${#files[@]} -eq 0 ]]; then
-    echo "No result files found — skipping." >&2; return
+    echo "No result files found — skipping." >&2
+    return
   fi
 
   echo "[judge] Running LLM judge (in-place)..."
@@ -134,7 +141,6 @@ post_process() {
 for DATASET in ${DATASETS}; do
   echo "====== Dataset: ${DATASET} ======"
 
-  # Launch all 4 methods in parallel, one per GPU
   run_method_bg 0 "${DATASET}" full_streaming "full_streaming"
   run_method_bg 1 "${DATASET}" rekv \
       "rekv_topk${REKV_TOPK}_nlocal${REKV_N_LOCAL}" \
@@ -149,8 +155,17 @@ for DATASET in ${DATASETS}; do
       --deploy-sink-size "${SINK}" --deploy-recent-size "${RECENT}" \
       --retrieve-size "${REKV_TOPK}" --n-local "${REKV_N_LOCAL}"
 
-  echo "Waiting for all 4 methods to finish..."
-  wait_all "${DATASET}"
+  echo "Waiting for all 4 methods..."
+  if ! wait_all "${DATASET}"; then
+    echo "" >&2
+    echo "One or more methods failed for ${DATASET}. Last 10 lines of each log:" >&2
+    find "${OUTPUT_ROOT}/${DATASET}" -name "*.log" | sort | while read -r f; do
+      echo "=== $f ===" >&2
+      tail -10 "$f" >&2
+      echo "" >&2
+    done
+    exit 1
+  fi
 
   post_process "${DATASET}"
 done
