@@ -17,7 +17,8 @@ WHAT THIS PROJECT DOES
 Evaluate 4 streaming video-QA methods on RVS benchmark (ego + movie videos).
 Each method ingests one sampled frame at a time and answers open-ended questions
 about what it saw — no offline whole-video prefill.
-Goal: compare quality (ROUGE-L F1), answer latency, and GPU/CPU memory.
+Goal: compare quality (judge score + ROUGE-L F1), answer latency, and GPU/CPU memory.
+Models evaluated: LLaVA-OV 0.5B (complete) and 7B (in progress).
 
 
 FOUR METHODS
@@ -38,19 +39,36 @@ duo_plus_rekv    — ReKV retrieval then Duo head routing over assembled context
                    ~3.2 GB GPU + ~2.3 GB CPU; approximate hybrid, not paper reproduction
 
 
-FULL-DATASET RESULTS — RVS-Movie (22 videos, 1905 questions, s=0.75)
-----------------------------------------------------------------------
-Method                         ROUGE-L F1   Latency(s)   Peak GPU    CPU offload
-full_streaming                  0.1396       1.34         9.2 GB      —
-duo_streaming (sink=512/1024)   0.1277       0.33         3.5 GB      —
-rekv (topk=64, n_local=15k)     0.1160       0.63         3.2 GB      2.3 GB
-duo_plus_rekv (topk=64, s=0.75) 0.1181       0.89         3.2 GB      2.3 GB
+FULL-DATASET RESULTS — 0.5B model, sink=256/recent=512, s=0.75
+----------------------------------------------------------------
+RVS-Movie (22 videos, 1905 questions):
+Method                              ROUGE-L   Judge(0-1)  Latency(s)  Peak GPU   CPU offload
+full_streaming                       0.1396    0.767       1.34        9.2 GB     —
+duo_streaming (sink=256,recent=512)  0.1231    0.777       0.33        3.5 GB     —
+rekv (topk=64, n_local=15k)          0.1160    0.764       0.63        3.2 GB     2.3 GB
+duo_plus_rekv (sink=256,recent=512)  0.1189    0.768       0.89        3.2 GB     2.3 GB
 
-Re-run in progress with sink=256/recent=512 for duo_streaming and duo_plus_rekv
-to measure the window-size vs quality/memory tradeoff.
+RVS-Ego (10 videos, 1465 questions):
+Method                              ROUGE-L   Judge(0-1)  Latency(s)  Peak GPU   CPU offload
+full_streaming                       0.1208    0.688       1.77        15.0 GB    —
+duo_streaming (sink=256,recent=512)  0.1394    0.740       0.33        4.8 GB     —
+rekv (topk=64, n_local=15k)          0.1926    0.735       0.41        3.1 GB     4.0 GB
+duo_plus_rekv (sink=256,recent=512)  0.1901    0.737       0.59        3.1 GB     4.0 GB
 
-RVS-Ego full eval also in progress: 10 jobs × 4 methods (NUM_CHUNKS=10,
---mem=120G to avoid host RAM OOM from 60-min video KV cache accumulation).
+Judge scores (LLaVA-OV 0.5B, 0-5 scale normalised to 0-1) are the primary quality
+metric — they capture semantic correctness that ROUGE-L misses.
+On ego, duo_streaming wins on judge score; rekv/duo_plus_rekv lead on ROUGE-L
+(retrieval helps more than full attention over 60-min noisy video).
+
+7B MODEL EVAL — IN PROGRESS
+-----------------------------
+Smoke test (job 151546, array 0-3): 1 video × 4 methods on rvs-movie, --mem=120G.
+Full eval (jobs 151553-151560): 80 jobs total (4 methods × 2 datasets × 10 chunks),
+dependency=afterok:151546 — only starts if smoke passes.
+ATTN_DIR for 7B Duo: outputs/train/7b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5
+Estimated wall time (2 nodes serial): ~11 hrs (5× slower than 0.5B estimate).
+Expected VRAM: ~19 GB movie / ~35 GB ego for full_streaming; ~16 GB for rekv/duo.
+All fit within A6000 48 GB.
 
 
 DATA FLOW
@@ -85,7 +103,7 @@ precompute_features.py       batch-extract visual features to disk
 validate_runtime_env.py      print actual backend stack (blocksparse / sdpa / flash-attn)
 compare_subsamples.py        given N result JSONs → summary.md + stability plots
 plot_results.py              paper-style quality/latency/memory PNGs (15 plots)
-judge_results.py             LLM semantic scoring (0-5) for open-ended answers
+judge_results.py             LLM semantic scoring (0-5) for open-ended answers; use --in-place to write scores back to merged JSON
 rescore_results.py           recompute ROUGE/token metrics without re-running eval
 build_qualitative_bundle.py  side-by-side predictions across methods for same questions
 smoke_test.py                fast unit tests (no GPU required)
@@ -98,48 +116,49 @@ KEY SCRIPTS
 ------------
 scripts/run_streaming_subset3_slurm.sh    submit 4 SLURM jobs (one per method)
 streaming/ReKV/run_eval.sh                single-GPU SLURM job wrapper
-scripts/run_streaming_eval_slurm_array.sh multi-GPU sharded array eval
+scripts/run_streaming_eval_slurm_array.sh multi-GPU sharded array eval (primary script)
+scripts/run_judge_slurm_array.sh          array job: run judge_results.py on 8 merged JSONs
+scripts/run_7b_smoke_test.sh              SLURM array: 7B smoke test, 1 video × 4 methods
+scripts/submit_7b_full_eval.sh            submit full 7B eval (smoke → full eval dependency)
 scripts/streaming_env.sh                  conda activation (used by SLURM jobs)
 setup.sh                                  build conda env + CUDA extensions
 
 
 RUNNING EVALUATIONS
 --------------------
-# Smoke test: 1 video, all 4 methods
-bash scripts/run_streaming_subset3_slurm.sh --max-videos 1
+# Smoke test: 1 video, all 4 methods (SLURM array)
+sbatch --array=0-3 --output="logs/smoke-%a-%j.out" scripts/run_7b_smoke_test.sh
 
-# Full eval — rvs-movie (4 chunks, ~5-6 videos each)
+# Full eval — both datasets (NUM_CHUNKS=10 + --mem=120G for both)
+# Use run_streaming_eval_slurm_array.sh with env var overrides:
 for METHOD in full_streaming duo_streaming rekv duo_plus_rekv; do
-  for C in 0 1 2 3; do
-    DATASET=rvs_movie METHOD=${METHOD} NUM_CHUNKS=4 SPARSITY=0.75 \
-    DEPLOY_SINK_SIZE=256 DEPLOY_RECENT_SIZE=512 \
-    OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-movie/full_eval/run1" \
-    sbatch --array=${C} --output="${PWD}/logs/movie-${METHOD}-c${C}-%j.out" \
-           scripts/run_streaming_eval_slurm_array.sh
-  done
+  DATASET=rvs_movie MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+  METHOD=${METHOD} NUM_CHUNKS=10 SPARSITY=0.75 \
+  DEPLOY_SINK_SIZE=256 DEPLOY_RECENT_SIZE=512 \
+  OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-movie/full_eval" \
+  sbatch --array=0-9 --mem=120G --output="${PWD}/logs/movie-${METHOD}-%a-%j.out" \
+         scripts/run_streaming_eval_slurm_array.sh
 done
 
-# Full eval — rvs-ego (MUST use 10 chunks + 120G; 60-min videos OOM at 4 chunks/64G)
+# rvs-ego — identical but DATASET=rvs_ego (MUST use NUM_CHUNKS=10 + --mem=120G)
 for METHOD in full_streaming duo_streaming rekv duo_plus_rekv; do
-  for C in $(seq 0 9); do
-    DATASET=rvs_ego METHOD=${METHOD} NUM_CHUNKS=10 SPARSITY=0.75 \
-    DEPLOY_SINK_SIZE=256 DEPLOY_RECENT_SIZE=512 \
-    OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-ego/full_eval/run2" \
-    sbatch --array=${C} --mem=120G --output="${PWD}/logs/ego-${METHOD}-c${C}-%j.out" \
-           scripts/run_streaming_eval_slurm_array.sh
-  done
+  DATASET=rvs_ego MODEL=llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+  METHOD=${METHOD} NUM_CHUNKS=10 SPARSITY=0.75 \
+  DEPLOY_SINK_SIZE=256 DEPLOY_RECENT_SIZE=512 \
+  OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-ego/full_eval" \
+  sbatch --array=0-9 --mem=120G --output="${PWD}/logs/ego-${METHOD}-%a-%j.out" \
+         scripts/run_streaming_eval_slurm_array.sh
 done
 
-# After all chunks finish — merge then plot
-MERGED=outputs/evaluations_streaming/rvs-movie/full_eval/merged
-python -m streaming.ReKV.plot_results \
-    ${MERGED}/full_streaming.json ${MERGED}/duo_streaming.json \
-    ${MERGED}/rekv.json ${MERGED}/duo_plus_rekv.json \
-    --output-dir outputs/evaluations_streaming/rvs-movie/full_eval/plots/
-python -m streaming.ReKV.compare_subsamples \
-    ${MERGED}/full_streaming.json ${MERGED}/duo_streaming.json \
-    ${MERGED}/rekv.json ${MERGED}/duo_plus_rekv.json \
-    --output-dir outputs/evaluations_streaming/rvs-movie/full_eval/comparison/
+# 7B model — use submit_7b_full_eval.sh (handles smoke + dependency automatically)
+bash scripts/submit_7b_full_eval.sh
+
+# After all chunks finish — merge chunks, plot, then run judge scoring
+# See OUTPUT STRUCTURE below for merge script usage.
+
+# Judge scoring (after merging) — 8 jobs: 4 methods × 2 datasets
+sbatch --array=0-7 --output="logs/judge-%a-%j.out" scripts/run_judge_slurm_array.sh
+# Judge writes scores in-place to merged JSONs; plot_results.py auto-uses avg_judge_score
 
 
 MONITORING JOBS
@@ -152,13 +171,24 @@ tail -f logs/ego-full_streaming-c0-<jobid>.out
 
 OUTPUT STRUCTURE
 -----------------
-outputs/evaluations_streaming/<dataset>/full_eval/
-  <method>/chunk_000.json .. chunk_N.json   raw per-chunk results
-  merged/<method>.json                      chunk-merged result (skip empty chunks)
-  comparison/summary.md                     headline quality/latency/memory table
-  comparison/stability_report.json          per-question score variance
-  comparison/*.png                          slice_stability.png, delta_stability.png
-  plots/*.png                               15 plots total (pareto, memory, latency)
+outputs/evaluations_streaming/<dataset>/
+  <run>/
+    <method>/chunk_000.json .. chunk_N.json   raw per-chunk results
+    merged/<method>.json                      chunk-merged (weighted avg rates, max peaks)
+    merged_sink256/<method>.json              merged with sink=256/recent=512 override
+    comparison/summary.md                     headline quality/latency/memory table
+    comparison/stability_report.json          per-question score variance
+    comparison/*.png                          slice_stability.png, delta_stability.png
+    plots/<method>/                           ROUGE-L based plots
+    plots_judge/<method>/                     judge-score based plots (primary)
+
+0.5B completed results:
+  rvs-movie: outputs/evaluations_streaming/rvs-movie/full_eval/merged_sink256/
+  rvs-ego:   outputs/evaluations_streaming/rvs-ego/full_eval/run2/merged/
+
+7B in-progress results:
+  rvs-movie: outputs/evaluations_streaming/rvs-movie/7b_full_eval/
+  rvs-ego:   outputs/evaluations_streaming/rvs-ego/7b_full_eval/
 
 Result JSON top-level keys:
   run_config              CLI args used
@@ -284,5 +314,7 @@ REFERENCES
 ReKV:          https://arxiv.org/abs/2503.00540
 DuoAttention:  https://arxiv.org/abs/2410.10819
 Dataset:       HuggingFace Becomebright/RVS
-Model (0.5B):  llava-hf/llava-onevision-qwen2-0.5b-ov-hf
-Model (7B):    llava-hf/llava-onevision-qwen2-7b-ov-hf
+Model (0.5B):  llava-hf/llava-onevision-qwen2-0.5b-ov-hf  (eval complete)
+Model (7B):    llava-hf/llava-onevision-qwen2-7b-ov-hf   (eval in progress)
+Duo weights (0.5B): outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632
+Duo weights (7B):   outputs/train/7b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5
