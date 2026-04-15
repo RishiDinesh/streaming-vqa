@@ -1,0 +1,21 @@
+{
+  "aggregate_comparison": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/aggregate_comparison.png",
+  "peak_memory_comparison": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/peak_memory_comparison.png",
+  "quality_latency_tradeoff": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/quality_latency_tradeoff.png",
+  "quality_memory_tradeoff": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/quality_memory_tradeoff.png",
+  "per_conversation_metrics": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/per_conversation_metrics.png",
+  "efficiency_vs_context": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/efficiency_vs_context.png",
+  "quality_vs_context": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/quality_vs_context.png",
+  "question_timeline": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/question_timeline.png",
+  "avg_memory_comparison": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/avg_memory_comparison.png",
+  "quality_avg_memory_tradeoff": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/quality_avg_memory_tradeoff.png",
+  "pareto_tradeoffs_with_arrows": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/plots/pareto_tradeoffs_with_arrows.png",
+  "series_labels": [
+    "duo_plus_streamingtom",
+    "streamingtom"
+  ],
+  "series_sources": {
+    "duo_plus_streamingtom": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/merged/duo_plus_streamingtom.json",
+    "streamingtom": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/merged/streamingtom.json"
+  }
+}

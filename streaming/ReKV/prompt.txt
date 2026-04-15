@@ -1,0 +1,369 @@
+Streaming Video-QA — All 6 Methods: ReKV + DuoAttention + StreamingTom
+=======================================================================
+
+Branch: exp/streamingtom-eval-lat
+Cluster: NVIDIA SLURM · RTX A6000 GPUs (48 GB VRAM, 125 GB host RAM per node)
+Repo:    /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+Conda:   /u/navdeep/miniconda3  (in ~/.bashrc)
+
+FULL GUIDE: streaming/rekv_st_duo.md
+
+
+WHAT THIS PROJECT DOES
+-----------------------
+Evaluate 6 streaming video-QA methods on RVS benchmark (ego + movie videos).
+Each method ingests one sampled frame at a time and answers open-ended questions
+about what it saw — no offline whole-video prefill.
+Goal: compare quality (judge score + ROUGE-L F1), answer latency, and GPU/CPU memory.
+Models evaluated: LLaVA-OV 0.5B (ReKV methods 1-4 complete; StreamingTom 5-6 pending full eval).
+
+
+SIX METHODS — TWO ENVS
+------------------------
+Methods 1-4 run under:  envs/duo  (torch + block_sparse_attn + duo_attn)
+Methods 5-6 run under:  envs/duo-st  (torch 2.5.1+cu124 + flashinfer + LLaVA-NeXT)
+
+Activate duo:
+  source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+  conda activate /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/envs/duo
+
+Activate duo-st:
+  source /u/navdeep/miniconda3/etc/profile.d/conda.sh
+  conda activate /w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/envs/duo-st
+
+1. full_streaming    — plain causal KV cache; all frames kept on GPU
+                       KV cache grows to ~9 GB (movie) / ~13 GB (ego 60-min)
+
+2. duo_streaming     — Duo head routing: ~25% full-attn heads (all tokens),
+                       ~75% streaming heads (sink+recent window only)
+                       requires block_sparse_attn kernel; window: sink=256 recent=512
+
+3. rekv              — local window on GPU + CPU offload + top-k cosine retrieval at Q time
+                       ~3.2 GB GPU + ~2.3 GB CPU (movie) / ~3.1 GB GPU + ~4 GB CPU (ego)
+
+4. duo_plus_rekv     — ReKV retrieval then Duo head routing over assembled context
+                       ~3.2 GB GPU + ~2.3 GB CPU; approximate hybrid
+
+5. streamingtom      — Native StreamingTom: CTR per-frame token compression (50 tok/frame)
+                       + OQM 4-bit quantized memory with online retrieval
+                       ~15.7x KV cache compression; uses lmms-lab LLaVA-OV variant
+
+6. duo_plus_streamingtom — StreamingTom runtime + Duo head routing inside Qwen2 forward
+                       True hybrid: full heads attend full KV, streaming heads attend
+                       sink+recent window inside StreamingTom attention forward
+
+
+FULL-DATASET RESULTS — 0.5B model, sink=256/recent=512, s=0.75
+----------------------------------------------------------------
+ReKV suite (methods 1-4) — COMPLETE:
+
+RVS-Movie (22 videos, 1905 questions):
+Method                              ROUGE-L   Judge(0-1)  Latency(s)  Peak GPU   CPU offload
+full_streaming                       0.1396    0.767       1.34        9.2 GB     —
+duo_streaming (sink=256,recent=512)  0.1231    0.777       0.33        3.5 GB     —
+rekv (topk=64, n_local=15k)          0.1160    0.764       0.63        3.2 GB     2.3 GB
+duo_plus_rekv (sink=256,recent=512)  0.1189    0.768       0.89        3.2 GB     2.3 GB
+
+RVS-Ego (10 videos, 1465 questions):
+Method                              ROUGE-L   Judge(0-1)  Latency(s)  Peak GPU   CPU offload
+full_streaming                       0.1208    0.688       1.77        15.0 GB    —
+duo_streaming (sink=256,recent=512)  0.1394    0.740       0.33        4.8 GB     —
+rekv (topk=64, n_local=15k)          0.1926    0.735       0.41        3.1 GB     4.0 GB
+duo_plus_rekv (sink=256,recent=512)  0.1901    0.737       0.59        3.1 GB     4.0 GB
+
+StreamingTom suite (methods 5-6) — PENDING FULL EVAL
+(OOM smoke test on longest ego video submitted as job 155159; full eval after smoke test passes)
+
+
+DATA FLOW
+----------
+datasets.py              load RVS annotation JSON, sort convs by end_time, sample
+                         frames at sample_fps, resolve video path
+  ↓
+[optional] precompute_features.py → feature_cache.py
+                         pre-extract visual tokens; ReKV methods only
+                         StreamingTom uses raw frames always (ingest_features is a stub)
+  ↓
+methods 1-4 (methods.py)  per-video reset; causal ingest (one frame per forward pass)
+  full_streaming:   flash_attention_2 KV cache
+  duo_streaming:    block_sparse_attn for streaming heads
+  rekv:             patch_hf → rekv_attention_forward → ContextManager
+  duo_plus_rekv:    same + Duo weights → rekv_duo_enabled=True
+
+methods 5-6 (StreamingTom/scripts/eval/run_eval.py)
+  streamingtom:              generate_with_streamingtom_streaming(images=frame)
+  duo_plus_streamingtom:     same + _hybrid_duo_streamingtom_attention at each layer
+  ↓
+answer_question → greedy_decode_with_cache
+  retrieval triggered for rekv/duo_plus_rekv (cosine-sim CPU→GPU)
+  OQM dequantisation for streamingtom methods
+  ↓
+run_eval.py (ReKV) / run_eval.py (ST)
+  write result JSON, checkpoint/resume, sharding
+  both use identical normalize_result_payload_schema from streaming.ReKV.run_eval
+
+
+KEY FILES
+----------
+streaming/ReKV/run_eval.py                  main eval loop for methods 1-4
+                                            also exports: evaluate_samples,
+                                            normalize_result_payload_schema,
+                                            summarize_aggregate_metrics,
+                                            write_json_atomic (used by ST eval)
+streaming/ReKV/methods.py                   all four ReKV method classes
+streaming/ReKV/datasets.py                  RVS dataset loading, frame sampling
+streaming/ReKV/common.py                    data structs + scoring functions
+streaming/ReKV/feature_cache.py             validated feature cache load
+streaming/ReKV/precompute_features.py       batch-extract visual features
+streaming/ReKV/validate_runtime_env.py      print actual backend stack
+streaming/ReKV/compare_subsamples.py        N result JSONs → summary.md + stability plots
+streaming/ReKV/plot_results.py              paper-style quality/latency/memory PNGs
+streaming/ReKV/judge_results.py             LLM semantic scoring; use --in-place
+streaming/ReKV/rekv_core/patch.py           patch_hf: replace HF attention with ReKV
+streaming/ReKV/rekv_core/attention/rekv_attention.py      ReKV forward + Duo gate
+streaming/ReKV/rekv_core/attention/kv_cache_manager.py    ContextManager CPU offload
+
+streaming/StreamingTom/scripts/eval/run_eval.py           methods 5-6 eval runner
+streaming/StreamingTom/scripts/eval/merge_chunks.py       ST chunk merge + postprocess
+streaming/StreamingTom/scripts/eval/run_streamingtom_eval_slurm_array.sh   array job
+streaming/StreamingTom/scripts/eval/run_streamingtom_vs_duo_plus_run2.sh   submit+post
+streaming/StreamingTom/scripts/eval/run_smoketest_longest_video.sh         OOM smoke (longest rvs-ego video, ~1805 frames)
+streaming/StreamingTom/scripts/eval/run_eval_runpod.sh                     RunPod/bare-GPU parallel eval (no SLURM)
+streaming/StreamingTom/scripts/setup_streamingtom_env.sh                   build duo-st env (SLURM sbatch)
+streaming/StreamingTom/scripts/setup_duo_st_env.sh                         build duo-st env (RunPod/bare machine)
+streaming/StreamingTom/streamingtom/models/llava/modeling_qwen2_revise.py  Duo+ST hybrid
+streaming/StreamingTom/LLaVA-NeXT/llava/__init__.py                        fixed ImportError
+
+streaming/merge_all_results.py       UNIFIED 6-method merge: ReKV + ST → all merged JSONs
+streaming/run_smoke_all_methods.sh   UNIFIED smoke test for all 6 methods (0.5B, 1 video)
+streaming/rekv_st_duo.md             FULL GUIDE for all 6 methods with diagrams
+
+
+KEY SCRIPTS
+------------
+scripts/run_streaming_eval_slurm_array.sh    multi-GPU sharded array eval (methods 1-4)
+streaming/ReKV/run_eval.sh                   single-GPU SLURM wrapper (methods 1-4)
+scripts/run_judge_slurm_array.sh             array job: judge scoring on merged JSONs
+scripts/streaming_env.sh                     conda activation for methods 1-4
+setup.sh                                     build duo conda env + CUDA extensions
+streaming/StreamingTom/scripts/setup_streamingtom_env.sh  build duo-st env
+
+
+RUNNING EVALUATIONS
+--------------------
+# OOM stress smoke test — ST methods on longest rvs-ego video (~60 min, 3611s):
+sbatch streaming/StreamingTom/scripts/eval/run_smoketest_longest_video.sh
+# Output: logs/st_smoke_longest_<jobid>.log   (most recent: job 155159)
+# Video: e58207f1-84ec-424b-a997-ff64a57eb13b  (3611s, ~1805 frames at 0.5fps)
+
+# Unified smoke test — all 6 methods, 1 video each:
+sbatch streaming/run_smoke_all_methods.sh
+
+# Full eval — ReKV methods 1-4 (already complete for 0.5B):
+# (see streaming/rekv_st_duo.md section 8.2 for exact commands)
+
+# Full eval — StreamingTom methods 5-6 (NEW, run AFTER smoke test passes):
+DATASET=rvs_ego NUM_CHUNKS=20 \
+OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-ego/full_eval/run2" \
+bash streaming/StreamingTom/scripts/eval/run_streamingtom_vs_duo_plus_run2.sh submit
+
+# Merge all 6 methods + plots:
+python streaming/merge_all_results.py \
+  --rekv-results-dir outputs/evaluations_streaming/rvs-ego/full_eval/run1 \
+  --st-results-dir   outputs/evaluations_streaming/rvs-ego/full_eval/run2 \
+  --output-dir       outputs/evaluations_streaming/rvs-ego/full_eval/merged_all
+
+# With judge scoring:
+python streaming/merge_all_results.py \
+  --rekv-results-dir outputs/evaluations_streaming/rvs-ego/full_eval/run1 \
+  --st-results-dir   outputs/evaluations_streaming/rvs-ego/full_eval/run2 \
+  --output-dir       outputs/evaluations_streaming/rvs-ego/full_eval/merged_all \
+  --run-judge
+
+
+OUTPUT STRUCTURE
+-----------------
+outputs/evaluations_streaming/<dataset>/
+  full_eval/
+    run1/<method>/chunk_*.json               ReKV methods (existing complete results)
+    run2/<method>/chunk_*.json               StreamingTom methods (new)
+    merged_all/
+      merged/<method>.json                   merged for all 6 methods
+      comparison/summary.md                  headline quality/latency/memory table
+      comparison/*.png                       stability plots
+      plots/*.png                            ROUGE-L based (15 PNGs)
+      plots_judge/*.png                      judge-score based (after --run-judge)
+
+Result JSON top-level keys (all 6 methods — same schema):
+  run_config              CLI args used
+  evaluation_manifest     model, sample_fps, backend, rekv/duo/st config
+  aggregate_metrics       avg_rouge_l_f1, avg_judge_score, avg_answer_latency_sec,
+                          peak_memory_bytes, peak_cpu_offload_bytes (null for ST),
+                          avg_retrieval_latency_sec (null for full_streaming/duo)
+  videos[]
+    conversations[].prediction       model's generated answer
+    conversations[].reference_answer ground truth
+    conversations[].scores.rouge_l_f1
+    conversations[].method_stats     timing, retrieval, peak_memory_bytes,
+                                     cpu_offload_bytes_peak, avg_retrieved_block_count
+
+
+SCHEMA SINGLE SOURCE OF TRUTH
+-------------------------------
+normalize_result_payload_schema lives ONLY in streaming.ReKV.run_eval
+  → Used by: ReKV run_eval.py, ST run_eval.py, merge_chunks.py, merge_all_results.py
+  → Fills sentinel None for optional fields (judge scores, retrieval stats, CPU offload)
+  → Do NOT add a copy anywhere else — import from streaming.ReKV.run_eval
+
+
+FIRST-TIME SETUP
+-----------------
+ReKV env (methods 1-4):
+  BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;89;90" bash setup.sh
+  # A100=80  H100=90  RTX A6000/Ada=89
+
+StreamingTom env (methods 5-6) — SLURM:
+  sbatch streaming/StreamingTom/scripts/setup_streamingtom_env.sh
+
+StreamingTom env (methods 5-6) — RunPod / bare GPU machine:
+  bash streaming/StreamingTom/scripts/setup_duo_st_env.sh
+  # Auto-detects conda location; installs miniconda if not found
+  # Installs torch 2.5.1+cu124, flash-attn 2.7.4, flashinfer 0.2.2, LLaVA-NeXT, streamingtom
+  # Verified working in SLURM job 155149
+
+RUNPOD QUICK START (methods 5-6 only, 4× A6000):
+  git clone https://github.com/RishiDinesh/streaming-vqa.git && cd streaming-vqa
+  git checkout exp/streamingtom-eval-lat
+  bash streaming/StreamingTom/scripts/setup_duo_st_env.sh
+  source ~/miniconda3/etc/profile.d/conda.sh
+  conda activate "$(pwd)/envs/duo-st"
+  export PYTHONPATH="$(pwd)"
+  # Full eval, both methods, 4 GPUs:
+  NUM_GPUS=4 DATASET=rvs_ego NUM_CHUNKS=4 \
+  OUTPUT_ROOT="$(pwd)/outputs/evaluations_streaming/rvs-ego/full_eval/run2" \
+  bash streaming/StreamingTom/scripts/eval/run_eval_runpod.sh
+  # See streaming/rekv_st_duo.md section 7b for full RunPod instructions
+
+Validate duo env:
+  python -m streaming.ReKV.validate_runtime_env
+  # Must see: "streaming_attn_backend_actual": "blocksparse"
+
+Validate duo-st env:
+  python -c "import torch,flash_attn,flashinfer,llava,duo_attn,streamingtom; print('all OK')"
+
+
+COMMON ISSUES AND FIXES
+------------------------
+avcodec_send_packet error (decord crash)
+  Fix: always --video-decode-threads 1
+
+rvs-ego OOM (methods 1-4)
+  Fix: NUM_CHUNKS=10 (1 video/job) + --mem=120G
+
+StreamingTom OOM on long videos
+  Fix: reduce STREAMINGTOM_MAX_FRAMES_CONTEXT (default 64 in run_eval.py)
+  Note: OOM smoke test on longest video (~1805 frames) submitted as job 155159
+
+Disk quota exceeded on /u/navdeep during setup
+  Fix: setup.sh redirects via CONDA_PKGS_DIRS=<repo>/.conda_pkgs
+
+CondaToSNonInteractiveError
+  Fix: conda tos accept ... from head node before any batch conda ops
+
+protobuf version warning on llava import (harmless)
+  "Detected incompatible Protobuf Gencode/Runtime versions"
+  This comes from wandb's proto, not llava itself — llava imports fine
+
+llava.__init__ ImportError: cannot import name 'LlavaLlamaForCausalLM'
+  Fixed: llava/__init__.py now imports from .model.language_model.llava_llama directly
+  (llava/model/__init__.py uses lazy exec-based loading, classes not available as direct attrs)
+
+rekv/duo_plus_rekv generating 1-word answers (FIXED)
+  Was: past_key_values missing question tokens after retrieval
+  Fix: h_k = cat([retrieved, question]) in rekv_attention.py
+
+chunk JSON has videos=[] and null aggregate_metrics
+  Cause: job OOM-killed before completing first video
+  Fix: delete empty chunk, resubmit with NUM_CHUNKS=10 + --mem=120G
+
+normalize_result_payload_schema
+  Single source of truth: streaming.ReKV.run_eval.normalize_result_payload_schema
+  Used by: ReKV run_eval.py, ST run_eval.py, merge_chunks.py, merge_all_results.py
+
+
+KEY PARAMETERS — REKV METHODS (1-4)
+-------------------------------------
+python -m streaming.ReKV.run_eval
+--method           full_streaming | duo_streaming | rekv | duo_plus_rekv
+--dataset          rvs_ego | rvs_movie
+--sample-fps       0.5
+--max-new-tokens   64
+--n-local          15000      ReKV GPU local window
+--retrieve-size    64         ReKV top-k blocks from CPU
+--attn-dir         <path>     Duo trained head weights (.tsv)
+--sparsity         0.75       fraction of streaming heads
+--deploy-sink-size  256       Duo sink window override
+--deploy-recent-size 512      Duo recent window override
+--num-chunks / --chunk-index  use NUM_CHUNKS=10 for rvs-ego
+
+
+KEY PARAMETERS — STREAMINGTOM METHODS (5-6)
+---------------------------------------------
+python streaming/StreamingTom/scripts/eval/run_eval.py
+--method           streamingtom | duo_plus_streamingtom
+--dataset          rvs_ego | rvs_movie
+--sample-fps       0.5
+--max-new-tokens   64
+--streamingtom-root streaming/StreamingTom
+--duo-attn-dir     <path>     Duo trained head weights (for duo_plus_streamingtom)
+--duo-threshold    0.5
+--duo-sparsity     0.75
+--duo-sink-size    256
+--duo-recent-size  512
+--num-chunks / --chunk-index  use NUM_CHUNKS=20 for ST (heavier per-job workload)
+
+Env vars (set automatically by set_streamingtom_env_defaults in run_eval.py):
+  CTR_RETAIN_TOKENS=50        tokens kept per frame after CTR compression
+  OQM_RETRIEVAL_MAX_TOKENS=12544  max dequantised tokens at QA time
+  OQM_QUANTIZATION_BITS=4    OQM compression
+  STREAMINGTOM_MAX_FRAMES_CONTEXT=64   max frames buffered in RAM
+
+
+DUO ATTENTION HEAD WEIGHTS
+----------------------------
+Default weights dir (relative to repo root):
+  outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632
+  → full_attention_heads_latest.tsv   (used by both duo_plus_rekv and duo_plus_streamingtom)
+
+At inference, override with:
+  --attn-dir (ReKV methods) / --duo-attn-dir (ST methods)
+
+
+STATE AS OF 2026-04-14
+------------------------
+- ReKV methods 1-4: full eval COMPLETE for 0.5B on both rvs-ego and rvs-movie
+  Results under: outputs/evaluations_streaming/rvs-ego/full_eval/run1/
+                 outputs/evaluations_streaming/rvs-movie/full_eval/run1/
+
+- ST methods 5-6: OOM smoke test submitted (job 155159) on longest rvs-ego video
+  Log: logs/st_smoke_longest_155159.log
+  Once smoke test passes → submit full eval → merge all 6 methods
+
+- duo-st conda env: VERIFIED working (SLURM job 155149)
+  torch 2.5.1+cu124, flash-attn 2.7.4, flashinfer 0.2.2, llava OK, duo_attn OK, streamingtom OK
+
+NEXT STEPS (in order):
+  1. Check job 155159 log:  tail -f logs/st_smoke_longest_155159.log
+     squeue -j 155159      (check if still running)
+  2. If smoke passes → submit full eval:
+     DATASET=rvs_ego NUM_CHUNKS=20 \
+     OUTPUT_ROOT="${PWD}/outputs/evaluations_streaming/rvs-ego/full_eval/run2" \
+     bash streaming/StreamingTom/scripts/eval/run_streamingtom_vs_duo_plus_run2.sh submit
+  3. After full eval completes → merge all 6:
+     python streaming/merge_all_results.py \
+       --rekv-results-dir outputs/evaluations_streaming/rvs-ego/full_eval/run1 \
+       --st-results-dir   outputs/evaluations_streaming/rvs-ego/full_eval/run2 \
+       --output-dir       outputs/evaluations_streaming/rvs-ego/full_eval/merged_all
+  4. Add judge scores:
+     python streaming/merge_all_results.py [same args] --run-judge
+  5. Repeat steps 2-4 for rvs-movie dataset

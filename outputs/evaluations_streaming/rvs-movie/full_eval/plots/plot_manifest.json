@@ -1,0 +1,30 @@
+{
+  "aggregate_comparison": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/aggregate_comparison.png",
+  "peak_memory_comparison": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/peak_memory_comparison.png",
+  "quality_latency_tradeoff": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/quality_latency_tradeoff.png",
+  "quality_memory_tradeoff": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/quality_memory_tradeoff.png",
+  "per_conversation_metrics": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/per_conversation_metrics.png",
+  "efficiency_vs_context": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/efficiency_vs_context.png",
+  "quality_vs_context": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/quality_vs_context.png",
+  "question_timeline": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/question_timeline.png",
+  "avg_memory_comparison": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/avg_memory_comparison.png",
+  "quality_avg_memory_tradeoff": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/quality_avg_memory_tradeoff.png",
+  "delta_to_baseline": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/delta_to_baseline.png",
+  "peak_cpu_offload_comparison": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/peak_cpu_offload_comparison.png",
+  "avg_cpu_offload_comparison": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/avg_cpu_offload_comparison.png",
+  "pareto_tradeoffs_with_arrows": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/pareto_tradeoffs_with_arrows.png",
+  "rekv_retrieval_diagnostics": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/rekv_retrieval_diagnostics.png",
+  "retrieval_timeline": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/plots/retrieval_timeline.png",
+  "series_labels": [
+    "full_streaming",
+    "duo_streaming (s=0.75)",
+    "rekv (topk=64,n_local=15000)",
+    "duo_plus_rekv (topk=64,s=0.75)"
+  ],
+  "series_sources": {
+    "full_streaming": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/merged/full_streaming.json",
+    "duo_streaming (s=0.75)": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/merged/duo_streaming.json",
+    "rekv (topk=64,n_local=15000)": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/merged/rekv.json",
+    "duo_plus_rekv (topk=64,s=0.75)": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/merged/duo_plus_rekv.json"
+  }
+}

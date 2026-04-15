@@ -1,0 +1,6 @@
+{
+  "summary_csv": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/comparison/summary.csv",
+  "summary_md": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/comparison/summary.md",
+  "stability_report": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/comparison/stability_report.json",
+  "slice_stability_plot": "/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/comparison/slice_stability.png"
+}

@@ -1,0 +1,35 @@
+name: duo-streamingtom-gpu
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=1.26.4
+  - pytorch=2.5.1
+  - torchvision=0.20.1
+  - torchaudio=2.5.1
+  - pytorch-cuda=12.4
+  - ffmpeg
+  - pip:
+      - transformers==4.53.3
+      - huggingface-hub==0.36.2
+      - accelerate==1.9.0
+      - datasets==4.0.0
+      - sacrebleu==2.5.1
+      - einops==0.8.2
+      - av==17.0.0
+      - open_clip_torch==3.3.0
+      - timm==1.0.26
+      - ftfy==6.3.1
+      - wcwidth==0.6.0
+      - imageio==2.37.3
+      - imageio-ffmpeg==0.6.0
+      - tqdm==4.67.3
+      - sentencepiece==0.2.0
+      - protobuf==6.31.1
+      - tensor_parallel==2.0.0
+      - setuptools==80.10.2
+      - -e ./streaming/StreamingTom/LLaVA-NeXT
