@@ -52,7 +52,7 @@ for _candidate in \
   "/opt/conda/etc/profile.d/conda.sh" \
   "/root/miniconda3/etc/profile.d/conda.sh" \
   "/usr/local/miniconda3/etc/profile.d/conda.sh" \
-  "/u/navdeep/miniconda3/etc/profile.d/conda.sh"; do
+  "/root/miniconda3/etc/profile.d/conda.sh"; do
   if [[ -f "${_candidate}" ]]; then
     CONDA_INIT_SCRIPT="${_candidate}"
     break

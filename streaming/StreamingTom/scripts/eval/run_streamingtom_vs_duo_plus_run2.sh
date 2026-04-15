@@ -23,10 +23,32 @@ MODE=$1
 ROOT=$(cd -- "$(dirname "${BASH_SOURCE[0]}")/../../../../" && pwd)
 cd "${ROOT}"
 
-# shellcheck disable=SC1091
-source "${ROOT}/scripts/streaming_env.sh"
-activate_streaming_env
-export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
+# StreamingTom requires the duo-st env (torch 2.5.1+cu124, flashinfer, LLaVA-NeXT).
+# Do NOT use activate_streaming_env — it picks up envs/duo (the ReKV env).
+_CONDA_INIT=""
+for _c in \
+  "${HOME}/miniconda3/etc/profile.d/conda.sh" \
+  "/root/miniconda3/etc/profile.d/conda.sh" \
+  "${HOME}/miniforge3/etc/profile.d/conda.sh" \
+  "/opt/conda/etc/profile.d/conda.sh" \
+  "/u/navdeep/miniconda3/etc/profile.d/conda.sh"; do
+  if [[ -f "${_c}" ]]; then _CONDA_INIT="${_c}"; break; fi
+done
+if [[ -z "${_CONDA_INIT}" ]]; then
+  echo "[error] Cannot find conda init script" >&2; exit 1
+fi
+# shellcheck disable=SC1090
+source "${_CONDA_INIT}"
+DUO_ST_ENV="${ROOT}/envs/duo-st"
+if [[ -d "${DUO_ST_ENV}" ]]; then
+  conda activate "${DUO_ST_ENV}"
+  echo "[env] Activated duo-st env: ${DUO_ST_ENV}" >&2
+else
+  echo "[error] duo-st env not found at ${DUO_ST_ENV}" >&2
+  echo "[error] Run: bash streaming/StreamingTom/scripts/setup_duo_st_env.sh" >&2
+  exit 1
+fi
+export PYTHONPATH="${ROOT}:${ROOT}/streaming/StreamingTom:${PYTHONPATH:-}"
 
 DATASET=${DATASET:-rvs_ego}
 NUM_CHUNKS=${NUM_CHUNKS:-10}

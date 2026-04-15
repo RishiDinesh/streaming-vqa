@@ -1,55 +1,73 @@
 #!/usr/bin/env bash
-# RunPod / bare-GPU parallel eval for StreamingTom methods 5-6.
-# Runs both methods (streamingtom + duo_plus_streamingtom) in parallel across
-# N GPUs using background processes — no SLURM required.
+# Parallel eval for StreamingTom methods 5-6 across multiple datasets.
+# Runs both methods × both datasets sequentially (one model loaded at a time),
+# with chunks batched across GPUs (NUM_GPUS chunks in parallel per batch).
 #
-# Usage (from repo root, inside the duo-st conda env):
+# Usage (from repo root):
 #
-#   # 4 GPUs, rvs_ego, both methods:
-#   NUM_GPUS=4 DATASET=rvs_ego \
+#   # 2 GPUs, both methods, both datasets, 40 chunks each:
+#   NUM_GPUS=2 NUM_CHUNKS=40 \
 #   bash streaming/StreamingTom/scripts/eval/run_eval_runpod.sh
 #
-#   # 2 GPUs, single method:
-#   NUM_GPUS=2 DATASET=rvs_ego METHOD=streamingtom \
+#   # Single method, single dataset override:
+#   NUM_GPUS=2 NUM_CHUNKS=40 DATASETS="rvs_ego" METHODS="streamingtom" \
 #   bash streaming/StreamingTom/scripts/eval/run_eval_runpod.sh
 #
 #   # Dry-run (print commands, don't execute):
-#   DRY_RUN=1 NUM_GPUS=4 DATASET=rvs_ego \
+#   DRY_RUN=1 NUM_GPUS=2 NUM_CHUNKS=4 \
 #   bash streaming/StreamingTom/scripts/eval/run_eval_runpod.sh
 #
-# Prerequisites:
-#   conda activate <repo>/envs/duo-st   (or: conda activate duo-st)
-#   export PYTHONPATH=<repo>
-#
-# Each GPU handles one chunk. With NUM_GPUS=4 and NUM_CHUNKS=4 per method,
-# each GPU processes ~2-3 videos.  Increase NUM_CHUNKS for finer sharding.
-#
-# Logs go to: <OUTPUT_ROOT>/logs/chunk_<i>_<method>.log
+# Chunk batching: only NUM_GPUS chunks run at a time — no OOM from simultaneous loads.
+# Logs go to: <OUTPUT_ROOT>/<dataset>/<method>/logs/chunk_<i>.log
 
 set -euo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}
 cd "${ROOT}"
 
+# ── activate envs/duo-st ──────────────────────────────────────────────────────
+_CONDA_INIT=""
+for _c in \
+  "${HOME}/miniconda3/etc/profile.d/conda.sh" \
+  "/root/miniconda3/etc/profile.d/conda.sh" \
+  "${HOME}/miniforge3/etc/profile.d/conda.sh" \
+  "/opt/conda/etc/profile.d/conda.sh" \
+  "/u/navdeep/miniconda3/etc/profile.d/conda.sh"; do
+  if [[ -f "${_c}" ]]; then _CONDA_INIT="${_c}"; break; fi
+done
+if [[ -z "${_CONDA_INIT}" ]]; then
+  echo "[error] Cannot find conda init script" >&2; exit 1
+fi
+# shellcheck disable=SC1090
+source "${_CONDA_INIT}"
+DUO_ST_ENV="${ROOT}/envs/duo-st"
+if [[ -d "${DUO_ST_ENV}" ]]; then
+  conda activate "${DUO_ST_ENV}"
+  echo "[runpod] Activated: ${DUO_ST_ENV}" >&2
+else
+  echo "[error] duo-st env not found at ${DUO_ST_ENV}" >&2
+  echo "[error] Run: bash streaming/StreamingTom/scripts/setup_duo_st_env.sh" >&2
+  exit 1
+fi
+
 export HF_HOME="${ROOT}/.hf_cache"
 export TOKENIZERS_PARALLELISM="false"
-export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${ROOT}:${ROOT}/streaming/StreamingTom:${PYTHONPATH:-}"
 
 # ── config ────────────────────────────────────────────────────────────────────
-DATASET=${DATASET:-rvs_ego}
 MODEL=${MODEL:-lmms-lab/llava-onevision-qwen2-0.5b-ov}
 SAMPLE_FPS=${SAMPLE_FPS:-0.5}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-64}
-NUM_GPUS=${NUM_GPUS:-4}
-# Total chunks per method — set equal to NUM_GPUS for 1 chunk/GPU
-NUM_CHUNKS=${NUM_CHUNKS:-${NUM_GPUS}}
+NUM_GPUS=${NUM_GPUS:-2}
+NUM_CHUNKS=${NUM_CHUNKS:-40}
 RESUME=${RESUME:-1}
 DRY_RUN=${DRY_RUN:-0}
 
-# Which methods to run: space-separated list
+# Space-separated lists — override via env vars
+DATASETS=${DATASETS:-"rvs_ego rvs_movie"}
 METHODS=${METHODS:-"streamingtom duo_plus_streamingtom"}
 
-OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/outputs/evaluations_streaming/${DATASET}/full_eval/run2}
+OUTPUT_BASE=${OUTPUT_BASE:-${ROOT}/outputs/evaluations_streamingtom}
 STREAMINGTOM_ROOT=${STREAMINGTOM_ROOT:-streaming/StreamingTom}
 
 DUO_ATTN_DIR=${DUO_ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632}
@@ -60,53 +78,54 @@ DUO_SINK_SIZE=${DUO_SINK_SIZE:-256}
 DUO_RECENT_SIZE=${DUO_RECENT_SIZE:-512}
 
 # ── validate env ──────────────────────────────────────────────────────────────
-echo "[runpod] Root:    ${ROOT}"
-echo "[runpod] Dataset: ${DATASET}  Methods: ${METHODS}"
-echo "[runpod] GPUs:    ${NUM_GPUS}  Chunks/method: ${NUM_CHUNKS}"
-echo "[runpod] Output:  ${OUTPUT_ROOT}"
-echo "[runpod] Python:  $(which python)"
+echo "[runpod] Root:     ${ROOT}"
+echo "[runpod] Datasets: ${DATASETS}"
+echo "[runpod] Methods:  ${METHODS}"
+echo "[runpod] GPUs:     ${NUM_GPUS}  Chunks/combo: ${NUM_CHUNKS}"
+echo "[runpod] Python:   $(which python)"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
-if [[ "${NUM_CHUNKS}" -lt "${NUM_GPUS}" ]]; then
-  echo "[warn] NUM_CHUNKS (${NUM_CHUNKS}) < NUM_GPUS (${NUM_GPUS}) — some GPUs will be idle"
-fi
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-# ── launch chunks ─────────────────────────────────────────────────────────────
-LOG_DIR="${OUTPUT_ROOT}/logs"
-mkdir -p "${LOG_DIR}"
+# Run all chunks for one (dataset, method) combo, batching NUM_GPUS at a time.
+run_combo() {
+  local dataset=$1 method=$2
+  local output_root="${OUTPUT_BASE}/${dataset}/full_eval/run2"
+  local log_dir="${output_root}/${method}/logs"
+  mkdir -p "${log_dir}"
 
-PIDS=()
-GPU_IDX=0
+  echo ""
+  echo "────────────────────────────────────────────────────────────"
+  echo "[runpod] dataset=${dataset}  method=${method}  chunks=${NUM_CHUNKS}  gpus=${NUM_GPUS}"
+  echo "         output: ${output_root}/${method}"
+  echo "────────────────────────────────────────────────────────────"
 
-for METHOD in ${METHODS}; do
-  for (( CHUNK=0; CHUNK<NUM_CHUNKS; CHUNK++ )); do
-    GPU=$(( GPU_IDX % NUM_GPUS ))
-    OUTPUT_PATH="${OUTPUT_ROOT}/${METHOD}/chunk_$(printf '%03d' "${CHUNK}").json"
-    LOG_PATH="${LOG_DIR}/chunk_$(printf '%03d' "${CHUNK}")_${METHOD}.log"
-    mkdir -p "$(dirname "${OUTPUT_PATH}")"
+  local chunk batch_pids=() gpu fail=0 batch_start=0
 
-    CMD=(
+  for (( chunk=0; chunk<NUM_CHUNKS; chunk++ )); do
+    gpu=$(( (chunk - batch_start) % NUM_GPUS ))
+    local output_path="${output_root}/${method}/chunk_$(printf '%03d' "${chunk}").json"
+    local log_path="${log_dir}/chunk_$(printf '%03d' "${chunk}").log"
+    mkdir -p "$(dirname "${output_path}")"
+
+    local cmd=(
       python streaming/StreamingTom/scripts/eval/run_eval.py
-      --dataset "${DATASET}"
+      --dataset "${dataset}"
       --hf-repo-id Becomebright/RVS
       --allow-hf-video-download
       --model "${MODEL}"
-      --method "${METHOD}"
+      --method "${method}"
       --sample-fps "${SAMPLE_FPS}"
       --max-new-tokens "${MAX_NEW_TOKENS}"
       --video-decode-threads 1
       --num-chunks "${NUM_CHUNKS}"
-      --chunk-index "${CHUNK}"
-      --output-path "${OUTPUT_PATH}"
+      --chunk-index "${chunk}"
+      --output-path "${output_path}"
       --streamingtom-root "${STREAMINGTOM_ROOT}"
     )
-
-    if [[ "${RESUME}" == "1" ]]; then
-      CMD+=(--resume)
-    fi
-
-    if [[ "${METHOD}" == "duo_plus_streamingtom" ]]; then
-      CMD+=(
+    [[ "${RESUME}" == "1" ]] && cmd+=(--resume)
+    if [[ "${method}" == "duo_plus_streamingtom" ]]; then
+      cmd+=(
         --duo-attn-dir "${DUO_ATTN_DIR}"
         --duo-heads-file "${DUO_HEADS_FILE}"
         --duo-threshold "${DUO_THRESHOLD}"
@@ -116,16 +135,51 @@ for METHOD in ${METHODS}; do
       )
     fi
 
-    echo "[runpod] GPU${GPU} chunk=${CHUNK}/${NUM_CHUNKS} method=${METHOD} → ${LOG_PATH}"
-
+    echo "[runpod] GPU${gpu} chunk=${chunk}/${NUM_CHUNKS} → ${log_path}"
     if [[ "${DRY_RUN}" == "1" ]]; then
-      echo "  DRY_RUN: CUDA_VISIBLE_DEVICES=${GPU} ${CMD[*]}"
+      echo "  DRY_RUN: ${cmd[*]}"
     else
-      CUDA_VISIBLE_DEVICES="${GPU}" "${CMD[@]}" > "${LOG_PATH}" 2>&1 &
-      PIDS+=($!)
+      "${cmd[@]}" > "${log_path}" 2>&1 &
+      batch_pids+=($!)
     fi
 
-    GPU_IDX=$(( GPU_IDX + 1 ))
+    # When we've filled all GPUs (or reached the last chunk), wait for this batch
+    local next=$(( chunk + 1 ))
+    if (( next % NUM_GPUS == 0 )) || (( next == NUM_CHUNKS )); then
+      if [[ "${DRY_RUN}" != "1" ]]; then
+        for pid in "${batch_pids[@]}"; do
+          if wait "${pid}"; then
+            echo "[runpod] PID ${pid} done OK"
+          else
+            echo "[runpod] PID ${pid} FAILED" >&2
+            fail=$(( fail + 1 ))
+          fi
+        done
+        batch_pids=()
+        batch_start=$(( chunk + 1 ))
+      fi
+    fi
+  done
+
+  if [[ "${DRY_RUN}" != "1" && "${fail}" -gt 0 ]]; then
+    echo "[runpod] ${fail} chunk(s) FAILED for ${dataset}/${method}" >&2
+    return 1
+  fi
+
+  if [[ "${DRY_RUN}" != "1" ]]; then
+    echo "[runpod] Merging chunks for ${dataset}/${method}..."
+    python streaming/StreamingTom/scripts/eval/merge_chunks.py \
+      --run-root "${output_root}" \
+      --methods "${method}"
+    echo "[runpod] Merged: ${output_root}/merged/${method}.json"
+  fi
+}
+
+# ── main loop: dataset × method ───────────────────────────────────────────────
+TOTAL_FAIL=0
+for dataset in ${DATASETS}; do
+  for method in ${METHODS}; do
+    run_combo "${dataset}" "${method}" || TOTAL_FAIL=$(( TOTAL_FAIL + 1 ))
   done
 done
 
@@ -134,34 +188,11 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   exit 0
 fi
 
-# ── wait for all chunks ───────────────────────────────────────────────────────
 echo ""
-echo "[runpod] Launched ${#PIDS[@]} background workers. Waiting..."
-FAIL=0
-for PID in "${PIDS[@]}"; do
-  if wait "${PID}"; then
-    echo "[runpod] PID ${PID} done OK"
-  else
-    echo "[runpod] PID ${PID} FAILED (rc=$?)" >&2
-    FAIL=$(( FAIL + 1 ))
-  fi
-done
-
-echo ""
-if [[ "${FAIL}" -gt 0 ]]; then
-  echo "[runpod] ${FAIL} chunk(s) FAILED — check logs under ${LOG_DIR}" >&2
+echo "============================================================"
+if [[ "${TOTAL_FAIL}" -gt 0 ]]; then
+  echo "[runpod] DONE with ${TOTAL_FAIL} combo(s) FAILED" >&2
   exit 1
 fi
-echo "[runpod] All chunks complete."
-
-# ── merge chunks ──────────────────────────────────────────────────────────────
-echo ""
-echo "[runpod] Merging chunks..."
-python streaming/StreamingTom/scripts/eval/merge_chunks.py \
-  --run-root "${OUTPUT_ROOT}" \
-  --methods ${METHODS}
-
-echo "[runpod] Done. Results under: ${OUTPUT_ROOT}"
-echo "  Merged JSONs:  ${OUTPUT_ROOT}/merged/"
-echo "  Comparison:    ${OUTPUT_ROOT}/comparison/"
-echo "  Plots:         ${OUTPUT_ROOT}/plots/"
+echo "[runpod] ALL COMBOS COMPLETE"
+echo "  Results under: ${OUTPUT_BASE}/<dataset>/full_eval/run2/"

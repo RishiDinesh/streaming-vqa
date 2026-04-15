@@ -15,13 +15,13 @@
 
 set -euo pipefail
 
-ROOT=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+ROOT=/root/streaming-vqa
 LOG_DIR="${ROOT}/logs"
 mkdir -p "${LOG_DIR}"
 
 CONDA_INIT_SCRIPT=""
 for _candidate in \
-  "/u/navdeep/miniconda3/etc/profile.d/conda.sh" \
+  "/root/miniconda3/etc/profile.d/conda.sh" \
   "${HOME}/miniconda3/etc/profile.d/conda.sh" \
   "/root/miniconda3/etc/profile.d/conda.sh"; do
   if [[ -f "${_candidate}" ]]; then
@@ -41,9 +41,9 @@ echo "[setup] nvidia-smi:"; nvidia-smi --query-gpu=name,driver_version,memory.to
 DUO_ST_ENV="${ROOT}/envs/duo-st"
 
 # Remove any stale partial install in home dir (use rm -rf to avoid conda writing to quota-exceeded home)
-if [[ -d "/u/navdeep/miniconda3/envs/duo" ]]; then
-  echo "[setup] Removing stale partial env at /u/navdeep/miniconda3/envs/duo"
-  rm -rf /u/navdeep/miniconda3/envs/duo
+if [[ -d "/root/miniconda3/envs/duo" ]]; then
+  echo "[setup] Removing stale partial env at /root/miniconda3/envs/duo"
+  rm -rf /root/miniconda3/envs/duo
   echo "[setup] Done removing stale env"
 fi
 
