@@ -1,3 +1,0 @@
-dataset,slice_name,method,display_label,primary_quality_metric,primary_quality_score,avg_answer_latency_sec,avg_frame_ingest_latency_sec,avg_ttft_sec,peak_memory_bytes,peak_cpu_offload_bytes,total_frames_ingested,total_conversations_answered,source_path
-rvs_ego,offset0,streamingtom,streamingtom,avg_rouge_l_f1,0.19857231755961582,0.8918900946905334,0.15207900470273447,,2417567232,,17178,1465,/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/merged/streamingtom.json
-rvs_ego,offset0,duo_plus_streamingtom,duo_plus_streamingtom,avg_rouge_l_f1,0.03941955747722483,2.2252866932842563,0.14805245794825075,,2463470080,,17178,1465,/root/streaming-vqa/outputs/evaluations_streaming/rvs-ega-streamingtom/merged/duo_plus_streamingtom.json

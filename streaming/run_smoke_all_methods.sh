@@ -16,8 +16,8 @@
 #SBATCH --ntasks=1
 #SBATCH --partition=gpunodes
 #SBATCH --gres=gpu:rtx_a6000:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
 #SBATCH --time=02:00:00
 #SBATCH --output=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/logs/smoke_all_%j.log
 #SBATCH --error=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/logs/smoke_all_%j.err

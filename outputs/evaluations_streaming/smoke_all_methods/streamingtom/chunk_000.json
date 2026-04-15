@@ -87,7 +87,7 @@
         "device_type": "cuda",
         "device": "cuda:0",
         "accelerator_backend": "cuda",
-        "device_name": "NVIDIA RTX A6000",
+        "device_name": "NVIDIA RTX A2000 12GB",
         "torch_dtype": "bfloat16",
         "cuda_version": "12.4",
         "flash_attn_available": true,
@@ -126,8 +126,8 @@
   },
   "run_state": {
     "status": "completed",
-    "started_at_utc": "2026-04-15T02:16:32.814370+00:00",
-    "updated_at_utc": "2026-04-15T02:17:41.704327+00:00",
+    "started_at_utc": "2026-04-15T05:38:16.770715+00:00",
+    "updated_at_utc": "2026-04-15T05:39:44.265173+00:00",
     "completed_videos": 1,
     "total_requested_videos": 1,
     "completed_sample_ids": [
@@ -136,10 +136,10 @@
     "in_progress_sample_id": null
   },
   "aggregate_metrics": {
-    "avg_ttft_sec": null,
-    "avg_answer_latency_sec": 0.2533548549981788,
-    "avg_frame_ingest_latency_sec": 0.07625540704854444,
-    "avg_retrieval_latency_sec": null,
+    "avg_ttft_sec": 0.03284576034545898,
+    "avg_answer_latency_sec": 0.5525090449955314,
+    "avg_frame_ingest_latency_sec": 0.16082807950054612,
+    "avg_retrieval_latency_sec": 0.2770249819732271,
     "avg_retrieved_block_count": 250.0,
     "avg_gpu_memory_bytes_current": 1829963776.0,
     "peak_memory_bytes": 1965991936,
@@ -4108,13 +4108,13 @@
           "extra_metadata": {},
           "method_stats": {
             "method_name": "streamingtom",
-            "ttft_sec": null,
-            "answer_latency_sec": 0.2533548549981788,
+            "ttft_sec": 0.03284576034545898,
+            "answer_latency_sec": 0.5525090449955314,
             "current_memory_bytes": 1829963776,
             "peak_memory_bytes": 1965991936,
             "cpu_offload_bytes_current": null,
             "cpu_offload_bytes_peak": null,
-            "retrieval_latency_sec": null,
+            "retrieval_latency_sec": 0.2770249819732271,
             "avg_retrieved_block_count": 250.0,
             "frames_ingested_so_far": 150,
             "generated_token_count": 10,
@@ -4133,8 +4133,8 @@
       "runtime_stats": {
         "method_name": "streamingtom",
         "frames_ingested": 150,
-        "avg_frame_ingest_latency_sec": 0.07625540704854454,
-        "cumulative_frame_ingest_latency_sec": 11.43831105728168,
+        "avg_frame_ingest_latency_sec": 0.16082807950054606,
+        "cumulative_frame_ingest_latency_sec": 24.12421192508191,
         "last_ingested_timestamp_sec": 298.0
       },
       "checkpoint_state": {

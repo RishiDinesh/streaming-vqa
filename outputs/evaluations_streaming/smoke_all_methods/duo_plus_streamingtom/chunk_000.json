@@ -87,7 +87,7 @@
         "device_type": "cuda",
         "device": "cuda:0",
         "accelerator_backend": "cuda",
-        "device_name": "NVIDIA RTX A6000",
+        "device_name": "NVIDIA RTX A2000 12GB",
         "torch_dtype": "bfloat16",
         "cuda_version": "12.4",
         "flash_attn_available": true,
@@ -132,8 +132,8 @@
   },
   "run_state": {
     "status": "completed",
-    "started_at_utc": "2026-04-15T02:17:51.733391+00:00",
-    "updated_at_utc": "2026-04-15T02:18:56.355610+00:00",
+    "started_at_utc": "2026-04-15T05:39:57.334443+00:00",
+    "updated_at_utc": "2026-04-15T05:41:27.472481+00:00",
     "completed_videos": 1,
     "total_requested_videos": 1,
     "completed_sample_ids": [
@@ -142,10 +142,10 @@
     "in_progress_sample_id": null
   },
   "aggregate_metrics": {
-    "avg_ttft_sec": null,
-    "avg_answer_latency_sec": 0.4430041699670255,
-    "avg_frame_ingest_latency_sec": 0.08048449230846033,
-    "avg_retrieval_latency_sec": null,
+    "avg_ttft_sec": 0.05057689666748047,
+    "avg_answer_latency_sec": 1.0026775570004247,
+    "avg_frame_ingest_latency_sec": 0.17386839141215554,
+    "avg_retrieval_latency_sec": 0.2572621359722689,
     "avg_retrieved_block_count": 250.0,
     "avg_gpu_memory_bytes_current": 1829988352.0,
     "peak_memory_bytes": 1987679744,
@@ -4114,13 +4114,13 @@
           "extra_metadata": {},
           "method_stats": {
             "method_name": "duo_plus_streamingtom",
-            "ttft_sec": null,
-            "answer_latency_sec": 0.4430041699670255,
+            "ttft_sec": 0.05057689666748047,
+            "answer_latency_sec": 1.0026775570004247,
             "current_memory_bytes": 1829988352,
             "peak_memory_bytes": 1987679744,
             "cpu_offload_bytes_current": null,
             "cpu_offload_bytes_peak": null,
-            "retrieval_latency_sec": null,
+            "retrieval_latency_sec": 0.2572621359722689,
             "avg_retrieved_block_count": 250.0,
             "frames_ingested_so_far": 150,
             "generated_token_count": 16,
@@ -4142,8 +4142,8 @@
       "runtime_stats": {
         "method_name": "duo_plus_streamingtom",
         "frames_ingested": 150,
-        "avg_frame_ingest_latency_sec": 0.08048449230846018,
-        "cumulative_frame_ingest_latency_sec": 12.072673846269026,
+        "avg_frame_ingest_latency_sec": 0.17386839141215507,
+        "cumulative_frame_ingest_latency_sec": 26.080258711823262,
         "last_ingested_timestamp_sec": 298.0
       },
       "checkpoint_state": {

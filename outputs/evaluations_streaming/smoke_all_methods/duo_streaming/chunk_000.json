@@ -87,7 +87,7 @@
         "device_type": "cuda",
         "device": "cuda:0",
         "accelerator_backend": "cuda",
-        "device_name": "NVIDIA RTX A6000",
+        "device_name": "NVIDIA RTX A2000 12GB",
         "torch_dtype": "bfloat16",
         "cuda_version": "12.4",
         "flash_attn_available": true,
@@ -137,8 +137,8 @@
   },
   "run_state": {
     "status": "completed",
-    "started_at_utc": "2026-04-15T02:12:55.909672+00:00",
-    "updated_at_utc": "2026-04-15T02:13:56.845392+00:00",
+    "started_at_utc": "2026-04-15T05:26:52.739657+00:00",
+    "updated_at_utc": "2026-04-15T05:28:06.352775+00:00",
     "completed_videos": 1,
     "total_requested_videos": 1,
     "completed_sample_ids": [
@@ -147,13 +147,13 @@
     "in_progress_sample_id": null
   },
   "aggregate_metrics": {
-    "avg_ttft_sec": 0.01299019402358681,
-    "avg_answer_latency_sec": 0.17782005504705012,
-    "avg_frame_ingest_latency_sec": 0.0115411971020512,
+    "avg_ttft_sec": 0.0497727959882468,
+    "avg_answer_latency_sec": 0.31772230099886656,
+    "avg_frame_ingest_latency_sec": 0.026561086214302778,
     "avg_retrieval_latency_sec": null,
     "avg_retrieved_block_count": null,
     "avg_gpu_memory_bytes_current": 1912481792.0,
-    "peak_memory_bytes": 2115642880,
+    "peak_memory_bytes": 2115610112,
     "avg_cpu_offload_bytes_current": null,
     "peak_cpu_offload_bytes": null,
     "total_frames_ingested": 150,
@@ -161,15 +161,18 @@
     "evaluation_mode": "open_ended_bundle",
     "avg_contains_reference": 0.0,
     "avg_normalized_exact_match": 0.0,
-    "avg_rouge_l_f1": 0.125,
-    "avg_rouge_l_precision": 0.07142857142857142,
+    "avg_rouge_l_f1": 0.1818181818181818,
+    "avg_rouge_l_precision": 0.1111111111111111,
     "avg_rouge_l_recall": 0.5,
-    "avg_token_f1": 0.25,
-    "avg_token_precision": 0.14285714285714285,
+    "avg_token_f1": 0.3636363636363636,
+    "avg_token_precision": 0.2222222222222222,
     "avg_token_recall": 1.0,
     "primary_quality_metric": "avg_rouge_l_f1",
-    "primary_quality_score": 0.125,
-    "normalized_exact_match": 0.0
+    "primary_quality_score": 0.1818181818181818,
+    "normalized_exact_match": 0.0,
+    "avg_judge_score": null,
+    "avg_judge_parse_success": null,
+    "total_videos": 1
   },
   "videos": [
     {
@@ -3792,17 +3795,19 @@
         {
           "question": "What task is being performed with vegetables?",
           "reference_answer": "Chopping vegetables.",
-          "prediction": "The task being performed with vegetables is chopping and mixing them in a bowl.",
+          "prediction": "The task being performed with vegetables is chopping them.",
           "normalized_exact_match": 0.0,
           "scores": {
             "normalized_exact_match": 0.0,
             "contains_reference": 0.0,
-            "token_precision": 0.14285714285714285,
+            "token_precision": 0.2222222222222222,
             "token_recall": 1.0,
-            "token_f1": 0.25,
-            "rouge_l_precision": 0.07142857142857142,
+            "token_f1": 0.3636363636363636,
+            "rouge_l_precision": 0.1111111111111111,
             "rouge_l_recall": 0.5,
-            "rouge_l_f1": 0.125
+            "rouge_l_f1": 0.1818181818181818,
+            "judge_score": null,
+            "judge_parse_success": null
           },
           "start_time": 0.0,
           "end_time": 300.0,
@@ -4142,9 +4147,9 @@
               "rekv_dot_backend_actual": null,
               "result_interpretation_category": "nvidia_sparse_duo_equivalent"
             },
-            "ttft_sec": 0.01299019402358681,
-            "answer_latency_sec": 0.17782005504705012,
-            "generated_token_count": 16,
+            "ttft_sec": 0.0497727959882468,
+            "answer_latency_sec": 0.31772230099886656,
+            "generated_token_count": 11,
             "prompt_token_count": 13,
             "prompt_prefill_mode": "inputs_embeds",
             "first_generated_token_id": 785,
@@ -4155,17 +4160,21 @@
             "stopped_on_token_id": 151645,
             "stop_reason": "stop_token",
             "current_memory_bytes": 1912481792,
-            "peak_memory_bytes": 2115642880,
-            "frames_ingested_so_far": 150
+            "peak_memory_bytes": 2115610112,
+            "frames_ingested_so_far": 150,
+            "retrieval_latency_sec": null,
+            "avg_retrieved_block_count": null,
+            "cpu_offload_bytes_current": null,
+            "cpu_offload_bytes_peak": null
           }
         }
       ],
       "runtime_stats": {
         "method_name": "duo_streaming",
         "frames_ingested": 150,
-        "avg_frame_ingest_latency_sec": 0.011541197102051228,
+        "avg_frame_ingest_latency_sec": 0.02656108621430273,
         "last_ingested_timestamp_sec": 298.0,
-        "cumulative_frame_ingest_latency_sec": 1.7311795653076842
+        "cumulative_frame_ingest_latency_sec": 3.9841629321454093
       },
       "checkpoint_state": {
         "completed_conversations": 1,
@@ -4175,5 +4184,6 @@
       }
     }
   ],
-  "in_progress_video": null
+  "in_progress_video": null,
+  "judge_config": null
 }

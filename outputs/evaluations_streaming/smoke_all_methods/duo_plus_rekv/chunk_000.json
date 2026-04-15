@@ -87,7 +87,7 @@
         "device_type": "cuda",
         "device": "cuda:0",
         "accelerator_backend": "cuda",
-        "device_name": "NVIDIA RTX A6000",
+        "device_name": "NVIDIA RTX A2000 12GB",
         "torch_dtype": "bfloat16",
         "cuda_version": "12.4",
         "flash_attn_available": true,
@@ -149,8 +149,8 @@
   },
   "run_state": {
     "status": "completed",
-    "started_at_utc": "2026-04-15T02:15:14.819595+00:00",
-    "updated_at_utc": "2026-04-15T02:16:19.621335+00:00",
+    "started_at_utc": "2026-04-15T05:30:00.354412+00:00",
+    "updated_at_utc": "2026-04-15T05:31:39.539471+00:00",
     "completed_videos": 1,
     "total_requested_videos": 1,
     "completed_sample_ids": [
@@ -159,10 +159,10 @@
     "in_progress_sample_id": null
   },
   "aggregate_metrics": {
-    "avg_ttft_sec": 0.0016075270250439644,
-    "avg_answer_latency_sec": 0.3747230409644544,
-    "avg_frame_ingest_latency_sec": 0.04202169247592476,
-    "avg_retrieval_latency_sec": 0.14400178601499647,
+    "avg_ttft_sec": 0.002128430991433561,
+    "avg_answer_latency_sec": 0.8305938150151633,
+    "avg_frame_ingest_latency_sec": 0.12547929614006242,
+    "avg_retrieval_latency_sec": 0.3215765079949051,
     "avg_retrieved_block_count": 64.0,
     "avg_gpu_memory_bytes_current": 2857069056.0,
     "peak_memory_bytes": 3287720448,
@@ -181,7 +181,10 @@
     "avg_token_recall": 0.5,
     "primary_quality_metric": "avg_rouge_l_f1",
     "primary_quality_score": 0.14285714285714285,
-    "normalized_exact_match": 0.0
+    "normalized_exact_match": 0.0,
+    "avg_judge_score": null,
+    "avg_judge_parse_success": null,
+    "total_videos": 1
   },
   "videos": [
     {
@@ -3814,7 +3817,9 @@
             "token_f1": 0.14285714285714285,
             "rouge_l_precision": 0.08333333333333333,
             "rouge_l_recall": 0.5,
-            "rouge_l_f1": 0.14285714285714285
+            "rouge_l_f1": 0.14285714285714285,
+            "judge_score": null,
+            "judge_parse_success": null
           },
           "start_time": 0.0,
           "end_time": 300.0,
@@ -4167,7 +4172,7 @@
               "rekv_dot_backend_actual": "torch",
               "result_interpretation_category": "nvidia_sparse_duo_equivalent"
             },
-            "retrieval_latency_sec": 0.14400178601499647,
+            "retrieval_latency_sec": 0.3215765079949051,
             "retrieval_query_mode": "full_prompt_prefill",
             "per_layer_retrieved_block_counts": [
               64,
@@ -4358,7 +4363,6 @@
               49,
               50,
               51,
-              52,
               53,
               55,
               56,
@@ -4495,7 +4499,6 @@
               49,
               50,
               51,
-              52,
               53,
               55,
               56,
@@ -4632,7 +4635,6 @@
               98.0,
               100.0,
               102.0,
-              104.0,
               106.0,
               110.0,
               112.0,
@@ -4717,8 +4719,8 @@
               292.0,
               294.0
             ],
-            "ttft_sec": 0.0016075270250439644,
-            "answer_latency_sec": 0.3747230409644544,
+            "ttft_sec": 0.002128430991433561,
+            "answer_latency_sec": 0.8305938150151633,
             "generated_token_count": 14,
             "prompt_token_count": 13,
             "prompt_prefill_mode": "retrieval_prefill",
@@ -4738,11 +4740,11 @@
       "runtime_stats": {
         "method_name": "duo_plus_rekv",
         "frames_ingested": 150,
-        "avg_frame_ingest_latency_sec": 0.04202169247592489,
+        "avg_frame_ingest_latency_sec": 0.1254792961400623,
         "last_ingested_timestamp_sec": 298.0,
         "cpu_offload_bytes_current": 356450304,
         "cpu_offload_bytes_peak": 356450304,
-        "cumulative_frame_ingest_latency_sec": 6.303253871388733
+        "cumulative_frame_ingest_latency_sec": 18.821894421009347
       },
       "checkpoint_state": {
         "completed_conversations": 1,
@@ -4752,5 +4754,6 @@
       }
     }
   ],
-  "in_progress_video": null
+  "in_progress_video": null,
+  "judge_config": null
 }

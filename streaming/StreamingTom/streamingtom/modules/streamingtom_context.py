@@ -37,8 +37,8 @@ class StreamingTOMContext:
         self.selected_vision_group_indices_per_layer.clear()
         self.should_store_keys = False
         self.question_kv_per_layer.clear()
-        self.last_ttft_sec = None
-        self.last_retrieval_latency_sec = None
+        # Note: last_ttft_sec and last_retrieval_latency_sec are intentionally
+        # NOT cleared here — they are read by run_eval.py after the query returns.
 
     def inject_to_model(self, model):
         layers = None

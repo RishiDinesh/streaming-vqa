@@ -87,7 +87,7 @@
         "device_type": "cuda",
         "device": "cuda:0",
         "accelerator_backend": "cuda",
-        "device_name": "NVIDIA RTX A6000",
+        "device_name": "NVIDIA RTX A2000 12GB",
         "torch_dtype": "bfloat16",
         "cuda_version": "12.4",
         "flash_attn_available": true,
@@ -126,8 +126,8 @@
   },
   "run_state": {
     "status": "completed",
-    "started_at_utc": "2026-04-15T02:11:50.034618+00:00",
-    "updated_at_utc": "2026-04-15T02:12:50.815108+00:00",
+    "started_at_utc": "2026-04-15T05:25:11.738965+00:00",
+    "updated_at_utc": "2026-04-15T05:26:44.329289+00:00",
     "completed_videos": 1,
     "total_requested_videos": 1,
     "completed_sample_ids": [
@@ -136,13 +136,13 @@
     "in_progress_sample_id": null
   },
   "aggregate_metrics": {
-    "avg_ttft_sec": 0.021234584972262383,
-    "avg_answer_latency_sec": 0.19374885293655097,
-    "avg_frame_ingest_latency_sec": 0.01917447322669123,
+    "avg_ttft_sec": 0.13491364795481786,
+    "avg_answer_latency_sec": 0.7331814619828947,
+    "avg_frame_ingest_latency_sec": 0.06979002888120417,
     "avg_retrieval_latency_sec": null,
     "avg_retrieved_block_count": null,
     "avg_gpu_memory_bytes_current": 2177008128.0,
-    "peak_memory_bytes": 3013655552,
+    "peak_memory_bytes": 3013640704,
     "avg_cpu_offload_bytes_current": null,
     "peak_cpu_offload_bytes": null,
     "total_frames_ingested": 150,
@@ -158,7 +158,10 @@
     "avg_token_recall": 0.5,
     "primary_quality_metric": "avg_rouge_l_f1",
     "primary_quality_score": 0.2,
-    "normalized_exact_match": 0.0
+    "normalized_exact_match": 0.0,
+    "avg_judge_score": null,
+    "avg_judge_parse_success": null,
+    "total_videos": 1
   },
   "videos": [
     {
@@ -3791,7 +3794,9 @@
             "token_f1": 0.2,
             "rouge_l_precision": 0.125,
             "rouge_l_recall": 0.5,
-            "rouge_l_f1": 0.2
+            "rouge_l_f1": 0.2,
+            "judge_score": null,
+            "judge_parse_success": null
           },
           "start_time": 0.0,
           "end_time": 300.0,
@@ -4103,8 +4108,8 @@
           "extra_metadata": {},
           "method_stats": {
             "method_name": "full_streaming",
-            "ttft_sec": 0.021234584972262383,
-            "answer_latency_sec": 0.19374885293655097,
+            "ttft_sec": 0.13491364795481786,
+            "answer_latency_sec": 0.7331814619828947,
             "generated_token_count": 10,
             "prompt_token_count": 13,
             "prompt_prefill_mode": "inputs_embeds",
@@ -4116,17 +4121,21 @@
             "stopped_on_token_id": 151645,
             "stop_reason": "stop_token",
             "current_memory_bytes": 2177008128,
-            "peak_memory_bytes": 3013655552,
-            "frames_ingested_so_far": 150
+            "peak_memory_bytes": 3013640704,
+            "frames_ingested_so_far": 150,
+            "retrieval_latency_sec": null,
+            "avg_retrieved_block_count": null,
+            "cpu_offload_bytes_current": null,
+            "cpu_offload_bytes_peak": null
           }
         }
       ],
       "runtime_stats": {
         "method_name": "full_streaming",
         "frames_ingested": 150,
-        "avg_frame_ingest_latency_sec": 0.019174473226691285,
+        "avg_frame_ingest_latency_sec": 0.069790028881204,
         "last_ingested_timestamp_sec": 298.0,
-        "cumulative_frame_ingest_latency_sec": 2.876170984003693
+        "cumulative_frame_ingest_latency_sec": 10.4685043321806
       },
       "checkpoint_state": {
         "completed_conversations": 1,
@@ -4136,5 +4145,6 @@
       }
     }
   ],
-  "in_progress_video": null
+  "in_progress_video": null,
+  "judge_config": null
 }
