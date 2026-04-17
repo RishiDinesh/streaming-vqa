@@ -1,0 +1,113 @@
+baseline | target=4000 | actual=4131 | frames=21
+  prefill_latency_ms=253.715185546875
+  prefill_memory_mb=5476.73681640625
+  generation_latency_ms=13.014271240234375
+  generation_memory_mb=4296.6787109375
+  prefix_seconds=373.47 oom=False
+
+baseline | target=8000 | actual=8051 | frames=41
+  prefill_latency_ms=670.783154296875
+  prefill_memory_mb=10828.83349609375
+  generation_latency_ms=12.9918359375
+  generation_memory_mb=6691.31640625
+  prefix_seconds=746.91 oom=False
+
+baseline | target=12000 | actual=12167 | frames=62
+  prefill_latency_ms=1356.8162109375
+  prefill_memory_mb=22252.0224609375
+  generation_latency_ms=13.031060791015625
+  generation_memory_mb=9218.212890625
+  prefix_seconds=1120.35 oom=False
+
+baseline | target=16000 | actual=16087 | frames=82
+  prefill_latency_ms=2152.619921875
+  prefill_memory_mb=37388.96728515625
+  generation_latency_ms=12.96036376953125
+  generation_memory_mb=11615.25244140625
+  prefix_seconds=1493.79 oom=False
+
+baseline | target=20000 | actual=20007 | frames=102
+  prefill_latency_ms=3126.879296875
+  prefill_memory_mb=56694.27197265625
+  generation_latency_ms=13.048912353515625
+  generation_memory_mb=14017.056640625
+  prefix_seconds=1867.23 oom=False
+
+baseline | target=24000 | actual=24123 | frames=123
+  prefill_latency_ms=4170.0
+  prefill_memory_mb=81441.8095703125
+  generation_latency_ms=13.005408935546875
+  generation_memory_mb=16541.99267578125
+  prefix_seconds=2240.67 oom=False
+
+baseline | target=28000 | actual=28043 | frames=143
+  prefill_latency_ms=5462.812109375
+  prefill_memory_mb=109274.255859375
+  generation_latency_ms=12.998212890625
+  generation_memory_mb=18941.89599609375
+  prefix_seconds=2614.11 oom=False
+
+baseline | target=32000 | actual=32000 | frames=164
+  prefill_latency_ms=None
+  prefill_memory_mb=None
+  generation_latency_ms=None
+  generation_memory_mb=None
+  prefix_seconds=2987.55 oom=True
+  error=CUDA out of memory. Tried to allocate 53.41 GiB. GPU 0 has a total capacity of 139.81 GiB of which 52.14 GiB is free. Including non-PyTorch memory, this process has 87.66 GiB memory in use. Of the allocated memory 84.47 GiB is allocated by PyTorch, and 2.52 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+duo | target=4000 | actual=4131 | frames=21
+  prefill_latency_ms=128.2964111328125
+  prefill_memory_mb=4494.09228515625
+  generation_latency_ms=14.585765380859375
+  generation_memory_mb=1851.19677734375
+  prefix_seconds=373.47 oom=False
+
+duo | target=8000 | actual=8051 | frames=41
+  prefill_latency_ms=248.3436279296875
+  prefill_memory_mb=7097.447265625
+  generation_latency_ms=14.743248291015625
+  generation_memory_mb=1920.80126953125
+  prefix_seconds=746.91 oom=False
+
+duo | target=12000 | actual=12167 | frames=62
+  prefill_latency_ms=378.8691162109375
+  prefill_memory_mb=9835.978515625
+  generation_latency_ms=14.80855712890625
+  generation_memory_mb=1998.00634765625
+  prefix_seconds=1120.35 oom=False
+
+duo | target=16000 | actual=16087 | frames=82
+  prefill_latency_ms=507.32998046875
+  prefill_memory_mb=12441.0625
+  generation_latency_ms=14.7853466796875
+  generation_memory_mb=2063.67333984375
+  prefix_seconds=1493.79 oom=False
+
+duo | target=20000 | actual=20007 | frames=102
+  prefill_latency_ms=639.8705078125
+  prefill_memory_mb=15047.20947265625
+  generation_latency_ms=14.725767822265626
+  generation_memory_mb=2136.22119140625
+  prefix_seconds=1867.23 oom=False
+
+duo | target=24000 | actual=24123 | frames=123
+  prefill_latency_ms=783.0576171875
+  prefill_memory_mb=17784.69091796875
+  generation_latency_ms=14.746771240234375
+  generation_memory_mb=2208.580078125
+  prefix_seconds=2240.67 oom=False
+
+duo | target=28000 | actual=28043 | frames=143
+  prefill_latency_ms=923.14384765625
+  prefill_memory_mb=20390.638671875
+  generation_latency_ms=14.7991455078125
+  generation_memory_mb=2278.36572265625
+  prefix_seconds=2614.11 oom=False
+
+duo | target=32000 | actual=32000 | frames=164
+  prefill_latency_ms=1067.80927734375
+  prefill_memory_mb=23128.23095703125
+  generation_latency_ms=14.772996826171875
+  generation_memory_mb=2350.88134765625
+  prefix_seconds=2987.55 oom=False
+

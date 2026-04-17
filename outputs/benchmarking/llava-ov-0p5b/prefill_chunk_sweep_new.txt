@@ -1,0 +1,98 @@
+baseline | chunk=4000 | context=28037 | frames=143
+  prefill_total_ms=2731.398193359375
+  prefill_latency_ms_per_chunk=341.4247741699219
+  prefill_memory_mb=20054.69287109375
+  num_chunks=8 oom=False
+  effective_first_chunk_size=4000
+
+baseline | chunk=8000 | context=28037 | frames=143
+  prefill_total_ms=2894.988525390625
+  prefill_latency_ms_per_chunk=723.7471313476562
+  prefill_memory_mb=33037.01123046875
+  num_chunks=4 oom=False
+  effective_first_chunk_size=8000
+
+baseline | chunk=12000 | context=28037 | frames=143
+  prefill_total_ms=3094.947509765625
+  prefill_latency_ms_per_chunk=1031.649169921875
+  prefill_memory_mb=48336.69775390625
+  num_chunks=3 oom=False
+  effective_first_chunk_size=12000
+
+baseline | chunk=16000 | context=28037 | frames=143
+  prefill_total_ms=4367.69970703125
+  prefill_latency_ms_per_chunk=2183.849853515625
+  prefill_memory_mb=57463.55908203125
+  num_chunks=2 oom=False
+  effective_first_chunk_size=16000
+
+baseline | chunk=20000 | context=28037 | frames=143
+  prefill_total_ms=3770.28515625
+  prefill_latency_ms_per_chunk=1885.142578125
+  prefill_memory_mb=56384.1669921875
+  num_chunks=2 oom=False
+  effective_first_chunk_size=20000
+
+baseline | chunk=24000 | context=28037 | frames=143
+  prefill_total_ms=4893.54541015625
+  prefill_latency_ms_per_chunk=2446.772705078125
+  prefill_memory_mb=80300.33154296875
+  num_chunks=2 oom=False
+  effective_first_chunk_size=24000
+
+baseline | chunk=28000 | context=28037 | frames=143
+  prefill_total_ms=5519.544921875
+  prefill_latency_ms_per_chunk=2759.7724609375
+  prefill_memory_mb=108548.4892578125
+  num_chunks=2 oom=False
+  effective_first_chunk_size=28000
+
+duo | chunk=4000 | context=28037 | frames=143
+  prefill_total_ms=227.67913818359375
+  prefill_latency_ms_per_chunk=28.45989227294922
+  prefill_memory_mb=2259.10009765625
+  num_chunks=8 oom=False
+  effective_first_chunk_size=4000
+
+duo | chunk=8000 | context=28037 | frames=143
+  prefill_total_ms=175.67091369628906
+  prefill_latency_ms_per_chunk=43.917728424072266
+  prefill_memory_mb=2315.59912109375
+  num_chunks=4 oom=False
+  effective_first_chunk_size=8000
+
+duo | chunk=12000 | context=28037 | frames=143
+  prefill_total_ms=171.50064086914062
+  prefill_latency_ms_per_chunk=57.16688028971354
+  prefill_memory_mb=2428.3564453125
+  num_chunks=3 oom=False
+  effective_first_chunk_size=12000
+
+duo | chunk=16000 | context=28037 | frames=143
+  prefill_total_ms=169.49346923828125
+  prefill_latency_ms_per_chunk=84.74673461914062
+  prefill_memory_mb=2470.86328125
+  num_chunks=2 oom=False
+  effective_first_chunk_size=16000
+
+duo | chunk=20000 | context=28037 | frames=143
+  prefill_total_ms=175.75631713867188
+  prefill_latency_ms_per_chunk=87.87815856933594
+  prefill_memory_mb=2587.02490234375
+  num_chunks=2 oom=False
+  effective_first_chunk_size=20000
+
+duo | chunk=24000 | context=28037 | frames=143
+  prefill_total_ms=178.0392303466797
+  prefill_latency_ms_per_chunk=89.01961517333984
+  prefill_memory_mb=2740.96923828125
+  num_chunks=2 oom=False
+  effective_first_chunk_size=24000
+
+duo | chunk=28000 | context=28037 | frames=143
+  prefill_total_ms=188.39833068847656
+  prefill_latency_ms_per_chunk=94.19916534423828
+  prefill_memory_mb=2897.8671875
+  num_chunks=2 oom=False
+  effective_first_chunk_size=28000
+
