@@ -97,8 +97,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--attn_implementation",
         type=str,
-        default="sdpa",
-        choices=["eager", "sdpa", "flash_attention_2"],
+        default="default",
+        choices=["default", "eager", "sdpa", "flash_attention_2"],
+        help=(
+            "Attention backend for baseline mode. 'default' keeps the model's "
+            "stock attention selection; DuoAttention mode always forces eager."
+        ),
     )
     parser.add_argument(
         "--attention_mode",
@@ -218,6 +222,10 @@ def format_mb(num_bytes: float) -> str:
     return f"{mb:.2f} MB"
 
 
+def format_gb(num_bytes: float) -> str:
+    return f"{bytes_to_gb(num_bytes):.2f} GB"
+
+
 def synchronize_if_needed(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(get_cuda_device_index(device))
@@ -250,6 +258,20 @@ def get_gpu_label() -> str:
     if backend == "gpu":
         return "gpu_memory"
     return "gpu_memory"
+
+
+def get_device_name(device: torch.device) -> str:
+    if device.type == "cuda":
+        return torch.cuda.get_device_name(get_cuda_device_index(device))
+    return device.type
+
+
+def get_device_summary(device: torch.device) -> str:
+    if device.type != "cuda":
+        return get_device_name(device)
+    device_index = get_cuda_device_index(device)
+    total_bytes = float(torch.cuda.get_device_properties(device_index).total_memory)
+    return f"{get_device_name(device)} ({format_gb(total_bytes)} VRAM)"
 
 
 def snapshot_gpu_memory(device: torch.device) -> Dict[str, Optional[float]]:
@@ -708,10 +730,14 @@ def resolve_attention_mode(args: argparse.Namespace) -> str:
 
 
 def resolve_effective_attn_implementation(
+    attention_mode: str,
     requested_attn_implementation: str,
-) -> str:
-    _ = requested_attn_implementation
-    return "eager"
+) -> Optional[str]:
+    if attention_mode == "duo":
+        return "eager"
+    if requested_attn_implementation == "default":
+        return None
+    return requested_attn_implementation
 
 
 def configure_model_for_attention_mode(
@@ -761,6 +787,7 @@ def main() -> None:
     attention_mode = resolve_attention_mode(args)
     requested_attn_implementation = str(args.attn_implementation)
     effective_attn_implementation = resolve_effective_attn_implementation(
+        attention_mode,
         requested_attn_implementation
     )
 
@@ -777,14 +804,19 @@ def main() -> None:
     model_load_t0 = time.perf_counter()
     config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
     processor = AutoProcessor.from_pretrained(args.model_name, trust_remote_code=True)
+    model_load_kwargs: Dict[str, Any] = {
+        "config": config,
+        "torch_dtype": dtype,
+        "low_cpu_mem_usage": True,
+    }
+    if effective_attn_implementation is not None:
+        model_load_kwargs["attn_implementation"] = effective_attn_implementation
     model = LlavaOnevisionForConditionalGeneration.from_pretrained(
         args.model_name,
-        config=config,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=True,
-        attn_implementation=effective_attn_implementation,
+        **model_load_kwargs,
     )
     model.eval()
+    loaded_attn_implementation = getattr(model.config, "_attn_implementation", "unknown")
     attention_summary = configure_model_for_attention_mode(
         model=model,
         attention_mode=attention_mode,
@@ -840,6 +872,16 @@ def main() -> None:
     )
     banner_style = "bold green" if attention_summary["attention_mode"] == "duo" else "bold red"
     demo_console.print(Rule(Text(banner_text, style=banner_style), style=banner_style))
+    demo_console.print(
+        Text.assemble(
+            ("Attention mode/backend", "bold cyan"),
+            (
+                f": {attention_summary['attention_mode']} / "
+                f"{loaded_attn_implementation}",
+                "white",
+            ),
+        )
+    )
     print_stage_header(demo_console, "INPUT", "bold cyan")
     demo_console.print(
         Text.assemble(
@@ -851,6 +893,18 @@ def main() -> None:
         Text.assemble(
             ("Input sequence length", "bold cyan"),
             (f": {inputs_embeds.shape[1]}", "white"),
+        )
+    )
+    demo_console.print(
+        Text.assemble(
+            ("Using", "bold cyan"),
+            (f": {get_device_summary(device)}", "white"),
+        )
+    )
+    demo_console.print(
+        Text.assemble(
+            ("Model", "bold cyan"),
+            (f": {args.model_name}", "white"),
         )
     )
     demo_console.print()
@@ -1116,7 +1170,7 @@ def main() -> None:
         "gpu_backend": get_gpu_backend_name(),
         "gpu_label": get_gpu_label(),
         "dtype": str(dtype),
-        "attn_implementation": effective_attn_implementation,
+        "attn_implementation": loaded_attn_implementation,
         "requested_attention_mode": str(args.attention_mode),
         "attention_mode": attention_summary["attention_mode"],
         "attn_load_dir": attention_summary["attn_load_dir"],
@@ -1124,7 +1178,7 @@ def main() -> None:
         "sink_size": attention_summary["sink_size"],
         "recent_size": attention_summary["recent_size"],
         "requested_attn_implementation": requested_attn_implementation,
-        "effective_attn_implementation": effective_attn_implementation,
+        "effective_attn_implementation": loaded_attn_implementation,
         "model_type": config.model_type,
         "startup_memory": startup_memory,
         "post_model_load_memory": post_model_load_memory,

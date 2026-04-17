@@ -17,6 +17,7 @@ from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 
 from duo_attn.eval.efficiency.benchmark_dynamic_llava import move_batch_to_device
 from duo_attn.eval.efficiency.utils import bench_func
+from duo_attn.eval.validate.inference import build_llava_video_inputs_embeds
 from duo_attn.patch import enable_duo_attention_eval
 from duo_attn.utils import (
     load_attn_pattern,
@@ -46,8 +47,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Standalone LLaVA efficiency suite for context sweep, prefill chunk "
-            "sweep, and plot regeneration using the full-model multimodal "
-            "benchmark flow."
+            "sweep, and plot regeneration using language-model-only prefill "
+            "benchmarking after precomputing multimodal embeddings."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -57,7 +58,15 @@ def parse_args():
     context_parser.add_argument("--max_context", type=int, default=32000)
     context_parser.add_argument("--num_points", type=int, default=5)
     context_parser.add_argument("--target_contexts", type=int, nargs="+", default=None)
-    context_parser.add_argument("--decode_tokens", type=int, default=100)
+    context_parser.add_argument(
+        "--decode_tokens",
+        type=int,
+        default=100,
+        help=(
+            "Number of autoregressive decode steps to average over when "
+            "reporting per-token generation latency."
+        ),
+    )
 
     prefill_parser = subparsers.add_parser(
         "prefill", help="Run fixed-context prefill chunk sweep with full-model inputs."
@@ -127,6 +136,17 @@ def add_shared_args(parser):
     parser.add_argument("--sparsity", type=float, default=0.5)
     parser.add_argument("--sink_size", type=int, default=None)
     parser.add_argument("--recent_size", type=int, default=None)
+    parser.add_argument(
+        "--baseline_attn_impl",
+        "--baseline-attn-impl",
+        dest="baseline_attn_impl",
+        choices=("default", "eager"),
+        default="default",
+        help=(
+            "Attention implementation for baseline runs. 'default' keeps the "
+            "model's stock optimized attention path; 'eager' forces eager attention."
+        ),
+    )
     parser.add_argument("--skip_plot", action="store_true")
 
 
@@ -396,103 +416,52 @@ def run_full_model_prefill(
     )
 
 
-def infer_multimodal_prefix_context(
+def run_language_model_prefill(
     model,
-    prefill_kwargs: Dict[str, Any],
-) -> int:
-    input_ids = prefill_kwargs.get("input_ids", None)
-    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
-        return 0
-
-    max_end = 0
-    for attr_name in ("video_token_index", "image_token_index"):
-        token_idx = getattr(model.config, attr_name, None)
-        if token_idx is None:
-            continue
-        positions = torch.nonzero(input_ids == int(token_idx), as_tuple=False)
-        if positions.numel() == 0:
-            continue
-        max_end = max(max_end, int(positions[:, 1].max().item()) + 1)
-    return max_end
+    inputs_embeds: torch.Tensor,
+    past_key_values=None,
+):
+    return model.language_model(
+        inputs_embeds=inputs_embeds,
+        past_key_values=past_key_values,
+        use_cache=True,
+    )
 
 
-def slice_sequence_tensor(value: torch.Tensor, start: int, end: int) -> torch.Tensor:
-    if value.ndim == 0:
-        return value
-    if value.ndim == 1:
-        return value[start:end]
-    return value[:, start:end, ...]
-
-
-def slice_attention_mask_for_prefill(
-    attention_mask: torch.Tensor,
-    end: int,
-) -> torch.Tensor:
-    if attention_mask.ndim == 0:
-        return attention_mask
-    if attention_mask.ndim == 1:
-        return attention_mask[:end]
-    return attention_mask[..., :end]
-
-
-def build_prefill_chunk_kwargs(
-    prefill_kwargs: Dict[str, Any],
-    start: int,
-    end: int,
-    include_multimodal: bool,
-) -> Dict[str, Any]:
-    input_ids = prefill_kwargs.get("input_ids", None)
-    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
-        raise ValueError("Chunked prefill expects batched input_ids with shape [B, L].")
-
-    batch_size, seq_len = input_ids.shape
-    chunk_kwargs: Dict[str, Any] = {}
-    for key, value in prefill_kwargs.items():
-        if not torch.is_tensor(value):
-            if include_multimodal:
-                chunk_kwargs[key] = value
-            continue
-
-        if key == "attention_mask":
-            chunk_kwargs[key] = slice_attention_mask_for_prefill(value, end)
-            continue
-
-        if key in {"input_ids", "position_ids", "token_type_ids"}:
-            chunk_kwargs[key] = slice_sequence_tensor(value, start, end)
-            continue
-
-        if value.ndim >= 2 and value.shape[0] == batch_size and value.shape[1] == seq_len:
-            chunk_kwargs[key] = slice_sequence_tensor(value, start, end)
-            continue
-
-        if include_multimodal:
-            chunk_kwargs[key] = value
-
-    return chunk_kwargs
+def run_autoregressive_decode(
+    model,
+    past_key_values,
+    pred_token_idx: torch.Tensor,
+    decode_steps: int,
+):
+    current_past_key_values = past_key_values
+    current_token = pred_token_idx
+    for _ in range(max(1, int(decode_steps))):
+        outputs = model(
+            input_ids=current_token,
+            past_key_values=current_past_key_values,
+            use_cache=True,
+        )
+        current_past_key_values = outputs.past_key_values
+        current_token = outputs.logits[:, -1, :].argmax(dim=-1).unsqueeze(1)
 
 
 def build_prefill_chunk_plan(
-    model,
-    prefill_kwargs: Dict[str, Any],
+    seq_len: int,
     requested_chunk_size: int,
-) -> Tuple[List[Tuple[int, int, bool]], int, int]:
-    input_ids = prefill_kwargs.get("input_ids", None)
-    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
-        raise ValueError("Chunked prefill expects batched input_ids with shape [B, L].")
+) -> List[Tuple[int, int]]:
+    if seq_len <= 0:
+        raise ValueError("Chunked prefill expects a positive sequence length.")
 
-    seq_len = int(input_ids.shape[1])
     chunk_size = max(1, int(requested_chunk_size))
-    multimodal_prefix_len = infer_multimodal_prefix_context(model, prefill_kwargs)
-
-    first_chunk_end = min(seq_len, max(chunk_size, multimodal_prefix_len))
-    chunks: List[Tuple[int, int, bool]] = [(0, first_chunk_end, True)]
-    start = first_chunk_end
+    chunks: List[Tuple[int, int]] = []
+    start = 0
     while start < seq_len:
         end = min(seq_len, start + chunk_size)
-        chunks.append((start, end, False))
+        chunks.append((start, end))
         start = end
 
-    return chunks, first_chunk_end, multimodal_prefix_len
+    return chunks
 
 
 def get_context_targets(args) -> List[int]:
@@ -622,16 +591,26 @@ def configure_model_for_mode(
     sparsity: float,
     sink_size_override: Optional[int],
     recent_size_override: Optional[int],
+    baseline_attn_impl: str = "default",
 ):
     print(f"Loading {mode} model: {model_name}")
     model_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    load_kwargs: Dict[str, Any] = {
+        "torch_dtype": model_dtype,
+        "low_cpu_mem_usage": True,
+    }
+    if mode == "duo":
+        load_kwargs["attn_implementation"] = "eager"
+    elif baseline_attn_impl == "eager":
+        load_kwargs["attn_implementation"] = "eager"
+
     model = LlavaOnevisionForConditionalGeneration.from_pretrained(
         model_name,
-        torch_dtype=model_dtype,
-        low_cpu_mem_usage=True,
-        attn_implementation="eager",
+        **load_kwargs,
     )
     model.eval()
+    resolved_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
+    print(f"[{mode}] Loaded attention implementation: {resolved_attn_impl}")
 
     resolved_sparsity = 0.0
     if mode == "duo":
@@ -657,42 +636,63 @@ def configure_model_for_mode(
 
 def run_benchmark_with_decode_steps(
     model,
-    prefill_kwargs: Dict[str, Any],
+    inputs_embeds: torch.Tensor,
     decode_tokens: int,
 ) -> Dict[str, Any]:
-    print("\n--- Pre-filling benchmark ---")
+    print("\n--- Language-model pre-filling benchmark ---")
     torch.cuda.reset_peak_memory_stats()
 
     def prefill_func():
         with torch.no_grad():
-            _ = run_full_model_prefill(model, prefill_kwargs, past_key_values=None)
+            _ = run_language_model_prefill(
+                model,
+                inputs_embeds,
+                past_key_values=None,
+            )
 
     ctx_latency, ctx_memory = bench_func(prefill_func, num_steps=10, num_warmup_steps=3)
 
     torch.cuda.reset_peak_memory_stats()
     with torch.no_grad():
-        outputs = run_full_model_prefill(model, prefill_kwargs, past_key_values=None)
+        outputs = run_language_model_prefill(
+            model,
+            inputs_embeds,
+            past_key_values=None,
+        )
     prefill_peak_memory = torch.cuda.max_memory_allocated() / 1024 / 1024
-    print(f"Peak memory usage in the pre-filling stage: {prefill_peak_memory:.2f} MB")
+    print(
+        "Peak memory usage in the language-model pre-filling stage: "
+        f"{prefill_peak_memory:.2f} MB"
+    )
 
     past_key_values = outputs.past_key_values
     pred_token_idx = outputs.logits[:, -1, :].argmax(dim=-1).unsqueeze(1)
+    decode_steps = max(1, int(decode_tokens))
 
     print("\n--- Decoding benchmark ---")
+    torch.cuda.reset_peak_memory_stats()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    with torch.no_grad():
+        run_autoregressive_decode(
+            model=model,
+            past_key_values=past_key_values,
+            pred_token_idx=pred_token_idx,
+            decode_steps=decode_steps,
+        )
+    end.record()
+    torch.cuda.synchronize()
 
-    def decode_func():
-        with torch.no_grad():
-            _ = model(
-                input_ids=pred_token_idx,
-                past_key_values=past_key_values,
-                use_cache=True,
-            )
-
-    gen_latency, gen_memory = bench_func(
-        decode_func,
-        num_steps=max(1, int(decode_tokens)),
-        num_warmup_steps=min(10, max(1, int(decode_tokens))),
+    decode_total_ms = float(start.elapsed_time(end))
+    gen_latency = decode_total_ms / decode_steps
+    gen_memory = torch.cuda.max_memory_allocated() / 1024 / 1024
+    print(
+        f"Autoregressive decode time for {decode_steps} tokens: "
+        f"{decode_total_ms:.2f} ms"
     )
+    print(f"Per-token decoding latency: {gen_latency:.2f} ms")
+    print(f"Peak memory usage in the decoding stage: {gen_memory:.2f} MB")
 
     return {
         "ctx_latency": ctx_latency,
@@ -724,8 +724,13 @@ def benchmark_one_point(
         max_length=max_length,
     )
     prefill_kwargs = move_prefill_kwargs_to_model(model, batch)
+    with torch.no_grad():
+        inputs_embeds = build_llava_video_inputs_embeds(model, prefill_kwargs)
+    del prefill_kwargs
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    result = run_benchmark_with_decode_steps(model, prefill_kwargs, decode_tokens)
+    result = run_benchmark_with_decode_steps(model, inputs_embeds, decode_tokens)
     result["decode_tokens"] = int(decode_tokens)
     return result
 
@@ -755,28 +760,17 @@ def safe_benchmark_one_point(*args, **kwargs) -> Dict[str, Any]:
 
 def run_prefill_only(
     model,
-    prefill_kwargs: Dict[str, Any],
+    inputs_embeds: torch.Tensor,
     prefill_chunk_size: int,
 ):
-    input_ids = prefill_kwargs.get("input_ids", None)
-    if not torch.is_tensor(input_ids) or input_ids.ndim != 2:
-        raise ValueError("Prefill chunk sweep expects batched input_ids with shape [B, L].")
-
-    seq_len = int(input_ids.shape[1])
-    chunk_plan, effective_first_chunk_size, multimodal_prefix_len = build_prefill_chunk_plan(
-        model,
-        prefill_kwargs,
-        prefill_chunk_size,
-    )
-    requested_chunk_size = max(1, int(prefill_chunk_size))
-    num_chunks = len(chunk_plan)
-
-    if effective_first_chunk_size > requested_chunk_size:
-        print(
-            "Promoting first multimodal chunk from "
-            f"{requested_chunk_size} to {effective_first_chunk_size} tokens "
-            f"to keep the full vision-token span intact."
+    if not torch.is_tensor(inputs_embeds) or inputs_embeds.ndim != 3:
+        raise ValueError(
+            "Prefill chunk sweep expects batched inputs_embeds with shape [B, L, H]."
         )
+
+    seq_len = int(inputs_embeds.shape[1])
+    chunk_plan = build_prefill_chunk_plan(seq_len, prefill_chunk_size)
+    num_chunks = len(chunk_plan)
 
     torch.cuda.reset_peak_memory_stats()
     start = torch.cuda.Event(enable_timing=True)
@@ -785,17 +779,12 @@ def run_prefill_only(
     past_key_values = None
     start.record()
     pbar = tqdm(chunk_plan, leave=False)
-    for s, e, include_multimodal in pbar:
-        chunk_kwargs = build_prefill_chunk_kwargs(
-            prefill_kwargs,
-            start=s,
-            end=e,
-            include_multimodal=include_multimodal,
-        )
+    for s, e in pbar:
+        chunk = inputs_embeds[:, s:e, :]
         with torch.no_grad():
-            outputs = run_full_model_prefill(
+            outputs = run_language_model_prefill(
                 model,
-                chunk_kwargs,
+                chunk,
                 past_key_values=past_key_values,
             )
         past_key_values = outputs.past_key_values
@@ -809,25 +798,28 @@ def run_prefill_only(
 
     prefill_total_ms = float(start.elapsed_time(end))
     peak_memory_mb = float(torch.cuda.max_memory_allocated() / 1024 / 1024)
-    print(f"Peak prefill ctx_memory: {peak_memory_mb:.2f} MB (max allocated GPU memory)")
+    print(
+        "Peak language-model prefill ctx_memory: "
+        f"{peak_memory_mb:.2f} MB (max allocated GPU memory)"
+    )
     return {
         "ctx_latency": prefill_total_ms / max(1, num_chunks),
         "ctx_memory": peak_memory_mb,
         "prefill_total_ms": prefill_total_ms,
         "num_chunks": num_chunks,
-        "effective_first_chunk_size": effective_first_chunk_size,
-        "multimodal_prefix_context": multimodal_prefix_len,
+        "effective_first_chunk_size": int(chunk_plan[0][1] - chunk_plan[0][0]),
+        "multimodal_prefix_context": None,
         "oom": False,
     }
 
 
 def safe_run_prefill_only(
     model,
-    prefill_kwargs: Dict[str, Any],
+    inputs_embeds: torch.Tensor,
     prefill_chunk_size: int,
 ):
     try:
-        return run_prefill_only(model, prefill_kwargs, prefill_chunk_size)
+        return run_prefill_only(model, inputs_embeds, prefill_chunk_size)
     except RuntimeError as exc:
         if "out of memory" not in str(exc).lower():
             raise
@@ -873,6 +865,8 @@ def write_context_summary(rows: Sequence[Dict[str, Any]], output_path: Path):
             print(f"  prefill_memory_mb={row['ctx_memory']}", file=f)
             print(f"  generation_latency_ms={row['gen_latency']}", file=f)
             print(f"  generation_memory_mb={row['gen_memory']}", file=f)
+            if row.get("attn_implementation"):
+                print(f"  attn_implementation={row['attn_implementation']}", file=f)
             print(f"  prefix_seconds={row['prefix_seconds']:.2f} oom={row['oom']}", file=f)
             if row.get("error"):
                 print(f"  error={row['error']}", file=f)
@@ -890,6 +884,8 @@ def write_prefill_summary(rows: Sequence[Dict[str, Any]], output_path: Path):
             print(f"  prefill_total_ms={row['prefill_total_ms']}", file=f)
             print(f"  prefill_latency_ms_per_chunk={row['ctx_latency']}", file=f)
             print(f"  prefill_memory_mb={row['ctx_memory']}", file=f)
+            if row.get("attn_implementation"):
+                print(f"  attn_implementation={row['attn_implementation']}", file=f)
             print(f"  num_chunks={row['num_chunks']} oom={row['oom']}", file=f)
             if row.get("effective_first_chunk_size") is not None:
                 print(
@@ -916,6 +912,18 @@ def format_chunk_label(chunk_size: int) -> str:
     if chunk_size % 1000 == 0:
         return f"{chunk_size // 1000}K"
     return f"{chunk_size / 1000:.1f}K"
+
+
+def format_context_label(context_len: int) -> str:
+    if context_len >= 1_000_000:
+        if context_len % 1_000_000 == 0:
+            return f"{context_len // 1_000_000}M"
+        return f"{context_len / 1_000_000:.1f}M"
+    if context_len >= 1000:
+        if context_len % 1000 == 0:
+            return f"{context_len // 1000}K"
+        return f"{context_len / 1000:.1f}K"
+    return str(context_len)
 
 
 def infer_prefill_title(config: Optional[Dict[str, Any]], rows: Sequence[Dict[str, Any]]) -> str:
@@ -1097,18 +1105,30 @@ def plot_prefill_results(rows: Sequence[Dict[str, Any]], output_plot: Path, titl
 
 
 def plot_context_results(rows: Sequence[Dict[str, Any]], output_path: Path):
-    labels = [f"{row['actual_context'] // 1000}K" for row in rows if row["mode"] == "baseline"]
+    context_points = sorted({int(row["actual_context"]) for row in rows})
+    labels = [format_context_label(context_len) for context_len in context_points]
     x = np.arange(len(labels))
     width = 0.36
 
-    baseline_rows = [row for row in rows if row["mode"] == "baseline"]
-    duo_rows = [row for row in rows if row["mode"] == "duo"]
+    baseline_map = {
+        int(row["actual_context"]): row
+        for row in rows
+        if str(row.get("mode")) == "baseline"
+    }
+    duo_map = {
+        int(row["actual_context"]): row
+        for row in rows
+        if str(row.get("mode")) == "duo"
+    }
+    baseline_rows = [baseline_map.get(context_len) for context_len in context_points]
+    duo_rows = [duo_map.get(context_len) for context_len in context_points]
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
 
-    for ax, metric, ylabel, title in (
-        (axes[0], "ctx_latency", "Latency (ms)", "Prefill Latency by Context Length"),
-        (axes[1], "ctx_memory", "Memory (MB)", "Prefill Memory by Context Length"),
+    for ax, metric, ylabel in (
+        (axes[0], "ctx_memory", "Memory (MB)"),
+        (axes[1], "ctx_latency", "Prefill Latency (ms)"),
+        (axes[2], "gen_latency", "Autoregressive Decode Latency / Token (ms)"),
     ):
         baseline_vals = metric_values_with_oom_bars(baseline_rows, metric, 1.0)
         duo_vals = metric_values_with_oom_bars(duo_rows, metric, 1.0)
@@ -1129,14 +1149,13 @@ def plot_context_results(rows: Sequence[Dict[str, Any]], output_path: Path):
             edgecolor="#333333",
         )
         ax.set_ylabel(ylabel)
-        ax.set_title(title)
         ax.grid(axis="y", linestyle="--", alpha=0.35)
         annotate_oom(ax, bars1, baseline_rows)
         annotate_oom(ax, bars2, duo_rows)
 
-    axes[1].set_xlabel("Context Length")
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(labels)
+    axes[-1].set_xlabel("Context Length")
+    axes[-1].set_xticks(x)
+    axes[-1].set_xticklabels(labels)
     axes[0].legend(loc="upper left")
     fig.tight_layout()
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
@@ -1173,6 +1192,10 @@ def run_context_command(args):
             f"using {point.num_frames} frames over {point.prefix_seconds:.2f}s "
             f"(ratio={point.prefix_ratio:.3f})"
         )
+    print(
+        "Prefill metrics below exclude vision-tower and multimodal-projector "
+        "time/memory and benchmark the language model only."
+    )
 
     rows: List[Dict[str, Any]] = []
     for mode in ("baseline", "duo"):
@@ -1188,7 +1211,9 @@ def run_context_command(args):
             sparsity=args.sparsity,
             sink_size_override=args.sink_size,
             recent_size_override=args.recent_size,
+            baseline_attn_impl=args.baseline_attn_impl,
         )
+        mode_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
 
         try:
             for point in sweep_points:
@@ -1214,6 +1239,7 @@ def run_context_command(args):
                         "prefix_ratio": round(point.prefix_ratio, 6),
                         "num_frames": point.num_frames,
                         "sparsity": mode_sparsity if mode == "duo" else 0.0,
+                        "attn_implementation": mode_attn_impl,
                         **result,
                     }
                 )
@@ -1291,6 +1317,10 @@ def run_prefill_command(args):
         prompt_text=prompt_text,
         max_length=args.max_length,
     )
+    print(
+        "Prefill chunk metrics below exclude vision-tower and multimodal-projector "
+        "time/memory and benchmark the language model only."
+    )
 
     rows: List[Dict[str, Any]] = []
     for mode in ("baseline", "duo"):
@@ -1306,16 +1336,24 @@ def run_prefill_command(args):
             sparsity=args.sparsity,
             sink_size_override=args.sink_size,
             recent_size_override=args.recent_size,
+            baseline_attn_impl=args.baseline_attn_impl,
         )
+        mode_attn_impl = getattr(model.config, "_attn_implementation", "unknown")
 
+        inputs_embeds = None
         try:
             prefill_kwargs = move_prefill_kwargs_to_model(model, batch)
             actual_seq_len = int(prefill_kwargs["input_ids"].shape[1])
+            with torch.no_grad():
+                inputs_embeds = build_llava_video_inputs_embeds(model, prefill_kwargs)
+            del prefill_kwargs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             print(f"[{mode}] Fixed sequence length: {actual_seq_len}")
 
             for chunk_size in args.prefill_chunk_sizes:
                 print(f"\n[{mode}] Benchmarking prefill_chunk_size={chunk_size}")
-                result = safe_run_prefill_only(model, prefill_kwargs, chunk_size)
+                result = safe_run_prefill_only(model, inputs_embeds, chunk_size)
                 rows.append(
                     {
                         "mode": mode,
@@ -1325,12 +1363,15 @@ def run_prefill_command(args):
                         "prefix_ratio": round(sweep_point.prefix_ratio, 6),
                         "num_frames": sweep_point.num_frames,
                         "sparsity": mode_sparsity if mode == "duo" else 0.0,
+                        "attn_implementation": mode_attn_impl,
                         "prefill_chunk_size": int(chunk_size),
                         "requested_prefill_chunk_size": int(chunk_size),
                         **result,
                     }
                 )
         finally:
+            if inputs_embeds is not None:
+                del inputs_embeds
             del model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -1351,6 +1392,7 @@ def run_prefill_command(args):
                 "video_path": args.video_path,
                 "model_scale": args.model_scale,
                 "model_name": args.model_name,
+                "baseline_attn_impl": args.baseline_attn_impl,
             },
             indent=2,
         ),
@@ -1378,6 +1420,8 @@ def run_prefill_command(args):
 
 def run_context_plot_command(args):
     input_json = Path(args.input_json)
+    if input_json.is_dir():
+        input_json = input_json / "context_sweep_results.json"
     rows = load_json(input_json)
     if not isinstance(rows, list) or not rows:
         raise ValueError(f"No rows found in {input_json}")
@@ -1393,6 +1437,8 @@ def run_context_plot_command(args):
 
 def run_prefill_plot_command(args):
     input_json = Path(args.input_json)
+    if input_json.is_dir():
+        input_json = input_json / "prefill_chunk_sweep_results.json"
     rows = load_json(input_json)
     if not isinstance(rows, list):
         raise ValueError(f"Expected a list of rows in {input_json}")

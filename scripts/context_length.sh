@@ -9,9 +9,10 @@
 #SBATCH --output=logs/%x-%j.out
 
 python -u duo_attn/eval/efficiency/context_eval_llava.py run \
-  --model_scale 7b \
-  --output_dir ./outputs/benchmarking/llava-ov-7b \
-  --attn_load_dir ./outputs/train/7b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5 \
+  --model_scale 0.5b \
+  --output_dir ./outputs/benchmarking/llava-ov-0.5b \
+  --attn_load_dir ./outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632 \
+  # --attn_load_dir ./outputs/train/7b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5 \
   --prompt "Describe this video in detail."   \
   --max_length 32000   \
   --max_context 32000   \
