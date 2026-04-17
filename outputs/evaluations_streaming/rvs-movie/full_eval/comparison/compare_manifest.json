@@ -1,7 +1,0 @@
-{
-  "summary_csv": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/comparison/summary.csv",
-  "summary_md": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/comparison/summary.md",
-  "stability_report": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/comparison/stability_report.json",
-  "slice_stability_plot": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/comparison/slice_stability.png",
-  "delta_stability_plot": "/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/outputs/evaluations_streaming/rvs-movie/full_eval/comparison/delta_stability.png"
-}
