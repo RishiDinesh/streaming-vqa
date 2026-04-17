@@ -1,0 +1,18 @@
+{
+  "rvs-ego": {
+    "full_streaming": "outputs/evaluations_streaming/rvs-ego/full_eval/merged_all/merged/full_streaming.json",
+    "duo_streaming": "outputs/evaluations_streaming/rvs-ego/full_eval/merged_all/merged/duo_streaming.json",
+    "rekv": "outputs/evaluations_streaming/rvs-ego/full_eval/merged_all/merged/rekv.json",
+    "duo_plus_rekv": "outputs/evaluations_streaming/rvs-ego/full_eval/merged_all/merged/duo_plus_rekv.json",
+    "streamingtom": "outputs/evaluations_streaming/rvs-ego/full_eval/merged_all/merged/streamingtom.json",
+    "duo_plus_streamingtom": "outputs/evaluations_streaming/rvs-ego/full_eval/merged_all/merged/duo_plus_streamingtom.json"
+  },
+  "rvs-movie": {
+    "full_streaming": "outputs/evaluations_streaming/rvs-movie/full_eval/merged_sink256/full_streaming.json",
+    "duo_streaming": "outputs/evaluations_streaming/rvs-movie/full_eval/merged_sink256/duo_streaming.json",
+    "rekv": "outputs/evaluations_streaming/rvs-movie/full_eval/merged_sink256/rekv.json",
+    "duo_plus_rekv": "outputs/evaluations_streaming/rvs-movie/full_eval/merged_sink256/duo_plus_rekv.json",
+    "streamingtom": "outputs/evaluations_streaming/rvs-movie/full_eval/merged_all/merged/streamingtom.json",
+    "duo_plus_streamingtom": "outputs/evaluations_streaming/rvs-movie/full_eval/merged_all/merged/duo_plus_streamingtom.json"
+  }
+}
