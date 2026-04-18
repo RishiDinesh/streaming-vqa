@@ -14,24 +14,26 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=02:00:00
-#SBATCH --output=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/logs/st_smoke_longest_%j.log
-#SBATCH --error=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/logs/st_smoke_longest_%j.err
+#SBATCH --output=/w/nobackup/385/scratch-space/expires-2026-Apr-23/mihir/streaming-vqa/logs/st_smoke_longest_%j.log
+#SBATCH --error=/w/nobackup/385/scratch-space/expires-2026-Apr-23/mihir/streaming-vqa/logs/st_smoke_longest_%j.err
 
 set -euo pipefail
 
-ROOT=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa
+ROOT=/w/nobackup/385/scratch-space/expires-2026-Apr-23/mihir/streaming-vqa
 LOG_DIR="${ROOT}/logs"
 mkdir -p "${LOG_DIR}"
 
 export HF_HOME="${ROOT}/.hf_cache"
 export TOKENIZERS_PARALLELISM="false"
-export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${ROOT}:${ROOT}/streaming/StreamingTom:${PYTHONPATH:-}"
 
 CONDA_INIT_SCRIPT=""
 for _candidate in \
-  "/u/navdeep/miniconda3/etc/profile.d/conda.sh" \
   "${HOME}/miniconda3/etc/profile.d/conda.sh" \
-  "/root/miniconda3/etc/profile.d/conda.sh"; do
+  "${HOME}/anaconda3/etc/profile.d/conda.sh" \
+  "/opt/conda/etc/profile.d/conda.sh" \
+  "/root/miniconda3/etc/profile.d/conda.sh" \
+  "/usr/local/miniconda3/etc/profile.d/conda.sh"; do
   if [[ -f "${_candidate}" ]]; then
     CONDA_INIT_SCRIPT="${_candidate}"
     break
@@ -43,11 +45,11 @@ fi
 source "${CONDA_INIT_SCRIPT}"
 
 DUO_ST_ENV="${ROOT}/envs/duo-st"
-if [[ -d "${DUO_ST_ENV}" ]]; then
-  conda activate "${DUO_ST_ENV}"
-else
-  conda activate duo
+if [[ ! -d "${DUO_ST_ENV}" ]] || [[ ! -f "${DUO_ST_ENV}/bin/python" ]]; then
+  echo "[error] duo-st env not found at ${DUO_ST_ENV}. Run setup_env_mihir.sh first." >&2
+  exit 1
 fi
+conda activate "${DUO_ST_ENV}"
 echo "[env] Using python: $(which python)"
 
 cd "${ROOT}"
@@ -60,7 +62,7 @@ MODEL=${MODEL:-lmms-lab/llava-onevision-qwen2-0.5b-ov}
 DATASET=rvs_ego
 SAMPLE_FPS=0.5
 MAX_NEW_TOKENS=32
-OUTPUT_ROOT="${ROOT}/outputs/evaluations_streaming/smoke_st_longest"
+OUTPUT_ROOT="${ROOT}/outputs/evaluations_streaming/untracked/smoke_st_longest"
 DUO_ATTN_DIR=${DUO_ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632}
 DUO_HEADS_FILE="${DUO_ATTN_DIR}/full_attention_heads_latest.tsv"
 
@@ -76,7 +78,7 @@ COMMON=(
   --video-id "${LONGEST_VIDEO_ID}"
   --max-conversations-per-video 1
   --seed 42
-  --streamingtom-root streaming/StreamingTom
+  --streamingtom-root "${ROOT}/streaming/StreamingTom"
 )
 
 inspect_result() {

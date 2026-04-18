@@ -92,3 +92,77 @@ This project is built upon several excellent open-source projects. We thank the 
   year={2026}
 }
 ```
+
+---
+
+## Evaluation Setup: StreamingTom vs Duo+StreamingTom (RVS)
+
+This section covers setting up and running the `streamingtom` and `duo_plus_streamingtom` methods on the RVS benchmark using our custom eval pipeline (`streaming/StreamingTom/scripts/eval/run_eval.py`).
+
+### 1. Build the environment
+
+The `duo-st` environment includes all required dependencies: PyTorch 2.5.1, flash-attn 2.7.4, flashinfer 0.2.2, LLaVA-NeXT, and duo_attn.
+
+```bash
+# On SLURM (runs on a GPU node):
+sbatch streaming/StreamingTom/scripts/setup_streamingtom_env.sh
+
+# Or directly on a GPU machine:
+bash streaming/StreamingTom/scripts/setup_streamingtom_env.sh
+```
+
+The env is created at `<repo>/envs/duo-st`. Activate with:
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate <repo>/envs/duo-st
+export PYTHONPATH="<repo>:<repo>/streaming/StreamingTom"
+```
+
+### 2. Run smoke test (1 video)
+
+```bash
+sbatch streaming/StreamingTom/scripts/eval/run_smoketest_longest_video.sh
+```
+
+This runs both methods on 1 video and prints a pass/fail summary. Outputs go to:
+```
+outputs/evaluations_streaming/untracked/smoke_st_longest/<method>/chunk_000.json
+```
+
+### 3. Run full evaluation
+
+Use the SLURM array script to evaluate across all videos in parallel:
+
+```bash
+sbatch streaming/StreamingTom/scripts/eval/run_streamingtom_eval_slurm_array.sh
+```
+
+Results land in:
+```
+outputs/evaluations_streaming/untracked/<dataset>/<method>/
+```
+
+### 4. Merge results and generate graphs
+
+```bash
+python streaming/merge_all_results.py --dataset rvs_ego
+```
+
+Merged JSONs → `outputs/evaluations_streaming/untracked/rvs-ego/merged/`  
+Graphs → `outputs/evaluations_streaming/final_graphs/rvs-ego/plots/`
+
+### Key arguments for `run_eval.py`
+
+| Argument | Description |
+|----------|-------------|
+| `--method` | `streamingtom` or `duo_plus_streamingtom` |
+| `--model` | HF model ID (default: `lmms-lab/llava-onevision-qwen2-0.5b-ov`) |
+| `--dataset` | Dataset name (e.g. `rvs_ego`) |
+| `--sample-fps` | Frame sampling rate (default: `0.5`) |
+| `--max-new-tokens` | Max tokens to generate per answer |
+| `--streamingtom-root` | Path to `streaming/StreamingTom` directory |
+| `--duo-attn-dir` | *(duo_plus_streamingtom only)* Path to DuoAttention training output |
+| `--duo-sparsity` | *(duo_plus_streamingtom only)* Sparsity ratio (default: `0.75`) |
+| `--duo-sink-size` | *(duo_plus_streamingtom only)* Sink token budget (default: `256`) |
+| `--duo-recent-size` | *(duo_plus_streamingtom only)* Recent token budget (default: `512`) |

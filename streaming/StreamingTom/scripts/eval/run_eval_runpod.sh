@@ -67,7 +67,7 @@ DRY_RUN=${DRY_RUN:-0}
 DATASETS=${DATASETS:-"rvs_ego rvs_movie"}
 METHODS=${METHODS:-"streamingtom duo_plus_streamingtom"}
 
-OUTPUT_BASE=${OUTPUT_BASE:-${ROOT}/outputs/evaluations_streamingtom}
+OUTPUT_BASE=${OUTPUT_BASE:-${ROOT}/outputs/evaluations_streaming/untracked}
 STREAMINGTOM_ROOT=${STREAMINGTOM_ROOT:-streaming/StreamingTom}
 
 DUO_ATTN_DIR=${DUO_ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632}

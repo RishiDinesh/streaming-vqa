@@ -18,9 +18,7 @@ import torch
 import transformers
 
 from duo_attn.utils import sparsify_attention_heads
-from duo_attn.patch.attn_compat import FLASH_ATTN_AVAILABLE
-from duo_attn.patch.flashinfer_utils import flashinfer
-from duo_attn.patch.streaming_attn import is_blocksparse_available
+from streaming.ReKV.compat import FLASH_ATTN_AVAILABLE, BLOCKSPARSE_AVAILABLE, flashinfer, is_blocksparse_available
 
 from streaming.ReKV.datasets import RVS_DATASET_CONFIGS, build_dataset_from_args
 from streaming.ReKV.methods import (
@@ -119,7 +117,7 @@ def slugify(text: str) -> str:
 def default_output_path(args: argparse.Namespace) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     model_slug = slugify(args.model)
-    base_dir = Path("outputs") / "evaluations_streaming" / args.dataset.replace("_", "-")
+    base_dir = Path("outputs") / "evaluations_streaming" / "untracked" / args.dataset.replace("_", "-")
     if args.subsample_name:
         base_dir = base_dir / slugify(args.subsample_name)
     elif args.max_videos is not None:

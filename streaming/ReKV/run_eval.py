@@ -119,7 +119,7 @@ def utc_now_iso() -> str:
 def default_output_path(args: argparse.Namespace) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     model_slug = slugify(args.model)
-    base_dir = Path("outputs") / "evaluations_streaming" / args.dataset.replace("_", "-")
+    base_dir = Path("outputs") / "evaluations_streaming" / "untracked" / args.dataset.replace("_", "-")
     if args.subsample_name:
         base_dir = base_dir / slugify(args.subsample_name)
     elif args.max_videos is not None:

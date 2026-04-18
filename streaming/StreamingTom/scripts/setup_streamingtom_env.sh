@@ -10,20 +10,22 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=02:00:00
-#SBATCH --output=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/logs/setup_duo_env_%j.log
-#SBATCH --error=/w/nobackup/385/scratch-space/expires-2026-Apr-23/navy/streaming-vqa/logs/setup_duo_env_%j.err
+#SBATCH --output=/w/nobackup/385/scratch-space/expires-2026-Apr-23/mihir/streaming-vqa/logs/setup_streamingtom_env_%j.log
+#SBATCH --error=/w/nobackup/385/scratch-space/expires-2026-Apr-23/mihir/streaming-vqa/logs/setup_streamingtom_env_%j.err
 
 set -euo pipefail
 
-ROOT=/root/streaming-vqa
+ROOT=/w/nobackup/385/scratch-space/expires-2026-Apr-23/mihir/streaming-vqa
 LOG_DIR="${ROOT}/logs"
 mkdir -p "${LOG_DIR}"
 
 CONDA_INIT_SCRIPT=""
 for _candidate in \
-  "/root/miniconda3/etc/profile.d/conda.sh" \
   "${HOME}/miniconda3/etc/profile.d/conda.sh" \
-  "/root/miniconda3/etc/profile.d/conda.sh"; do
+  "${HOME}/anaconda3/etc/profile.d/conda.sh" \
+  "/opt/conda/etc/profile.d/conda.sh" \
+  "/root/miniconda3/etc/profile.d/conda.sh" \
+  "/usr/local/miniconda3/etc/profile.d/conda.sh"; do
   if [[ -f "${_candidate}" ]]; then
     CONDA_INIT_SCRIPT="${_candidate}"
     break

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launch + postprocess StreamingTom vs Duo+StreamingTom in ReKV-style run2 layout.
-# Output root (default): outputs/evaluations_streaming/<dataset>/full_eval/run2
+# Output root (default): outputs/evaluations_streaming/untracked/<dataset>/full_eval/run2
 #
 # Modes:
 #   submit     submit/launch chunk jobs for both methods
@@ -52,7 +52,7 @@ export PYTHONPATH="${ROOT}:${ROOT}/streaming/StreamingTom:${PYTHONPATH:-}"
 
 DATASET=${DATASET:-rvs_ego}
 NUM_CHUNKS=${NUM_CHUNKS:-10}
-OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/outputs/evaluations_streaming/${DATASET//_/-}/full_eval/run2}
+OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/outputs/evaluations_streaming/untracked/${DATASET//_/-}/full_eval/run2}
 ARRAY_RANGE=${ARRAY_RANGE:-0-$((NUM_CHUNKS-1))}
 
 if [[ -n "${METHOD:-}" ]]; then

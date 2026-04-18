@@ -71,7 +71,7 @@ SAMPLE_FPS=${SAMPLE_FPS:-0.5}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-64}
 VIDEO_DECODE_THREADS=${VIDEO_DECODE_THREADS:-1}
 NUM_CHUNKS=${NUM_CHUNKS:-1}
-OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/outputs/evaluations_streaming/${DATASET//_/-}/full_eval/run2}
+OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/outputs/evaluations_streaming/untracked/${DATASET//_/-}/full_eval/run2}
 RESUME=${RESUME:-1}
 EXTRA_ARGS=${EXTRA_ARGS:-}
 

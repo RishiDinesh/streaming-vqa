@@ -142,12 +142,60 @@ python -m pip install -e "${ROOT}/streaming/StreamingTom/LLaVA-NeXT"
 echo "[setup] Installing lmms-eval (editable)"
 python -m pip install -e "${ROOT}/streaming/StreamingTom/lmms-eval"
 
+echo "[setup] Re-pinning protobuf (lmms-eval may upgrade it)"
+python -m pip install --no-cache-dir "protobuf==6.31.1"
+
 echo "[setup] Installing repo package (duo_attn + streamingtom)"
 python -m pip install -e "${ROOT}"
 
+echo "[setup] Installing transformers-llama compat shim"
+# transformers>=4.47 removed typing re-exports (List, Union, etc.) from
+# modeling_llama. duo_attn/patch/llama.py and tuple_kv_cache.py import them
+# from there. A sitecustomize.py shim re-injects the missing names so duo_attn
+# works under transformers==4.53.3 without modifying duo_attn source.
+python - <<'SHIM'
+import sys, pathlib
+site_dir = pathlib.Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+shim = site_dir / "sitecustomize.py"
+code = '''
+# Inject typing re-exports removed from transformers>=4.47 modeling_llama/mistral.
+import sys
+def _patch_module(mod_name, names):
+    import importlib
+    try:
+        mod = importlib.import_module(mod_name)
+    except ImportError:
+        return
+    import typing, torch.nn
+    _fill = {
+        "List": typing.List, "Tuple": typing.Tuple, "Union": typing.Union,
+        "Optional": typing.Optional,
+        "CrossEntropyLoss": torch.nn.CrossEntropyLoss,
+    }
+    try:
+        from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
+        _fill["BaseModelOutputWithPast"] = BaseModelOutputWithPast
+        _fill["CausalLMOutputWithPast"] = CausalLMOutputWithPast
+    except ImportError:
+        pass
+    for name, obj in _fill.items():
+        if not hasattr(mod, name):
+            setattr(mod, name, obj)
+
+_patch_module("transformers.models.llama.modeling_llama", [])
+_patch_module("transformers.models.mistral.modeling_mistral", [])
+'''
+existing = shim.read_text() if shim.exists() else ""
+if "_patch_module" not in existing:
+    shim.write_text(existing + "\n" + code)
+    print(f"[shim] Written to {shim}")
+else:
+    print(f"[shim] Already present in {shim}")
+SHIM
+
 # ── smoke test ────────────────────────────────────────────────────────────────
 echo "[setup] Running smoke test"
-PYTHONPATH="${ROOT}" python - <<'PY'
+PYTHONPATH="${ROOT}:${ROOT}/streaming/StreamingTom" python - <<'PY'
 import torch, flash_attn, flashinfer
 print(f"torch {torch.__version__}  cuda {torch.version.cuda}  available={torch.cuda.is_available()}")
 print(f"flash_attn {flash_attn.__version__}")

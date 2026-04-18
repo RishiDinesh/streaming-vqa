@@ -17,7 +17,7 @@ export VIDEO_DECODE_THREADS=${VIDEO_DECODE_THREADS:-1}
 export NUM_CHUNKS=${NUM_CHUNKS:-20}
 
 # Output target requested by user
-export OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/outputs/evaluations_streaming/rvs-ega-streamingtom}
+export OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/outputs/evaluations_streaming/untracked/rvs-ego}
 
 # Resume-safe behavior:
 # - RESUME=1 => do NOT force overwrite

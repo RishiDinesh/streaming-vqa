@@ -55,7 +55,7 @@ MODEL_ST=${MODEL_ST:-lmms-lab/llava-onevision-qwen2-0.5b-ov}
 DATASET=${DATASET:-rvs_ego}
 SAMPLE_FPS=0.5
 MAX_NEW_TOKENS=16
-OUTPUT_ROOT="${ROOT}/outputs/evaluations_streaming/smoke_all_methods"
+OUTPUT_ROOT="${ROOT}/outputs/evaluations_streaming/untracked/smoke_all_methods"
 DUO_ATTN_DIR=${DUO_ATTN_DIR:-outputs/train/0p5b_sink512_recent1024_maxlen32000_frames64_depth0p1-0p8_needles5_20260328_170632}
 DUO_HEADS_FILE="${DUO_ATTN_DIR}/full_attention_heads_latest.tsv"
 

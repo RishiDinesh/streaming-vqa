@@ -15,7 +15,7 @@ import transformers
 from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 
 from duo_attn.patch import enable_duo_attention_eval, load_full_attention_heads
-from duo_attn.patch.attn_compat import FLASH_ATTN_AVAILABLE
+from streaming.ReKV.compat import FLASH_ATTN_AVAILABLE, BLOCKSPARSE_AVAILABLE
 from duo_attn.patch.flashinfer_utils import flashinfer
 from duo_attn.patch.streaming_attn import is_blocksparse_available
 

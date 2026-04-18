@@ -6,35 +6,37 @@ Usage
 All 6 methods, full comparison + plots:
 
     python streaming/merge_all_results.py \\
-        --rekv-results-dir   outputs/evaluations_streaming/rvs-ego/full_eval/run1 \\
-        --st-results-dir     outputs/evaluations_streaming/rvs-ego/full_eval/run2 \\
-        --output-dir         outputs/evaluations_streaming/rvs-ego/full_eval/merged_all
+        --dataset            rvs-ego \\
+        --rekv-results-dir   outputs/evaluations_streaming/untracked/rvs-ego/full_eval/run1 \\
+        --st-results-dir     outputs/evaluations_streaming/untracked/rvs-ego/full_eval/run2
 
 ST-only merge (no existing ReKV results):
 
     python streaming/merge_all_results.py \\
-        --st-results-dir  outputs/evaluations_streaming/rvs-ego/full_eval/run2 \\
-        --output-dir      outputs/evaluations_streaming/rvs-ego/full_eval/merged_st_only
+        --dataset         rvs-ego \\
+        --st-results-dir  outputs/evaluations_streaming/untracked/rvs-ego/full_eval/run2
 
 ReKV-only merge:
 
     python streaming/merge_all_results.py \\
-        --rekv-results-dir  outputs/evaluations_streaming/rvs-ego/full_eval/run1 \\
-        --output-dir        outputs/evaluations_streaming/rvs-ego/full_eval/merged_rekv_only
+        --dataset            rvs-ego \\
+        --rekv-results-dir   outputs/evaluations_streaming/untracked/rvs-ego/full_eval/run1
 
 Output layout
 -------------
-<output-dir>/
-  merged/
-    full_streaming.json
-    duo_streaming.json
-    rekv.json
-    duo_plus_rekv.json
-    streamingtom.json
-    duo_plus_streamingtom.json
-  comparison/      <- compare_subsamples.py output (summary.md, CSV, stability)
-  plots/           <- plot_results.py output (PNG charts)
-  plots_judge/     <- same plots after judge scoring (if --run-judge)
+outputs/evaluations_streaming/
+  untracked/<dataset>/
+    merged/
+      full_streaming.json
+      duo_streaming.json
+      rekv.json
+      duo_plus_rekv.json
+      streamingtom.json
+      duo_plus_streamingtom.json
+    comparison/      <- compare_subsamples.py output (summary.md, CSV, stability PNGs)
+  final_graphs/<dataset>/
+    plots/           <- plot_results.py output (PNG charts)
+    plots_judge/     <- same plots after judge scoring (if --run-judge)
 """
 from __future__ import annotations
 
@@ -189,10 +191,10 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--output-dir",
-        type=Path,
+        "--dataset",
+        type=str,
         required=True,
-        help="Output directory for merged JSONs, comparison, and plot artifacts.",
+        help="Dataset name (e.g. rvs-ego or rvs-movie). Used to route outputs into the correct subdirectory.",
     )
     parser.add_argument(
         "--methods",
@@ -220,8 +222,10 @@ def main() -> int:
         print("[error] At least one of --rekv-results-dir or --st-results-dir is required.", file=sys.stderr)
         return 1
 
-    output_dir = args.output_dir.expanduser().resolve(strict=False)
-    merged_dir = output_dir / "merged"
+    dataset = args.dataset.replace("_", "-")  # normalise rvs_ego → rvs-ego
+    base = Path("outputs") / "evaluations_streaming"
+    merged_dir = base / "untracked" / dataset / "merged"
+    plots_base = base / "final_graphs" / dataset
     merged_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine which methods to process
@@ -280,7 +284,7 @@ def main() -> int:
 
     # ── compare_subsamples ───────────────────────────────────────────────────
     if not args.skip_compare:
-        compare_dir = output_dir / "comparison"
+        compare_dir = merged_dir.parent / "comparison"
         compare_dir.mkdir(parents=True, exist_ok=True)
         _run_module(
             "streaming.ReKV.compare_subsamples",
@@ -289,7 +293,7 @@ def main() -> int:
 
     # ── plot_results ─────────────────────────────────────────────────────────
     if not args.skip_plots:
-        plots_dir = output_dir / "plots"
+        plots_dir = plots_base / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
         _run_module(
             "streaming.ReKV.plot_results",
@@ -302,14 +306,16 @@ def main() -> int:
             "streaming.ReKV.judge_results",
             ["--in-place", *merged_paths],
         )
-        plots_judge_dir = output_dir / "plots_judge"
+        plots_judge_dir = plots_base / "plots_judge"
         plots_judge_dir.mkdir(parents=True, exist_ok=True)
         _run_module(
             "streaming.ReKV.plot_results",
             [*merged_paths, "--output-dir", str(plots_judge_dir)],
         )
 
-    print(f"\n[merge] Done. Artifacts under: {output_dir}")
+    print(f"\n[merge] Done.")
+    print(f"  Merged JSONs : {merged_dir}")
+    print(f"  Plots        : {plots_base}")
     return 0
 
 
