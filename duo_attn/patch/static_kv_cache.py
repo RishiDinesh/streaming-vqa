@@ -1,11 +1,10 @@
-from typing import List, Optional, Tuple, Union
-
 import torch
-from torch.nn import CrossEntropyLoss
 
 from transformers.models.llama.modeling_llama import (
     LlamaForCausalLM,
     CausalLMOutputWithPast,
+    Union,
+    CrossEntropyLoss,
     BaseModelOutputWithPast,
 )
 from transformers.models.mistral.modeling_mistral import (
@@ -19,6 +18,7 @@ from transformers.models.llava_onevision.modeling_llava_onevision import (
 )
 
 import types
+from typing import List, Optional, Tuple, Union
 
 
 class DuoAttentionStaticKVCache:

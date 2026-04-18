@@ -22,7 +22,6 @@ from .streaming_attn import (
     streaming_attn_sdpa,
     generate_streaming_info_blocksparse_flash_attn,
     streaming_attn_blocksparse_flash_attn,
-    is_blocksparse_available,
 )
 from .tuple_kv_cache import (
     enable_tuple_kv_cache_for_qwen2,
@@ -37,32 +36,9 @@ from .static_kv_cache import (
 )
 from .flashinfer_utils import enable_flashinfer_rmsnorm
 
-try:
-    from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
-except ImportError:  # pragma: no cover
-    class TensorParallelPreTrainedModel:  # type: ignore[override]
-        pass
-from .attn_compat import flash_attn_func
+from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
+from flash_attn import flash_attn_func
 from duo_attn.ulysses import UlyssesAttention
-
-
-def _ensure_qwen2_attention_metadata(module):
-    if not hasattr(module, "head_dim"):
-        module.head_dim = module.q_proj.weight.shape[0] // module.q_proj.weight.shape[1]
-
-    if not hasattr(module, "num_key_value_heads"):
-        module.num_key_value_heads = module.k_proj.weight.shape[0] // module.head_dim
-
-    if not hasattr(module, "num_key_value_groups"):
-        module.num_key_value_groups = module.q_proj.weight.shape[0] // (
-            module.num_key_value_heads * module.head_dim
-        )
-
-    if not hasattr(module, "num_heads"):
-        module.num_heads = module.num_key_value_heads * module.num_key_value_groups
-
-    if not hasattr(module, "hidden_size"):
-        module.hidden_size = module.num_heads * module.head_dim
 
 
 def qwen2_duo_attention_forward_two_way(
@@ -78,7 +54,6 @@ def qwen2_duo_attention_forward_two_way(
     **kwargs,
 ):
     bsz_x_2, q_len, _ = hidden_states.size()
-    _ensure_qwen2_attention_metadata(self)
 
     if bsz_x_2 % 2 != 0:
         raise ValueError(
@@ -193,7 +168,6 @@ def qwen2_duo_attention_forward_one_way_reordered(
     **kwargs,
 ):
     bsz, q_len, _ = hidden_states.size()
-    _ensure_qwen2_attention_metadata(self)
 
     query_states = self.q_proj(hidden_states)
     key_states = self.k_proj(hidden_states)
@@ -470,11 +444,7 @@ def _get_qwen2_layers(model):
     if isinstance(model, Qwen2Model):
         return model.layers
     if isinstance(model, LlavaOnevisionForConditionalGeneration):
-        # transformers >=4.50: language_model may be Qwen2Model directly (no .model wrapper)
-        lang = model.language_model
-        if isinstance(lang, Qwen2Model):
-            return lang.layers
-        return lang.model.layers
+        return model.language_model.model.layers
     raise ValueError(f"Unsupported model type: {type(model)}")
 
 def _enable_qwen2_layers_duo_attention_training(
@@ -487,21 +457,10 @@ def _enable_qwen2_layers_duo_attention_training(
     streaming_attn_implementation="blocksparse",
 ):
     first_module = layers[0].self_attn
-    _ensure_qwen2_attention_metadata(first_module)
     device = first_module.q_proj.weight.device
     dtype = first_module.q_proj.weight.dtype
 
-    effective_streaming_impl = streaming_attn_implementation
-    if (
-        effective_streaming_impl == "blocksparse"
-        and not is_blocksparse_available()
-    ):
-        print(
-            "block_sparse_attn is unavailable; falling back to sdpa streaming attention."
-        )
-        effective_streaming_impl = "sdpa"
-
-    if effective_streaming_impl == "blocksparse":
+    if streaming_attn_implementation == "blocksparse":
         num_sink_blocks = (sink_size + 127) // 128
         num_recent_blocks = (recent_size + 127) // 128
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -517,7 +476,7 @@ def _enable_qwen2_layers_duo_attention_training(
             device,
         )
         streaming_attn_func = streaming_attn_blocksparse_flash_attn
-    elif effective_streaming_impl == "sdpa":
+    elif streaming_attn_implementation == "sdpa":
         streaming_mask = generate_streaming_mask(
             max_length,
             sink_size,
@@ -527,12 +486,11 @@ def _enable_qwen2_layers_duo_attention_training(
         streaming_attn_func = streaming_attn_sdpa
     else:
         raise ValueError(
-            f"Unsupported streaming attention implementation: {effective_streaming_impl}"
+            f"Unsupported streaming attention implementation: {streaming_attn_implementation}"
         )
 
     for layer in layers:
         module = layer.self_attn
-        _ensure_qwen2_attention_metadata(module)
         module.forward = types.MethodType(qwen2_duo_attention_forward_two_way, module)
         module.sink_size = sink_size
         module.recent_size = recent_size
@@ -564,13 +522,11 @@ def _enable_qwen2_layers_duo_attention_eval(
     recent_size,
 ):
     first_module = layers[0].self_attn
-    _ensure_qwen2_attention_metadata(first_module)
     device = first_module.q_proj.weight.device
     dtype = first_module.q_proj.weight.dtype
 
     for idx, layer in enumerate(layers):
         module = layer.self_attn
-        _ensure_qwen2_attention_metadata(module)
         layer_full_attention_heads = torch.tensor(
             full_attention_heads[idx], device=device, dtype=dtype
         )
@@ -619,13 +575,11 @@ def _enable_qwen2_layers_duo_attention_static_kv_cache_eval(
     full_attention_heads,
 ):
     first_module = layers[0].self_attn
-    _ensure_qwen2_attention_metadata(first_module)
     device = first_module.q_proj.weight.device
     dtype = first_module.q_proj.weight.dtype
 
     for idx, layer in enumerate(layers):
         module = layer.self_attn
-        _ensure_qwen2_attention_metadata(module)
         layer_full_attention_heads = torch.tensor(
             full_attention_heads[idx], device=device, dtype=dtype
         )
@@ -793,9 +747,7 @@ def get_qwen2_full_attention_heads(model):
                 continue
             full_attention_heads.append(module.full_attention_heads)
     elif isinstance(model, LlavaOnevisionForConditionalGeneration):
-        lang = model.language_model
-        _layers = lang.layers if isinstance(lang, Qwen2Model) else lang.model.layers
-        for layer in _layers:
+        for layer in model.language_model.model.layers:
             module = layer.self_attn
             if not hasattr(module, "full_attention_heads"):
                 continue
@@ -836,9 +788,7 @@ def set_qwen2_full_attention_heads(model, full_attention_heads):
                 module.full_attention_heads.dtype,
             )
     elif isinstance(model, LlavaOnevisionForConditionalGeneration):
-        lang = model.language_model
-        _layers = lang.layers if isinstance(lang, Qwen2Model) else lang.model.layers
-        for layer_idx, layer in enumerate(_layers):
+        for layer_idx, layer in enumerate(model.language_model.model.layers):
             module = layer.self_attn
             if not hasattr(module, "full_attention_heads"):
                 continue
@@ -871,9 +821,7 @@ def map_qwen2_full_attention_heads(model, func):
                 continue
             func(module.full_attention_heads)
     elif isinstance(model, LlavaOnevisionForConditionalGeneration):
-        lang = model.language_model
-        _layers = lang.layers if isinstance(lang, Qwen2Model) else lang.model.layers
-        for layer in _layers:
+        for layer in model.language_model.model.layers:
             module = layer.self_attn
             if not hasattr(module, "full_attention_heads"):
                 continue

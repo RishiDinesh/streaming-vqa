@@ -1,12 +1,14 @@
-from typing import List, Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import torch
 import torch.functional as F
-from torch.nn import CrossEntropyLoss
 
 from transformers.models.llama.modeling_llama import (
     LlamaForCausalLM,
     CausalLMOutputWithPast,
+    List,
+    Union,
+    CrossEntropyLoss,
     BaseModelOutputWithPast,
     apply_rotary_pos_emb,
 )
@@ -19,13 +21,8 @@ from transformers.models.llava_onevision.modeling_llava_onevision import (
 )
 import types
 
-from .attn_compat import (
-    flash_attn_func,
-    flash_attn_varlen_func,
-    index_first_axis,
-    pad_input,
-    unpad_input,
-)
+from flash_attn import flash_attn_func, flash_attn_varlen_func
+from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
 
 
 def _get_unpad_data(padding_mask):
@@ -1066,33 +1063,30 @@ def enable_tuple_kv_cache_for_qwen2(model: Qwen2ForCausalLM):
     # Training path keeps Qwen2's native model/decoder forwards; DuoAttention patches
     # attention forwards directly. We still attach FlashAttention helper methods for
     # compatibility with attention modules that rely on them.
-    core_model = model.model if hasattr(model, "model") else model
-    for idx in range(len(core_model.layers)):
-        core_model.layers[idx].self_attn._upad_input = types.MethodType(
-            _upad_input, core_model.layers[idx].self_attn
+    for idx in range(len(model.model.layers)):
+        model.model.layers[idx].self_attn._upad_input = types.MethodType(
+            _upad_input, model.model.layers[idx].self_attn
         )
-        core_model.layers[idx].self_attn._flash_attention_forward = types.MethodType(
-            _flash_attention_forward, core_model.layers[idx].self_attn
+        model.model.layers[idx].self_attn._flash_attention_forward = types.MethodType(
+            _flash_attention_forward, model.model.layers[idx].self_attn
         )
 
 
 def enable_tuple_kv_cache_for_qwen2_eval(model: Qwen2ForCausalLM):
     print("Enabling tuple KV cache for Qwen2 eval")
-    core_model = model.model if hasattr(model, "model") else model
-    core_model._prepare_decoder_attention_mask = lambda *args, **kwargs: None
-    core_model.forward = types.MethodType(old_qwen2_model_forward, core_model)
-    for idx in range(len(core_model.layers)):
-        core_model.layers[idx].forward = types.MethodType(
-            old_qwen2_decoder_layer_forward, core_model.layers[idx]
+    model.model._prepare_decoder_attention_mask = lambda *args, **kwargs: None
+    model.model.forward = types.MethodType(old_qwen2_model_forward, model.model)
+    for idx in range(len(model.model.layers)):
+        model.model.layers[idx].forward = types.MethodType(
+            old_qwen2_decoder_layer_forward, model.model.layers[idx]
         )
-        core_model.layers[idx].self_attn._upad_input = types.MethodType(
-            _upad_input, core_model.layers[idx].self_attn
+        model.model.layers[idx].self_attn._upad_input = types.MethodType(
+            _upad_input, model.model.layers[idx].self_attn
         )
-        core_model.layers[idx].self_attn._flash_attention_forward = types.MethodType(
-            _flash_attention_forward, core_model.layers[idx].self_attn
+        model.model.layers[idx].self_attn._flash_attention_forward = types.MethodType(
+            _flash_attention_forward, model.model.layers[idx].self_attn
         )
-    if hasattr(model, "model"):
-        model.forward = types.MethodType(old_qwen2_for_causal_lm_forward, model)
+    model.forward = types.MethodType(old_qwen2_for_causal_lm_forward, model)
 
 
 def enable_tuple_kv_cache_for_llava_onevision(
