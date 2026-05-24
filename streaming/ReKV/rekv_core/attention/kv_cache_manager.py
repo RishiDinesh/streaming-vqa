@@ -1,3 +1,16 @@
+"""
+ReKV Key-Value (KV) Cache Manager.
+
+This module implements the CPU-GPU asymmetrical offloading and demand-driven retrieval
+kv-cache manager for ReKV (Streaming Video-QA with In-Context Video KV-Cache Retrieval,
+Di et al., 2025). 
+
+It maintains a fixed-size local sliding window on the GPU, offloads older historical frames
+(represented as fixed-token visual blocks) to host CPU memory, and indexes them using a 
+low-dimensional VectorTensor key cache on the GPU for top-k cosine similarity retrieval at
+question-answering time.
+"""
+
 import math
 import torch
 from typing import Optional, Tuple
@@ -7,6 +20,11 @@ from .dot_production_attention import get_multi_stage_dot_production_attention
 
 # Allocate a fixed-size block of GPU memory specifically for storing the KV-Cache of the local_window.
 class CudaCache:
+    """
+    CudaCache manages a pre-allocated contiguous GPU block memory pool.
+    This prevents high-frequency dynamic allocation overheads as sliding window blocks
+    are continuously allocated and recycled.
+    """
     def __init__(self, num_units, unit_size, dtype):
         self.num_units = num_units  # n_block
         self.unit_size = unit_size  # block_size * hidden_dim * 2
@@ -30,6 +48,11 @@ class CudaCache:
 
 # The KV-Cache management unit supports data transfer between the CPU and GPU.
 class MemoryUnit:
+    """
+    MemoryUnit represents a single offloaded block of visual KV context (typically matching
+    one frame's visual token length). It manages the asynchronous CPU-GPU transfers,
+    pinned host memory allocation for low-latency PCIe transfers, and GPU block tracking.
+    """
     # Initialize the KV-Cache management unit and store it on the CPU.
     def __init__(
         self, 
@@ -120,6 +143,12 @@ class MemoryUnit:
 
 # A dynamically growing vector cache on the GPU, used to store representative vectors of video frames.
 class VectorTensor:
+    """
+    VectorTensor maintains a compact, dynamic GPU tensor buffer of representative key vectors
+    (typically frame-level mean key projections) representing the historical offloaded blocks.
+    It allows fast, low-overhead GPU cosine-similarity calculations against the query
+    during QA-time retrieval.
+    """
     # Initialize an empty cache of size (16, hidden_dim) on the GPU.
     def __init__(
         self, 
@@ -187,6 +216,20 @@ GLOBAL_STREAM = None
 
 
 class ContextManager:
+    """
+    ContextManager orchestrates the active ReKV streaming lifecycle.
+    
+    Ingestion:
+      - Receives frame KV-cache tokens.
+      - Maintains the most recent `n_local` tokens in local GPU caches.
+      - Automatically evicts overflowing historical blocks to pinned host CPU memory via `MemoryUnit`.
+      - Computes and appends mean key projections to a GPU `VectorTensor` index.
+      
+    Retrieval:
+      - Compares the question query against the representative key index using cosine similarity.
+      - Retrieves the top-k most relevant blocks from host memory back to active GPU buffers.
+      - Assembles the final attention context: [initial prompt sinks] + [top-k retrieved blocks] + [local window].
+    """
     def __init__(self, 
                  position_embedding,
                  n_init, n_local, 

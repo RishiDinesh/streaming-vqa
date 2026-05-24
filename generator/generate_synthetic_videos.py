@@ -4,7 +4,7 @@ VideoNIAH Synthetic Generator — VNBench-Style + DuoAttention-Aligned
 
 Generates videos where MULTIPLE secret words are burned as subtitles at
 different temporal positions, directly extending the VNBench ret_edit format
-while aligning with DuoAttention paper implementation details:
+while aligning with DuoAttention/MMDA paper implementation details:
 
   Paper params (Table 6, Appendix A.4):
     - 10 passkeys per sample
@@ -120,7 +120,10 @@ ORDINALS = [
 # ── VNBench-Style Fixed Rendering ────────────────────────────────────────────
 
 def get_video_info(video_path):
-    """Return dict with fps, total_frames, duration, width, height or None."""
+    """
+    Retrieves visual properties of the target background video.
+    Returns a dictionary containing: fps, total_frames, duration, width, height.
+    """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return None
@@ -199,8 +202,12 @@ def burn_subtitle_vnbench(frame, text, font):
 
 def sample_depth_ratios(num_needles, min_ratio, max_ratio, num_intervals=20):
     """
-    Mirrors duo_attn/data.py: create `num_intervals` evenly spaced depth
-    positions, then randomly select `num_needles` of them (sorted).
+    Samples depth ratios from evenly spaced intervals to determine the relative temporal placement
+    of needles in the video context. 
+    
+    Mirrors the exact training dataloader sampling logic in duo_attn/data.py: 
+    creates `num_intervals` evenly spaced depth positions, then randomly selects
+    `num_needles` of them (sorted).
     """
     intervals = np.linspace(min_ratio, max_ratio, num_intervals)
     chosen_indices = np.random.choice(len(intervals), size=num_needles, replace=False)
@@ -312,6 +319,11 @@ def generate_dataset(
     depth_num_intervals,
     num_frames=64,
 ):
+    """
+    Generates a full VideoNIAH (VNBench ret_edit1) dataset by drawing unedited background
+    videos from `source_videos_dir`, partitioning them into target duration intervals,
+    inserting custom random subtitle needles, and writing the final mp4 files and annotations.
+    """
     os.makedirs(output_dir, exist_ok=True)
     videos_output_dir = os.path.join(output_dir, "videos")
     os.makedirs(videos_output_dir, exist_ok=True)
