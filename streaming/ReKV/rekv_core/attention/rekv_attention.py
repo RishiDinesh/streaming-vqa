@@ -1,3 +1,11 @@
+"""
+ReKV Causal Streaming Attention Mechanism.
+
+This module implements the custom causal attention forwards for ReKV, including sliding-window
+local-init attention, full causal fallback attention, and the hybrid MMDA + ReKV head-level
+split attention routing path.
+"""
+
 import copy
 import torch
 import torch.nn.functional as F
@@ -12,6 +20,11 @@ def _bottom_right_causal_mask(
     len_k: int,
     device: torch.device,
 ) -> torch.Tensor:
+    """
+    Generates a bottom-right aligned causal attention mask.
+    This ensures that when len_k > len_q (e.g. during incremental decoding or prefill
+    with a larger KV context), queries only attend to past/present key-value tokens.
+    """
     q_positions = torch.arange(len_k - len_q, len_k, device=device).unsqueeze(-1)
     k_positions = torch.arange(len_k, device=device).unsqueeze(0)
     return k_positions <= q_positions
@@ -22,6 +35,12 @@ def _full_causal_attention(
     key: torch.Tensor,
     value: torch.Tensor,
 ) -> torch.Tensor:
+    """
+    Computes standard causal scaled dot-product attention.
+    Supports Grouped-Query Attention (GQA) by expanding KV heads to match query heads.
+    Uses native PyTorch SDPA with appropriate bottom-right causal alignment if sequence
+    lengths differ.
+    """
     if query.shape[1] != key.shape[1]:
         if query.shape[1] % key.shape[1] != 0:
             raise ValueError(
@@ -133,6 +152,11 @@ def rekv_attention_forward(
     short_memory_only=False,
     *args, **kwargs
 ):
+    """
+    Dynamic attention forward patch builder.
+    Returns a custom forward function implementing the ReKV causal streaming lifecycle
+    that replaces the native HuggingFace language model self-attention block.
+    """
     Attn, _ = get_multi_stage_dot_production_attention(fattn)
     def forward(self, query : torch.Tensor,
                     key_value : torch.Tensor,
